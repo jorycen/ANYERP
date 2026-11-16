@@ -63,7 +63,7 @@
 
       <el-tab-pane v-if="!financeOnly" label="产品运作政策" name="nb-policy">
         <div class="filter-bar">
-          <el-alert title="按PN维护商品结算价及SO、PO、其他政策；SO政策用于采购提醒，PO政策用于销售归档审批，其他政策用于销售后资源跟进。" type="info" :closable="false" />
+          <el-alert title="按PN维护商品结算价及SO、PO、其他政策；可填写生效日期和失效日期，失效日期为空表示长期有效。" type="info" :closable="false" />
         </div>
         <div class="filter-bar">
           <el-input v-model="nbPolicyQuery.pn" placeholder="PN" clearable style="width:180px" @keyup.enter="loadNbPolicies" />
@@ -79,7 +79,7 @@
         <el-table-column prop="other_policy" label="其他政策" min-width="180" show-overflow-tooltip />
         <el-table-column label="有效期" min-width="215">
           <template #default="{ row }">
-            {{ nbPolicyDateText(row.effective_date) }} 至 {{ row.expire_date ? nbPolicyDateText(row.expire_date) : '未设置截止日' }}
+            {{ nbPolicyDateText(row.effective_date) }} 至 {{ row.expire_date ? nbPolicyDateText(row.expire_date) : '长期有效' }}
           </template>
         </el-table-column>
         <el-table-column prop="remark" label="备注" min-width="160" show-overflow-tooltip />
@@ -727,8 +727,16 @@ async function submitEducationImport(){
     await loadEducationPolicies()
   }catch(e){
     const message=e.response?.data?.message||e.message||'教育优惠表导入失败'
-    educationImportResult.value={message,success:0,failed:1,skipped:0,clearedRights:0,affectedSn:0,rows:[{status:'failed',message}]}
-    ElMessage.error(message)
+    const responseMissing=!e.response && (/网络连接失败|请求超时|Network Error|timeout/i.test(String(message)) || ['ERR_NETWORK','ECONNABORTED','ETIMEDOUT'].includes(e.code))
+    if(responseMissing){
+      await Promise.all([loadRights(),loadEducationPolicies()])
+      const uncertainMessage='上传请求未收到最终响应，系统已刷新数据；请以政策列表和库存权益结果核对，避免重复上传。'
+      educationImportResult.value={message:uncertainMessage,success:0,failed:0,skipped:0,clearedRights:0,affectedSn:0,rows:[{status:'unknown',message:uncertainMessage}]}
+      ElMessage.warning(uncertainMessage)
+    }else{
+      educationImportResult.value={message,success:0,failed:1,skipped:0,clearedRights:0,affectedSn:0,rows:[{status:'failed',message}]}
+      ElMessage.error(message)
+    }
   }
   finally{educationImporting.value=false}
 }
@@ -745,7 +753,7 @@ async function downloadNbPolicyTemplate(){
   if(nbPolicyTemplateDownloading.value)return
   nbPolicyTemplateDownloading.value=true
   try{
-    const response=await fetch(`${import.meta.env.BASE_URL}templates/产品政策导入模板.xlsx`)
+    const response=await fetch(`${import.meta.env.BASE_URL}templates/产品政策导入模板.xlsx?v=20261116-validity`,{cache:'no-store'})
     if(!response.ok)throw new Error('模板下载失败，请稍后重试')
     const data=await response.arrayBuffer()
     const signature=new Uint8Array(data,0,Math.min(data.byteLength,2))

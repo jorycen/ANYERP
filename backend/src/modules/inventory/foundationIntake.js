@@ -15,7 +15,10 @@ async function captureSn(value,options={}){
     (await require('../../utils/costKnowledge').confirmedZeroSnIds([sn],transaction)).has(String(sn.sn_id)));
   if(!basis){const product=await M.Product.findByPk(sn.product_id,{raw:true,transaction});
     const line={productId:sn.product_id,snCode:sn.sn_code,productName:product?.name||'',quantity:1,purchasePrice:F.money(sn.inbound_price)};
-    const docs=await V.resolveDocumentTaxBasis({store_id:sn.store_id},[line],transaction),tax=docs[0].purchaseTaxBasis;
+    const receipt=options.foundationReceipt;
+    const docs=receipt?.productId===sn.product_id
+      ? [{purchaseTaxBasis:{status:V.normalizeInvoiceType(receipt.invoiceType)?'confirmed':'pending',invoiceType:V.normalizeInvoiceType(receipt.invoiceType),source:receipt.source||'purchase_receipt',reason:receipt.reason,receipt}}]
+      : await V.resolveDocumentTaxBasis({store_id:sn.store_id},[line],transaction),tax=docs[0].purchaseTaxBasis;
     basis=await M.InventoryFoundation.create({basis_id:basisId,identity_key:key,product_id:sn.product_id,product_name:product?.name||'',entity_type:'sn_cycle',sn_code:sn.sn_code,batch_no:sn.batch_no,
       purchase_cost:Number(sn.inbound_price)>0||zeroConfirmed?F.money(sn.inbound_price):null,
       // The SN's intake snapshot is authoritative when present. The product
@@ -35,6 +38,12 @@ async function captureSn(value,options={}){
     if(Object.keys(patch).length){const before=basis.toJSON();await basis.update({...patch,revision:Number(basis.revision)+1,updated_by:'system',update_time:new Date()},{transaction});
       await require('../../utils/businessActionLog').recordBusinessAction({businessType:'inventory_foundation',businessId:basisId,action:'sync_inventory_fact',user:{name:'system'},comment:'原库存业务确认的同周期基础信息变更',detail:{before,after:basis.toJSON(),snId:sn.sn_id},transaction});}
   }
+  const receipt=options.foundationReceipt;
+  const receiptTax=receipt?.productId===sn.product_id ? V.normalizeInvoiceType(receipt.invoiceType) : null;
+  if (!newlyCreated && basis.status==='pending' && !basis.invoice_type && receiptTax) {
+    await F.confirmTaxEvidence(basis,{version:V.VERSION,status:'confirmed',invoiceType:receiptTax,source:'explicit_stock_movement',receipt},
+      {name:'system'},'原业务流转补齐明确票税依据',transaction);
+  }
   await F.clearScopedTax(basis,transaction);
   const ref=await M.InventoryFoundationRef.findByPk('sn_current:'+sn.sn_id,{transaction,lock:transaction.LOCK.UPDATE});
   if(ref)await ref.update({basis_id:basisId,store_id:sn.store_id},{transaction});
@@ -53,11 +62,20 @@ async function captureInventory(value,options={}){
     const referenceKey='inventory:'+inv.inventory_id+':'+field;
     const ref=await M.InventoryFoundationRef.findByPk(referenceKey,{transaction,lock:transaction.LOCK.UPDATE});
     const increased=!!ref&&!!oldQuantities&&Number(quantities[field])>Number(oldQuantities[field]);
+    // A new positive bucket must not reuse the pending placeholder created
+    // while Inventory.create initialized all quantities to zero.
+    if (oldQuantities && Number(quantities[field]) <= Number(oldQuantities[field]) && ref) continue;
     const key='import_inventory:'+inv.inventory_id+':'+field+(increased?':event:'+require('node:crypto').randomUUID():''),basisId=increased?F.id(key):ref?.basis_id||F.id(key),existing=await M.InventoryFoundation.findByPk(basisId,{transaction,lock:transaction.LOCK.UPDATE});
+    const receipt=options.foundationReceipt;
+    const receiptTax=receipt?.productId===inv.product_id ? require('../sales/purchaseVat').normalizeInvoiceType(receipt.invoiceType) : null;
+    const oldBasis=increased?await M.InventoryFoundation.findByPk(ref.basis_id,{transaction,lock:transaction.LOCK.UPDATE}):null;
+    const oldView=oldBasis?F.view(oldBasis.toJSON?oldBasis.toJSON():oldBasis):null;
+    const priorQuantity=Number(oldQuantities?.[field]||0);
+    const receiptConfirmed=!!receiptTax && (priorQuantity===0 || (oldView?.status==='confirmed' && oldView.invoiceType===receiptTax));
     if(!existing)await M.InventoryFoundation.create({basis_id:basisId,identity_key:key,product_id:inv.product_id,product_name:product.name,entity_type:'import_inventory',batch_no:key,
       purchase_cost:increased?null:Number(price?.cost_price)>0||Number(price?.cost_price_locked)===1?F.money(price?.cost_price):null,
-      cost_mode:increased?null:product.gross_profit_cost_mode||null,invoice_type:null,status:'pending',
-      reason:increased?'非SN聚合库存增加，不能沿用旧批次含税属性，需核实本次批次':'聚合非SN库存没有明确批次，需在统一基础资料确认',source_data:{source:'inventory_intake',inventoryId:inv.inventory_id,previousBasisId:ref?.basis_id||null},revision:1,updated_by:'system'}, {transaction});
+      cost_mode:increased?null:product.gross_profit_cost_mode||null,invoice_type:receiptConfirmed?receiptTax:null,status:receiptConfirmed?'confirmed':'pending',
+      reason:receiptConfirmed?'入库来源票税已传递，存量票种一致':receipt?.reason|| (increased?'非SN聚合库存增加，需核实存量和新增批次票税':'聚合非SN库存没有明确批次，需在统一基础资料确认'),source_data:{source:'inventory_intake',inventoryId:inv.inventory_id,previousBasisId:ref?.basis_id||null,purchaseReceipt:receipt||null},revision:1,updated_by:'system'}, {transaction});
     if(ref&&ref.basis_id!==basisId)await ref.update({basis_id:basisId,store_id:inv.store_id},{transaction});
     else await F.bind(referenceKey,basisId,inv.store_id,transaction);
   }

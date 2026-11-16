@@ -67,6 +67,7 @@ function fixtures(t) {
   t.mock.method(M.sequelize, 'query', async () => { throw Error('Unexpected database access'); });
   t.mock.method(M.sequelize, 'transaction', async callback => callback(tx));
   t.mock.method(M.ExpenseType, 'findOne', async () => ({ type_id: 'TYPE', name: '经营费用' }));
+  t.mock.method(M.ExpenseType, 'findAll', async () => [{ type_id: 'TYPE', name: '经营费用' }]);
   t.mock.method(M.Store, 'findByPk', async () => ({ store_id: 'S1', name: '源门店', distributor_id: 'D1' }));
   t.mock.method(M.Store, 'findAll', async options => ['S1', 'S2'].filter(id => options.where.store_id.includes(id)).map(id => ({ store_id: id, name: id === 'S1' ? '源门店' : '跨经销商门店', distributor_id: id === 'S1' ? 'D1' : 'D2' })));
   t.mock.method(M.ExpenseAccountingPeriod, 'findOne', async options => { periods.push(options.where.distributor_id); return null; });

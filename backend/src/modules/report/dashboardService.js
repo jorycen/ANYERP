@@ -478,7 +478,7 @@ class DashboardService {
       this.dataSource.getProductCategoryRows(filters, ranges.current),
       this.dataSource.getEmployeeOrderRows(filters, ranges.current),
       this.dataSource.getApprovedAdjustments(filters, ranges.current),
-      this.dataSource.getInventory(filters)
+      this.dataSource.getInventory({ ...filters, includeStoreAmounts: query.overallMetrics === '1' })
     ]);
 
     const current = summarizeTrend(currentTrend);
@@ -567,6 +567,42 @@ class DashboardService {
     productAnalysis.focusCategories.forEach(row => { row.barWidth = maxFocusSales > 0 ? `${Math.max(0, row.salesAmount / maxFocusSales * 100).toFixed(2)}%` : '0%'; });
     productAnalysis.focusCategoryMode='category';
     const previousStoreMap = new Map((previousStoreRanking || []).map(row => [String(row.storeId), row]));
+    let overallRows = null, taskProgress = null;
+    if (query.overallMetrics === '1') {
+      const scopedStores = filters.storeId ? [String(filters.storeId)] : storeIds;
+      const sevenRange = buildRanges({ startDate: shiftDateKey(ranges.current.endDate, -6), endDate: ranges.current.endDate }).current;
+      const [targets, yoyStores, sevenOrders, roster] = await Promise.all([
+        profitVisible ? require('./dashboardTargets').load(scopedStores, ranges.current) : Promise.resolve(new Map()),
+        this.dataSource.getStoreRanking(filters, ranges.yoy),
+        this.dataSource.getEmployeeOrderRows(filters, sevenRange),
+        this.dataSource.query('SELECT STORE_ID AS storeId, NAME AS storeName FROM T_STORE WHERE IS_DELETED=0 AND STATUS=1 AND STORE_ID IN (:storeIds)', { storeIds: scopedStores })
+      ]);
+      const yoyMap = new Map(yoyStores.map(r => [String(r.storeId), r]));
+      const days = Array.from({length:7}, (_, i) => shiftDateKey(sevenRange.startDate, i));
+      overallRows = roster.map(store => {
+        const row = storeRanking.find(r => String(r.storeId) === String(store.storeId)) || { ...store, salesAmount:0, grossProfit:0, orderCount:0 };
+        const target = !filters.employeeId && !filters.productLine ? targets.get(String(store.storeId)) ?? null : null;
+        return { storeId:row.storeId,storeName:row.storeName,salesAmount:roundMoney(row.salesAmount),orderCount:Number(row.orderCount||0), grossProfit:profitVisible ? roundMoney(row.grossProfit) : null,
+          grossMargin:profitVisible && Number(row.salesAmount) !== 0 ? roundMoney(Number(row.grossProfit)/Number(row.salesAmount)*100) : null,
+          yoy:comparisonRate(row.salesAmount, yoyMap.get(String(store.storeId))?.salesAmount),
+          periodCompare:comparisonRate(row.salesAmount,previousStoreMap.get(String(store.storeId))?.salesAmount),
+          taskTarget:target, taskCompletionRate:profitVisible && target > 0 ? roundMoney(Number(row.grossProfit)/target*100) : null,
+          inventoryAmount:profitVisible ? (inventory.byStore || []).find(r=>String(r.storeId)===String(store.storeId))?.inventoryAmount ?? 0 : null,
+          salesTrend:days.map(bucket => {
+            const orders = sevenOrders.filter(r => String(r.store_id) === String(store.storeId) && (typeof r.create_time === 'string' && !/[zZ]|[+]\d\d:\d\d$/.test(r.create_time) ? r.create_time.slice(0,10) : new Date(new Date(r.create_time).getTime()+28800000).toISOString().slice(0,10)) === bucket);
+            return {bucket, salesAmount:require('./operatingProfit').aggregateOperatingProfit(orders,[],filters).summary.salesAmount};
+          }) };
+      });
+      const complete = profitVisible && overallRows.length > 0 && overallRows.every(r => r.taskTarget > 0);
+      const target = complete ? roundMoney(overallRows.reduce((s,r)=>s+r.taskTarget,0)) : null;
+      const actual = profitVisible ? roundMoney(overallRows.reduce((s,r)=>s+Number(r.grossProfit),0)) : null;
+      taskProgress = {metric:'grossProfit',target,actual,remaining:complete?roundMoney(Math.max(0,target-actual)):null,
+        completionRate:complete?roundMoney(actual/target*100):null,
+        reason:!profitVisible?'无毛利查看权限':filters.employeeId||filters.productLine?'员工或产品线筛选下暂无对应目标':!complete?'部分门店或月份未配置毛利目标':''};
+      const requestedSort = ['salesAmount','grossProfit','grossMargin','taskCompletionRate','inventoryAmount'].includes(query.storeSort) ? query.storeSort : 'salesAmount';
+      const sort = !profitVisible && requestedSort !== 'salesAmount' ? 'salesAmount' : requestedSort;
+      overallRows.sort((a,b)=>(a[sort]==null)-(b[sort]==null) || Number(b[sort])-Number(a[sort]) || String(a.storeName).localeCompare(String(b.storeName),'zh-CN'));
+    }
     const storeProductTypeMap = new Map((storeProductTypeQuantities || []).map(row => [String(row.storeId), row]));
     const productQuantities = [...storeProductTypeMap.values()].reduce((totals, row) => ({
       laptop: totals.laptop + Number(row.laptopQuantity || 0),
@@ -575,6 +611,7 @@ class DashboardService {
     }), { laptop: 0, phone: 0, tablet: 0 });
     const inventoryView = {
       ...inventory,
+      byStore: inventory.byStore?.map(row=>({...row,inventoryAmount:profitVisible?row.inventoryAmount:null})),
       inventoryAmount: profitVisible ? inventory.inventoryAmount : null,
       ageStructure: inventory.ageStructure
         .sort((a, b) => AGE_BUCKET_ORDER.indexOf(a.ageBucket) - AGE_BUCKET_ORDER.indexOf(b.ageBucket))
@@ -606,7 +643,8 @@ class DashboardService {
       },
       kpis: buildKpis(current, yoy, previous, inventory, profitVisible),
       trend: alignTrend(currentTrend, yoyTrend, previousTrend, profitVisible),
-      storeRanking: storeRanking.map(row => ({
+      taskProgress,
+      storeRanking: overallRows || storeRanking.map(row => ({
         ...row,
         salesAmount: roundMoney(row.salesAmount),
         grossProfit: profitVisible ? roundMoney(row.grossProfit) : null,

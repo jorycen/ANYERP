@@ -550,8 +550,9 @@ async function getCustomerSourceAnalysis(ctx) {
     return `${name}销售`;
   };
 
-  const trendGroups = new Map();
   const sourceGroups = new Map();
+  const categorySourceGroups = new Map();
+  const productCategoryNames = new Set();
   orders.forEach(order => {
     const store = order.Store || {};
     const distributor = store.Distributor || {};
@@ -570,11 +571,17 @@ async function getCustomerSourceAnalysis(ctx) {
     }
     const sourceName = String(order.customer_source || '').trim() || '未填写来源';
     const sourceDetail = String(order.customer_source_detail || '').trim() || '-';
-    const bucket = new Date(new Date(order.create_time).getTime() + 28800000).toISOString().slice(0, 10);
-    const trend = trendGroups.get(bucket) || { bucket, salesAmount: 0, orderCount: 0 };
-    trend.salesAmount += toNumber(order.total_amount); trend.orderCount += 1; trendGroups.set(bucket, trend);
     const source = sourceGroups.get(sourceName) || { customerSource: sourceName, salesAmount: 0, grossProfit: 0, orderCount: 0 };
     source.salesAmount += toNumber(order.total_amount); source.grossProfit += toNumber(order.grossProfitSnapshot?.gross_profit_amount); source.orderCount += 1; sourceGroups.set(sourceName, source);
+    const orderCategories = new Set((order.OrderItems || []).map(item => getRootCategory(item.Product)));
+    if (!orderCategories.size) orderCategories.add('其他');
+    orderCategories.forEach(categoryName => {
+      productCategoryNames.add(categoryName);
+      const categoryKey = `${categoryName}\u0000${sourceName}`;
+      const categorySource = categorySourceGroups.get(categoryKey) || { category: categoryName, customerSource: sourceName, orderCount: 0 };
+      categorySource.orderCount += 1;
+      categorySourceGroups.set(categoryKey, categorySource);
+    });
     const key = JSON.stringify([dimensionId, sourceName, sourceDetail]);
     const group = groups.get(key) || {
       dimensionId: String(dimensionId || ''), dimensionName, customerSource: sourceName, sourceDetail,
@@ -584,8 +591,8 @@ async function getCustomerSourceAnalysis(ctx) {
     group.salesAmount += toNumber(order.total_amount);
     group.grossProfit += toNumber(order.grossProfitSnapshot?.gross_profit_amount);
     if (afterSalesOrderIds.has(String(order.order_id))) group.afterSalesOrderCount += 1;
-    const orderCategories = new Set((order.OrderItems || []).map(item => categoryLabel(getRootCategory(item.Product))));
-    orderCategories.forEach(name => group.categories.set(name, (group.categories.get(name) || 0) + 1));
+    const displayCategories = new Set((order.OrderItems || []).map(item => categoryLabel(getRootCategory(item.Product))));
+    displayCategories.forEach(name => group.categories.set(name, (group.categories.get(name) || 0) + 1));
     groups.set(key, group);
   });
 
@@ -607,8 +614,9 @@ async function getCustomerSourceAnalysis(ctx) {
       ,averageOrderValue: roundMoney(orders.reduce((sum, order) => sum + toNumber(order.total_amount), 0) / orders.length)
       ,grossMargin: canViewProfit(user) ? calcRate(orders.reduce((sum, order) => sum + toNumber(order.grossProfitSnapshot?.gross_profit_amount), 0), orders.reduce((sum, order) => sum + toNumber(order.total_amount), 0)) : null
     },
-    trend: [...trendGroups.values()].sort((a, b) => a.bucket.localeCompare(b.bucket)).map(row => ({ ...row, salesAmount: roundMoney(row.salesAmount) })),
     sourceDistribution: [...sourceGroups.values()].map(row => ({ ...row, salesAmount: roundMoney(row.salesAmount), grossProfit: canViewProfit(user) ? roundMoney(row.grossProfit) : null })),
+    productCategoryOptions: [...productCategoryNames].sort((a, b) => a.localeCompare(b, 'zh-CN')),
+    categorySourceDistribution: [...categorySourceGroups.values()].sort((a, b) => b.orderCount - a.orderCount || a.category.localeCompare(b.category, 'zh-CN') || a.customerSource.localeCompare(b.customerSource, 'zh-CN')),
     rows
   };
 }

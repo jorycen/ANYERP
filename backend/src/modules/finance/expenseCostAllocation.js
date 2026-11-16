@@ -47,7 +47,7 @@ async function summarizeAllocatedExpenses({ storeIds = [], dateMode = 'date', st
   const replacements = { storeIds: selectedStoreIds, distributorIds, startDate, endDate, monthKeys,
     startMonth: String(startDate || monthKeys[0] || '').slice(0, 7), endMonth: String(endDate || monthKeys[monthKeys.length - 1] || '').slice(0, 7) };
   const rows = await sequelize.query(
-    `SELECT e.EXPENSE_ID AS expenseId, e.INVOICE_NO AS invoiceNo, e.HAS_INVOICE AS hasInvoice, e.EXPENSE_TYPE AS expenseType, e.AMOUNT AS amount,
+    `SELECT e.EXPENSE_ID AS expenseId, e.INVOICE_NO AS invoiceNo, e.HAS_INVOICE AS hasInvoice, e.EXPENSE_TYPE AS expenseType, e.EXPENSE_ITEMS_JSON AS expenseItemsJson, e.AMOUNT AS amount,
             e.STORE_ID AS sourceStoreId, e.DISTRIBUTOR_ID AS distributorId,
             e.AMORTIZATION_START_MONTH AS amortizationStartMonth, e.AMORTIZATION_END_MONTH AS amortizationEndMonth,
             ${businessDateSql} AS businessDate, e.ATTRIBUTION_TYPE AS attributionType, e.ATTRIBUTION_DETAILS_JSON AS attributionDetails
@@ -75,6 +75,7 @@ async function summarizeAllocatedExpenses({ storeIds = [], dateMode = 'date', st
 
   expandExpenseRows(rows, { dateMode, startDate, endDate, monthKeys }).forEach(row => {
     const expenseAmount = amount(row.amount);
+    const expenseItems = parseDetails(row.expenseItemsJson).filter(item => Number(item.amount) > 0);
     const type = String(row.attributionType || 'STORE').toUpperCase();
     const details = parseDetails(row.attributionDetails);
     if (type === 'PRODUCT_SIDE') {
@@ -114,10 +115,16 @@ async function summarizeAllocatedExpenses({ storeIds = [], dateMode = 'date', st
     total += allocatedTotal;
     countedExpenses.add(String(row.expenseId));
 
-    const typeSummary = byType.get(row.expenseType || '其他') || { amount: 0, expenseIds: new Set() };
-    typeSummary.amount += allocatedTotal;
-    typeSummary.expenseIds.add(String(row.expenseId));
-    byType.set(row.expenseType || '其他', typeSummary);
+    const itemTotal = amount(expenseItems.reduce((sum, item) => sum + Number(item.amount || 0), 0));
+    const typeItems = itemTotal > 0 ? expenseItems : [{ expenseType: row.expenseType || '其他', amount: expenseAmount }];
+    typeItems.forEach(item => {
+      const typeName = item.expenseType || '其他';
+      const typeAmount = itemTotal > 0 ? amount(allocatedTotal * Number(item.amount || 0) / itemTotal) : allocatedTotal;
+      const typeSummary = byType.get(typeName) || { amount: 0, expenseIds: new Set() };
+      typeSummary.amount += typeAmount;
+      typeSummary.expenseIds.add(String(row.expenseId));
+      byType.set(typeName, typeSummary);
+    });
 
     selectedAllocations.filter(item => item.storeId).forEach(item => {
       const storeSummary = byStore.get(item.storeId) || { storeId: item.storeId, storeName: item.storeName || storeNameMap.get(item.storeId) || item.storeId, amount: 0, expenseIds: new Set() };

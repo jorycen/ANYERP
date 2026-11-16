@@ -733,6 +733,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
   }
 
   async getInventory(filters) {
+    const groupStores = filters.includeStoreAmounts === true;
     const allRootCategories = filters.allRootCategories === true;
     const includeDemo = filters.includeDemo !== false;
     const storeClause = filters.storeId ? 'AND i.STORE_ID = :storeId' : '';
@@ -755,7 +756,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
 
     const [snRows, nonSnRows, ageRows, categoryRows] = await Promise.all([
       this.query(
-        `SELECT ps.PRODUCT_ID AS productId,
+        `SELECT ps.PRODUCT_ID AS productId, ${groupStores ? 'ps.STORE_ID AS storeId,' : ''}
                 MAX(p.CATEGORY_ID) AS categoryId,
                 MAX(p.NAME) AS productName,
                 MAX(p.BRAND) AS brand,
@@ -778,11 +779,11 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
             ${snStoreClause}
             ${productLineClause}
             ${CARE_INVENTORY_EXCLUSION_SQL}
-          GROUP BY ps.PRODUCT_ID`,
+          GROUP BY ps.PRODUCT_ID${groupStores ? ', ps.STORE_ID' : ''}`,
         replacements
       ),
       this.query(
-        `SELECT i.PRODUCT_ID AS productId,
+        `SELECT i.PRODUCT_ID AS productId, ${groupStores ? 'i.STORE_ID AS storeId,' : ''}
                 MAX(p.CATEGORY_ID) AS categoryId,
                 MAX(p.NAME) AS productName,
                 MAX(p.BRAND) AS brand,
@@ -811,7 +812,7 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
             ${storeClause}
             ${productLineClause}
             ${CARE_INVENTORY_EXCLUSION_SQL}
-          GROUP BY i.PRODUCT_ID`,
+          GROUP BY i.PRODUCT_ID${groupStores ? ', i.STORE_ID' : ''}`,
         replacements
       ),
       this.query(
@@ -910,6 +911,8 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
 
     return {
       inventoryQuantity,
+      byStore: groupStores ? [...new Set([...snRows, ...nonSnRows].map(row => String(row.storeId)))].map(storeId => ({ storeId,
+        inventoryAmount: roundMoney([...snRows, ...nonSnRows].filter(row => String(row.storeId) === storeId).reduce((sum, row) => sum + Number(row.inventoryAmount || 0), 0)) })) : undefined,
       skuCount: new Set(rows.map(row => row.productId).filter(Boolean)).size,
       inventoryAmount,
       categories: [...categoryMap.values()]

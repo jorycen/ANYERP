@@ -1844,6 +1844,7 @@ const Expense = sequelize.define('Expense', {
   region_name: { type: DataTypes.STRING(128) },
   expense_type_id: { type: DataTypes.STRING(32) },
   expense_type: { type: DataTypes.STRING(128), allowNull: false },
+  expense_items_json: { type: DataTypes.TEXT('long'), comment: '费用单报销类型及金额明细JSON；兼容历史单据保留主类型' },
   expense_party: { type: DataTypes.STRING(255), allowNull: false },
   amount: { type: DataTypes.DECIMAL(12, 2), allowNull: false },
   settled_amount: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },

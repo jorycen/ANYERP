@@ -31,6 +31,11 @@ function fixture(t, { sourceSn = true, targetSn = true, failTarget = false, sour
     TARGET: { product_id: 'TARGET', name: 'DDR4内存', need_sn: targetSn ? 1 : 0, manufacturer_code: 'TARGET-PN', status: 1 }
   };
   t.mock.method(M.sequelize, 'transaction', async () => tx);
+  const movement = require('../src/modules/inventory/foundationMovement');
+  const receipt = productId => ({ productId, invoiceType: '收据', basisIds: ['TEST-BASIS'], reason: '测试来源' });
+  t.mock.method(movement, 'referenceReceipt', async (key, productId, transaction) => { assert.equal(transaction, tx); return receipt(productId); });
+  t.mock.method(movement, 'inventoryReceipt', async (productId, storeId, field, locationId, transaction) => { assert.equal(transaction, tx); return receipt(productId); });
+  t.mock.method(movement, 'save', async (key, productId, evidence, transaction) => { assert.equal(transaction, tx); assert.equal(evidence.invoiceType, '收据'); return receipt(productId); });
   t.mock.method(M.sequelize, 'query', async (sql, options) => {
     assert.equal(options.transaction, tx);
     if (sql.includes('FROM T_PRODUCT_SN')) return [{ snId: source.sn_id,

@@ -2313,6 +2313,7 @@ async function runMigrations() {
     await checkAndAddColumn('T_EXPENSE', 'REGION_ID', 'VARCHAR(32) COMMENT "区域ID"', 'STORE_ID');
     await checkAndAddColumn('T_EXPENSE', 'REGION_NAME', 'VARCHAR(128) COMMENT "区域名称快照"', 'REGION_ID');
     await checkAndAddColumn('T_EXPENSE', 'EXPENSE_TYPE_ID', 'VARCHAR(32) COMMENT "报销类型ID"', 'REGION_NAME');
+    await checkAndAddColumn('T_EXPENSE', 'EXPENSE_ITEMS_JSON', 'LONGTEXT COMMENT "费用单报销类型及金额明细JSON"', 'EXPENSE_TYPE_ID');
     await checkAndAddColumn('T_EXPENSE', 'EXPENSE_PARTY', 'VARCHAR(255) NOT NULL DEFAULT "" COMMENT "费用发生方"', 'EXPENSE_TYPE');
     await checkAndAddColumn('T_EXPENSE', 'HAS_INVOICE', 'TINYINT(1) DEFAULT 0 COMMENT "是否有发票"', 'PAYMENT_METHOD');
     await checkAndAddColumn('T_EXPENSE', 'INVOICE_TYPE', 'VARCHAR(64) COMMENT "发票类型"', 'HAS_INVOICE');

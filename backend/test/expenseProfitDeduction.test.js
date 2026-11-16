@@ -47,6 +47,7 @@ test('create expense accepts noncash mode without payee fields and snapshots all
  setup(t);const C=require('../src/modules/finance/controller'),approval=require('../src/modules/approval/service');
  t.mock.method(M.sequelize,'transaction',async callback=>callback(tx));
  t.mock.method(M.ExpenseType,'findOne',async()=>({type_id:'T',name:'费用'}));
+ t.mock.method(M.ExpenseType,'findAll',async()=>[{type_id:'T',name:'费用'}]);
  t.mock.method(M.ApprovalFlowDefinition,'findOne',async()=>({definition_id:'F'}));
  const begin=t.mock.method(approval,'startInstance',async input=>{assert.equal(input.businessType,'expense');assert.equal(input.payload.profitDeduction.allocations.length,2)});
  const create=t.mock.method(M.Expense,'create',async values=>{assert.equal(values.status,'pending_approval');assert.equal(values.payment_method,D.METHOD);assert.equal(JSON.parse(values.recipient_snapshot_json).allocations[0].amount,60);return row(values)});

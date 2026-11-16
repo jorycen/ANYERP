@@ -1171,12 +1171,18 @@
     </el-dialog>
 
     <!-- 添加支出对话框-->
-    <el-dialog v-model="expenseDialogVisible" :title="expenseAttributionOnly ? '调整费用归属' : (expenseForm.status === 'withdrawn' ? '编辑并重新提交费用' : (expenseForm.expenseId ? '编辑费用草稿' : '添加费用'))" width="500px" @close="handleDialogClose">
+    <el-dialog v-model="expenseDialogVisible" :title="expenseAttributionOnly ? '调整费用归属' : (expenseForm.status === 'withdrawn' ? '编辑并重新提交费用单' : (expenseForm.expenseId ? '编辑费用单草稿' : '新建费用单'))" width="620px" @close="handleDialogClose">
       <el-form :model="expenseForm" label-width="100px">
-        <el-form-item label="报销类型" required>
-          <el-select v-model="expenseForm.expenseTypeId" placeholder="请选择类型" style="width: 100%">
-            <el-option v-for="item in expenseTypeOptions" :key="item.type_id" :label="item.name" :value="item.type_id" />
-          </el-select>
+        <el-form-item label="费用明细" required>
+          <div class="expense-item-editor">
+            <div v-for="(item, index) in expenseForm.expenseItems" :key="index" class="expense-item-row">
+              <el-select v-model="item.expenseTypeId" placeholder="报销类型" style="flex:1"><el-option v-for="type in expenseTypeOptions" :key="type.type_id" :label="type.name" :value="type.type_id" /></el-select>
+              <el-input-number v-model="item.amount" :min="0" :precision="2" controls-position="right" style="width:150px" />
+              <el-button v-if="expenseForm.expenseItems.length > 1" link type="danger" @click="expenseForm.expenseItems.splice(index, 1)">删除</el-button>
+            </div>
+            <el-button link type="primary" @click="expenseForm.expenseItems.push({ expenseTypeId: '', amount: 0, remark: '' })">增加报销类型</el-button>
+            <div class="form-help">费用总额：¥{{ expenseItemsTotal.toFixed(2) }}</div>
+          </div>
         </el-form-item>
         <el-form-item label="门店" required>
           <el-select v-model="expenseForm.storeId" placeholder="请选择门店" style="width: 100%" :disabled="Boolean(expenseForm.expenseId) && expenseForm.status !== 'withdrawn'">
@@ -2260,6 +2266,7 @@ const expenseForm = reactive({
   expenseId: '',
   status: '',
   expenseTypeId: '',
+  expenseItems: [{ expenseTypeId: '', amount: 0, remark: '' }],
   storeId: '',
   amount: 0,
   expenseParty: '',
@@ -2290,6 +2297,7 @@ const currentDistributorName = computed(() => {
 })
 
 const expenseTypeOptions = ref([])
+const expenseItemsTotal = computed(() => expenseForm.expenseItems.reduce((sum, item) => sum + Number(item.amount || 0), 0))
 
 const selectedPayableIds = computed(() => [...new Set(selectedPayables.value.map(p => p.payable_id))])
 
@@ -2938,6 +2946,7 @@ const handleEditExpense = (row) => {
   expenseForm.expenseId = row.expense_id || ''
   expenseForm.status = row.status || ''
   expenseForm.expenseTypeId = row.expense_type_id || ''
+  expenseForm.expenseItems = (() => { try { const items = JSON.parse(row.expense_items_json || '[]'); return items.length ? items : [{ expenseTypeId: row.expense_type_id || '', amount: Number(row.amount || 0), remark: '' }] } catch (_) { return [{ expenseTypeId: row.expense_type_id || '', amount: Number(row.amount || 0), remark: '' }] } })()
   expenseForm.storeId = row.store_id || ''
   expenseForm.amount = Number(row.amount || 0)
   expenseForm.expenseParty = row.expense_party || ''
@@ -4237,7 +4246,8 @@ const handleEditExpenseAttribution = (row) => {
 }
 
 const buildExpensePayload = () => ({
-  expenseTypeId: expenseForm.expenseTypeId,
+  expenseTypeId: expenseForm.expenseItems[0]?.expenseTypeId || expenseForm.expenseTypeId,
+  expenseItems: expenseForm.expenseItems.map(item => ({ expenseTypeId: item.expenseTypeId, amount: Number(item.amount || 0), remark: item.remark || '' })),
   storeId: expenseForm.storeId,
   amount: expenseForm.amount,
   expenseParty: expenseForm.expenseParty,
@@ -4256,15 +4266,15 @@ const buildExpensePayload = () => ({
 })
 
 const validateExpenseForm = () => {
-  if (!expenseForm.expenseTypeId) {
-    ElMessage.warning('请选择报销类型')
+  if (!expenseForm.expenseItems.length || expenseForm.expenseItems.some(item => !item.expenseTypeId)) {
+    ElMessage.warning('请完善每条报销类型')
     return false
   }
   if (!expenseForm.storeId) {
     ElMessage.warning('请选择门店')
     return false
   }
-  if (Number(expenseForm.amount) <= 0) {
+  if (expenseItemsTotal.value <= 0) {
     ElMessage.warning('请输入正确的金额')
     return false
   }
@@ -4284,9 +4294,10 @@ const validateExpenseForm = () => {
     ElMessage.warning('请选择返利供应商')
     return false
   }
+  expenseForm.amount = Number(expenseItemsTotal.value.toFixed(2))
   if (expenseForm.attributionType === 'STORE' && expenseForm.attributionMethod === 'MANUAL') {
     const total = expenseForm.allocationStoreIds.reduce((sum, storeId) => sum + Number(expenseForm.allocationAmounts[storeId] || 0), 0)
-    if (Math.abs(total - Number(expenseForm.amount || 0)) > 0.01) {
+    if (Math.abs(total - expenseItemsTotal.value) > 0.01) {
       ElMessage.warning('门店分摊金额必须等于费用总额')
       return false
     }
@@ -4374,6 +4385,7 @@ const resetForm = () => {
   expenseForm.expenseId = ''
   expenseForm.status = ''
   expenseForm.expenseTypeId = ''
+  expenseForm.expenseItems = [{ expenseTypeId: '', amount: 0, remark: '' }]
   expenseForm.storeId = ''
   expenseForm.amount = 0
   expenseForm.expenseParty = ''

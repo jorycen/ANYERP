@@ -54,7 +54,7 @@
         />
       </el-select>
       <label>产品线：</label>
-      <el-select v-model="filters.productLine" placeholder="全部产品线" clearable>
+      <el-select v-model="filters.productLine" placeholder="全部产品线" clearable @change="onProductLineFilterChange">
         <el-option label="全部产品线" value="" />
         <el-option
           v-for="line in filterOptions.productLines"
@@ -106,7 +106,15 @@
       <div class="source-overview-grid">
         <DashboardPanel title="客户来源销售占比"><div ref="sourceSalesRef" class="medium-chart"></div></DashboardPanel>
         <DashboardPanel title="客户来源毛利贡献"><div ref="sourceProfitRef" class="medium-chart"></div></DashboardPanel>
-        <DashboardPanel title="渠道销售趋势（按日）"><div ref="sourceTrendRef" class="medium-chart"></div></DashboardPanel>
+        <DashboardPanel title="客户来源单数（按商品一级分类）">
+          <template #actions>
+            <el-select v-model="customerSourceCategory" size="small" style="width: 150px" @change="renderCustomerSourceChart">
+              <el-option label="全部一级分类" value="" />
+              <el-option v-for="item in customerSourceCategoryOptions" :key="item" :label="item" :value="item" />
+            </el-select>
+          </template>
+          <div ref="sourceTrendRef" class="medium-chart"></div>
+        </DashboardPanel>
       </div>
       <DashboardPanel :title="customerSourceDimension === 'employee' ? '个人客户来源分析' : '门店渠道销售对比（全部门店）'">
         <template #actions>
@@ -177,6 +185,14 @@
         </template>
         <div ref="profitTrendRef" class="large-chart"></div>
       </DashboardPanel>
+      <DashboardPanel v-if="activeDimension === 'overall'" title="毛利任务完成进度">
+        <template #actions><el-button link type="primary" @click="router.push('/sales/monthly-tasks')">目标设置</el-button></template>
+        <div class="overall-task-progress">
+          <el-progress type="circle" :width="150" :stroke-width="11" :percentage="Math.min(100,Math.max(0,dashboard.taskProgress?.completionRate || 0))" color="#65be4d" :format="() => dashboard.taskProgress?.completionRate == null ? '未配置' : `${dashboard.taskProgress.completionRate}%`" />
+          <dl><div><dt>本期毛利任务</dt><dd>{{ dashboard.taskProgress?.target == null ? '未配置' : formatCurrency(dashboard.taskProgress.target) }}</dd></div><div><dt>已完成毛利</dt><dd>{{ dashboard.taskProgress?.actual == null ? '不可用' : formatCurrency(dashboard.taskProgress.actual) }}</dd></div><div><dt>差额</dt><dd>{{ dashboard.taskProgress?.remaining == null ? '—' : formatCurrency(dashboard.taskProgress.remaining) }}</dd></div></dl>
+        </div>
+        <p class="overall-task-note">{{ dashboard.taskProgress?.reason || '任务按月度毛利目标、自然日折算；实际沿用本页毛利口径。' }}</p>
+      </DashboardPanel>
     </section>
 
     <section v-if="activeDimension === 'employee'" class="employee-analysis-layout">
@@ -207,7 +223,23 @@
 
     <section v-show="activeDimension !== 'employee' && (showSection('store') || showSection('employee') || showSection('productLine'))" class="analysis-grid ranking-section">
       <DashboardPanel v-show="showSection('store')" title="门店经营排名">
-        <el-table :data="dashboard.storeRanking" class="store-ranking-table" size="small" height="260" table-layout="fixed" empty-text="暂无门店销售数据">
+        <template v-if="activeDimension === 'overall'" #actions>
+          <el-select v-model="storeRankingSort" style="width:160px" size="small" @change="loadOverview"><el-option label="按销售额排名" value="salesAmount" /><el-option v-if="dashboard.meta.canViewProfit" label="按毛利额排名" value="grossProfit" /><el-option v-if="dashboard.meta.canViewProfit" label="按毛利率排名" value="grossMargin" /><el-option v-if="dashboard.meta.canViewProfit" label="按任务完成率排名" value="taskCompletionRate" /><el-option v-if="dashboard.meta.canViewProfit" label="按库存金额排名" value="inventoryAmount" /></el-select>
+        </template>
+        <el-table v-if="activeDimension === 'overall'" :data="dashboard.storeRanking" size="small" empty-text="暂无门店经营数据" @sort-change="onStoreRankingSort">
+          <el-table-column type="index" label="排名" width="55" />
+          <el-table-column prop="storeName" label="门店" min-width="135" />
+          <el-table-column prop="salesAmount" sortable="custom" label="销售额" min-width="135" align="right"><template #default="{row}">{{ formatCurrency(row.salesAmount) }}</template></el-table-column>
+          <el-table-column label="同比" width="105" align="right"><template #default="{row}"><ComparisonValue :value="row.yoy" /></template></el-table-column>
+          <el-table-column label="环比" width="105" align="right"><template #default="{row}"><ComparisonValue :value="row.periodCompare" /></template></el-table-column>
+          <el-table-column v-if="dashboard.meta.canViewProfit" prop="grossProfit" sortable="custom" label="毛利额" min-width="130" align="right"><template #default="{row}">{{ formatCurrency(row.grossProfit) }}</template></el-table-column>
+          <el-table-column v-if="dashboard.meta.canViewProfit" prop="grossMargin" sortable="custom" label="毛利率" width="105" align="right"><template #default="{row}">{{ row.grossMargin == null ? '—' : `${row.grossMargin}%` }}</template></el-table-column>
+          <el-table-column v-if="dashboard.meta.canViewProfit" prop="taskCompletionRate" sortable="custom" label="任务完成率" min-width="155"><template #default="{row}"><el-progress v-if="row.taskCompletionRate != null" :percentage="Math.min(100,Math.max(0,row.taskCompletionRate))" :format="()=>`${row.taskCompletionRate}%`" /><span v-else>未配置</span></template></el-table-column>
+          <el-table-column v-if="dashboard.meta.canViewProfit" prop="inventoryAmount" sortable="custom" label="库存金额" min-width="145" align="right"><template #default="{row}">{{ formatCurrency(row.inventoryAmount) }}</template></el-table-column>
+          <el-table-column label="销售趋势（7日）" width="155"><template #default="{row}"><svg viewBox="0 0 140 36" width="140" height="36" role="img" :aria-label="`${row.storeName}最近7日销售趋势`"><title>{{ (row.salesTrend||[]).map(point=>`${point.bucket}：${point.salesAmount}元`).join('；') }}</title><polyline :points="sparklinePoints(row.salesTrend)" fill="none" stroke="#3478ff" stroke-width="2" /></svg></template></el-table-column>
+          <el-table-column label="操作" width="90"><template #default="{row}"><el-button link type="primary" @click="openStoreAnalysis(row)">查看详情</el-button></template></el-table-column>
+        </el-table>
+        <el-table v-else :data="dashboard.storeRanking" class="store-ranking-table" size="small" height="260" table-layout="fixed" empty-text="暂无门店销售数据">
           <el-table-column type="index" label="排名" width="42" />
           <el-table-column label="门店" width="90" show-overflow-tooltip>
             <template #default="{ row }">
@@ -363,6 +395,15 @@ import {
 } from '@element-plus/icons-vue'
 import * as echarts from 'echarts'
 import api from '../api'
+import { useRouter } from 'vue-router'
+const router = useRouter()
+const storeRankingSort = ref('salesAmount')
+function onStoreRankingSort({prop}) { storeRankingSort.value=prop || 'salesAmount'; loadOverview() }
+function openStoreAnalysis(row) { filters.storeId=String(row.storeId);activeDimension.value='store';loadOverview() }
+function sparklinePoints(rows=[]) {
+  const values=rows.map(r=>Number(r.salesAmount || 0)), min=Math.min(...values), max=Math.max(...values);
+  return values.map((value,i)=>`${4+i*132/Math.max(1,values.length-1)},${max===min?18:32-(value-min)/(max-min)*28}`).join(' ')
+}
 
 const DashboardPanel = defineComponent({
   name: 'DashboardPanel',
@@ -481,12 +522,16 @@ const sourceSalesRef = ref(null)
 const sourceProfitRef = ref(null)
 const sourceTrendRef = ref(null)
 const sourceDistribution = ref([])
-const sourceTrend = ref([])
+const categorySourceDistribution = ref([])
+const customerSourceCategoryOptions = ref([])
+const customerSourceCategory = ref('')
 const customerSourceRows = ref([])
 const customerSourceSummary = ref({})
 const customerSourceCanViewProfit = ref(false)
 const customerSourceLoading = ref(false)
-const productCategoryPath = computed(() => String(filters.productLine || '').split('/').filter(Boolean).map((name, index, parts) => ({ name, path: parts.slice(0, index + 1).join('/') })))
+// 顶部“产品线”是全局筛选；产品线经营分析内部点击的下级分类只在本板块内导航。
+const productCategoryPathValue = ref('')
+const productCategoryPath = computed(() => String(productCategoryPathValue.value || '').split('/').filter(Boolean).map((name, index, parts) => ({ name, path: parts.slice(0, index + 1).join('/') })))
 function findCategoryNode(nodes, path) {
   for (const node of nodes || []) {
     if (node.path === path) return node
@@ -497,7 +542,7 @@ function findCategoryNode(nodes, path) {
 }
 const currentProductCategories = computed(() => {
   const tree = dashboard.productCategoryAnalysis || []
-  return filters.productLine ? (findCategoryNode(tree, filters.productLine)?.children || []) : tree
+  return productCategoryPathValue.value ? (findCategoryNode(tree, productCategoryPathValue.value)?.children || []) : tree
 })
 const customerSourceKpiCards = computed(() => [
   { key: 'orders', label: '销售单数', value: formatNumber(customerSourceSummary.value.orderCount), icon: Document, color: 'blue' },
@@ -626,16 +671,21 @@ async function selectDimension(value) {
   if (value === 'customerSource') {
     await nextTick()
     await loadCustomerSourceAnalysis()
-  }
+  } else await loadOverview()
 }
 
 function selectProductCategory(path) {
-  filters.productLine = path
-  loadOverview()
+  productCategoryPathValue.value = path
+  renderCharts()
 }
 
 function resetProductCategory() {
-  filters.productLine = ''
+  productCategoryPathValue.value = ''
+  renderCharts()
+}
+
+function onProductLineFilterChange() {
+  productCategoryPathValue.value = ''
   loadOverview()
 }
 
@@ -668,7 +718,9 @@ async function loadCustomerSourceAnalysis() {
       customerSourceRows.value = res.data?.rows || []
       customerSourceSummary.value = res.data?.summary || {}
       sourceDistribution.value = res.data?.sourceDistribution || []
-      sourceTrend.value = res.data?.trend || []
+      categorySourceDistribution.value = res.data?.categorySourceDistribution || []
+      customerSourceCategoryOptions.value = res.data?.productCategoryOptions || []
+      if (customerSourceCategory.value && !customerSourceCategoryOptions.value.includes(customerSourceCategory.value)) customerSourceCategory.value = ''
       customerSourceCanViewProfit.value = Boolean(res.data?.canViewProfit)
       if (!customerSourceCanViewProfit.value && customerSourceMetric.value === 'grossProfit') customerSourceMetric.value = 'salesAmount'
       await nextTick()
@@ -714,6 +766,8 @@ async function loadOverview() {
       employeeId: filters.employeeId || undefined,
       productLine: filters.productLine || undefined,
       granularity: filters.granularity,
+      overallMetrics: activeDimension.value === 'overall' ? '1' : undefined,
+      storeSort: storeRankingSort.value,
     })
     if(sequence!==focusOverviewSequence)return
     if (res.code === 0) {
@@ -747,7 +801,12 @@ function renderCustomerSourceChart() {
     chart.setOption({ color: ['#3084ff', '#66c587', '#ffd43b', '#ff766c', '#60cddd', '#9c80ed', '#a5adba'], tooltip: { trigger: 'item' }, legend: { type: 'scroll', orient: 'vertical', right: 0, top: 'middle' }, series: [{ type: 'pie', radius: ['48%', '73%'], center: ['32%', '50%'], label: { show: false }, data: available ? sourceDistribution.value.filter(row => row[field] != null).map(row => ({ name: row.customerSource, value: row[field] })) : [] }], title: available ? undefined : { text: '无毛利查看权限', left: 'center', top: 'middle', textStyle: { fontSize: 13 } } }, true)
   }
   const trendChart = getChart(sourceTrendRef.value, 'sourceTrend')
-  if (trendChart) trendChart.setOption({ tooltip: { trigger: 'axis' }, legend: { data: ['销售额', '销售单数'] }, grid: { left: 55, right: 45, top: 40, bottom: 30 }, xAxis: { type: 'category', data: sourceTrend.value.map(row => row.bucket) }, yAxis: [{ type: 'value' }, { type: 'value', minInterval: 1 }], series: [{ name: '销售额', type: 'bar', itemStyle: { color: '#68a9ff' }, data: sourceTrend.value.map(row => row.salesAmount) }, { name: '销售单数', type: 'line', yAxisIndex: 1, smooth: true, itemStyle: { color: '#165dff' }, data: sourceTrend.value.map(row => row.orderCount) }] }, true)
+  if (trendChart) {
+    const rows = categorySourceDistribution.value.filter(row => !customerSourceCategory.value || row.category === customerSourceCategory.value)
+    const sourceCounts = new Map()
+    rows.forEach(row => sourceCounts.set(row.customerSource, (sourceCounts.get(row.customerSource) || 0) + Number(row.orderCount || 0)))
+    trendChart.setOption({ color: ['#3084ff', '#66c587', '#ffd43b', '#ff766c', '#60cddd', '#9c80ed', '#a5adba'], tooltip: { trigger: 'item', formatter: '{b}<br/>单数：{c} 单（{d}%）' }, legend: { type: 'scroll', orient: 'vertical', right: 0, top: 'middle' }, series: [{ type: 'pie', radius: ['48%', '73%'], center: ['32%', '50%'], label: { show: false }, data: [...sourceCounts.entries()].sort((a, b) => b[1] - a[1]).map(([name, value]) => ({ name, value })) }] }, true)
+  }
   const { rows, sources } = customerSourceChartData.value
   const valueKey = customerSourceMetric.value
   const valueLabel = { salesAmount: '销售额', orderCount: '订单数', grossProfit: '毛利' }[valueKey] || '销售额'
@@ -1653,4 +1712,13 @@ onBeforeUnmount(() => {
     font-size: 17px;
   }
 }
+.dimension-overall .trend-section { grid-template-columns: minmax(0,1fr) minmax(0,1fr) minmax(320px,.8fr); }
+.overall-task-progress { min-height:210px; display:flex; align-items:center; gap:20px; padding:12px 4px; }
+.overall-task-progress dl { flex:1; margin:0; min-width:0; font-size:13px; }
+.overall-task-progress dl div { display:flex; justify-content:space-between; gap:12px; padding:14px 0; border-bottom:1px solid #edf1f7; }
+.overall-task-progress dt { color:#53627a; }
+.overall-task-progress dd { margin:0; font-weight:600; font-variant-numeric:tabular-nums; }
+.overall-task-note { margin:0; color:#53627a; font-size:12px; line-height:1.6; }
+@media(max-width:1300px) { .dimension-overall .trend-section { grid-template-columns:1fr 1fr; } .dimension-overall .trend-section > :last-child { grid-column:1 / -1; } }
+@media(max-width:760px) { .dimension-overall .trend-section { grid-template-columns:1fr; } }
 </style>

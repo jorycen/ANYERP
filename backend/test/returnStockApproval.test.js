@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const M = require('../src/models');
 let accountingFailure = false;
-require('../src/modules/purchase/purchaseReturnAccounting').ensurePurchaseReturnAccounting = async ({ transaction }) => {
+require('../src/modules/purchase/purchaseReturnReentry').createPurchaseReturnReentry = async ({ transaction }) => {
   assert.ok(transaction);
   if (accountingFailure) throw new Error('accounting unavailable');
   return { payableId: 'PAY' };
@@ -37,6 +37,7 @@ function fixture(t) {
   t.mock.method(M.Inbound, 'findByPk', async () => inbound);
   t.mock.method(M.Product, 'findAll', async () => [{ product_id: 'P', status: 1, is_deleted: 0 }]);
   t.mock.method(M.Inventory, 'findOne', async () => inventory);
+  t.mock.method(M.Inventory, 'findAll', async () => [inventory]);
   t.mock.method(M.ReturnStockItem, 'findAll', async () => [item]);
   const ctx = { request: { body: { returnId: 'R' } }, state: { user: { staffId: 2, name: '审批人', accessibleStoreIds: ['S'] } }, throw(status, message) { throw Object.assign(new Error(message), { status }); } };
   return { state, request, inbound, inventory, ctx };

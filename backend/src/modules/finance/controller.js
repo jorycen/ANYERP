@@ -837,7 +837,7 @@ async function getSettlementSummary(ctx) {
 async function createExpense(ctx) {
   const user = ctx.state.user;
   const {
-    storeId, expenseTypeId, expenseParty, amount, paymentMethod,
+    storeId, expenseTypeId, expenseItems, expenseParty, amount, paymentMethod,
     hasInvoice, invoiceType, invoiceNo, expenseDate, attachmentUrls,
     relatedOrderNo, remark, accountingMonth, affectsStoreProfit = true, saveDraft = false, expenseId,
     attributionType, attributionMethod, allocationDetails, companyTargetType, companyTargetId, companyTargetName,
@@ -848,9 +848,23 @@ async function createExpense(ctx) {
   if (!targetStoreId) ctx.throw(400, '请选择门店');
   const allowed = user.accessibleStoreIds || [];
   if (!allowed.includes('*') && !allowed.map(String).includes(String(targetStoreId))) ctx.throw(403, '无权操作该门店');
-  if (!expenseTypeId) ctx.throw(400, '请选择报销类型');
+  const requestedItems = Array.isArray(expenseItems) && expenseItems.length
+    ? expenseItems
+    : (expenseTypeId ? [{ expenseTypeId, amount }] : []);
+  if (!requestedItems.length) ctx.throw(400, '请至少添加一条报销类型');
+  const normalizedItems = [];
+  for (const item of requestedItems) {
+    const itemTypeId = String(item.expenseTypeId || item.typeId || '').trim();
+    const itemAmount = Number(item.amount);
+    if (!itemTypeId) ctx.throw(400, '每条费用明细都必须选择报销类型');
+    if (!Number.isFinite(itemAmount) || itemAmount <= 0) ctx.throw(400, '每条费用明细金额必须大于0');
+    if (Math.abs(itemAmount * 100 - Math.round(itemAmount * 100)) > 0.000001) ctx.throw(400, '费用明细金额最多两位小数');
+    normalizedItems.push({ expenseTypeId: itemTypeId, amount: Math.round(itemAmount * 100) / 100, remark: String(item.remark || '').trim() });
+  }
+  const normalizedAmount = Math.round(normalizedItems.reduce((sum, item) => sum + item.amount, 0) * 100) / 100;
+  const primaryExpenseTypeId = normalizedItems[0].expenseTypeId;
   if (!String(expenseParty || '').trim()) ctx.throw(400, '请填写费用发生方');
-  if (!Number.isFinite(Number(amount)) || Number(amount) <= 0) ctx.throw(400, '费用金额必须大于0');
+  if (amount !== undefined && amount !== null && amount !== '' && Math.abs(Number(amount) - normalizedAmount) > 0.01) ctx.throw(400, '费用总额必须等于各报销类型明细金额合计');
   if (!['CORPORATE', 'CORPORATE_OTHER', 'PERSONAL_ADVANCE', 'PROFIT_DEDUCTION'].includes(paymentMethod)) ctx.throw(400, '支付方式无效');
   let recipient = paymentMethod === 'PROFIT_DEDUCTION' ? {} : expenseApplication.recipient(ctx.request.body.recipient, paymentMethod, user.name || '', isDraft);
   const files = expenseApplication.attachments(attachmentUrls || [], isDraft);
@@ -862,11 +876,13 @@ async function createExpense(ctx) {
   }
   const resolvedAccountingMonth = resolveExpenseAccountingMonth(accountingMonth, expenseDate);
 
-  const [expenseType, store] = await Promise.all([
-    ExpenseType.findOne({ where: { type_id: expenseTypeId, status: 1 } }),
+  const [expenseTypes, store] = await Promise.all([
+    ExpenseType.findAll({ where: { type_id: { [Op.in]: normalizedItems.map(item => item.expenseTypeId) }, status: 1 } }),
     Store.findByPk(targetStoreId, { include: [{ model: Region }] })
   ]);
-  if (!expenseType) ctx.throw(400, '报销类型不存在或已停用');
+  if (expenseTypes.length !== new Set(normalizedItems.map(item => item.expenseTypeId)).size) ctx.throw(400, '存在不存在或已停用的报销类型');
+  const expenseTypeMap = new Map(expenseTypes.map(item => [String(item.type_id), item]));
+  normalizedItems.forEach(item => { item.expenseType = expenseTypeMap.get(String(item.expenseTypeId)).name; });
   if (!store) ctx.throw(404, '门店不存在');
 
   let existingRecord = null;
@@ -893,7 +909,7 @@ async function createExpense(ctx) {
     attributionType,
     attributionMethod,
     allocationDetails,
-    totalAmount: amount,
+    totalAmount: normalizedAmount,
     applicantStaffId: existingRecord?.applicant_staff_id || user.staffId || user.id,
     applicantName: existingRecord?.applicant_name || user.name || user.phone || '',
     sourceStoreId: targetStoreId,
@@ -923,7 +939,7 @@ async function createExpense(ctx) {
     if(existingRecord){await existingRecord.reload({transaction,lock:transaction.LOCK.UPDATE});if(!['draft','withdrawn'].includes(existingRecord.status))ctx.throw(409,'费用状态已变化，请刷新后重试');}
     await assertPeriodOpen(store.distributor_id, resolvedAccountingMonth, transaction);
     await expenseApplication.validateTargets(attribution, resolvedAccountingMonth, transaction);
-    if (paymentMethod === 'PROFIT_DEDUCTION') recipient = await require('./expenseProfitDeduction').normalize(ctx.request.body.profitDeduction, {amount,store,user,transaction,draft:isDraft});
+    if (paymentMethod === 'PROFIT_DEDUCTION') recipient = await require('./expenseProfitDeduction').normalize(ctx.request.body.profitDeduction, {amount: normalizedAmount,store,user,transaction,draft:isDraft});
     const expensePayload = {
       expense_id: currentExpenseId,
       expense_no: expenseNo,
@@ -931,10 +947,11 @@ async function createExpense(ctx) {
       distributor_id: store.distributor_id || null,
       region_id: store.region_id || null,
       region_name: store.Region?.name || '',
-      expense_type_id: expenseType.type_id,
-      expense_type: expenseType.name,
+      expense_type_id: primaryExpenseTypeId,
+      expense_type: normalizedItems.length > 1 ? '多类型费用' : normalizedItems[0].expenseType,
+      expense_items_json: JSON.stringify(normalizedItems),
       expense_party: String(expenseParty).trim(),
-      amount: Number(amount),
+      amount: normalizedAmount,
       payment_method: paymentMethod === 'CORPORATE_OTHER' ? 'CORPORATE' : paymentMethod,
       recipient_snapshot_json: JSON.stringify({ ...recipient, ...(recipient.mode === 'EMPLOYEE' && existingRecord ? { payeeName: existingRecord.applicant_name || existingRecord.create_user } : {}) }),
       accounting_month: resolvedAccountingMonth,
@@ -1123,6 +1140,7 @@ async function getExpenseList(ctx) {
   rows.forEach(row => {
     row.setDataValue('distributor_name',dealers.find(d=>String(d.distributor_id)===String(row.distributor_id))?.name||'归属待核对');
     row.setDataValue('profit_deduction', require('./expenseProfitDeduction').display(row));
+    try { row.setDataValue('expense_items', JSON.parse(row.expense_items_json || '[]')); } catch (_) { row.setDataValue('expense_items', []); }
     row.setDataValue('can_submit',(row.status==='draft'&&canManageExpenseDraft(user,row))||row.status==='pending');
     const userId = user.staffId || user.id;
     const isApplicant = Number(row.applicant_staff_id) === Number(userId)
@@ -1213,6 +1231,7 @@ async function getExpenseDetail(ctx) {
   }
 
   const data = record.toJSON();
+  try { data.expense_items = JSON.parse(record.expense_items_json || '[]'); } catch (_) { data.expense_items = []; }
   data.attribution_details = parseExpenseDetails(data.attribution_details_json);
   data.profit_deduction = require('./expenseProfitDeduction').display(record);
   if (record.source_type === 'purchase' && record.source_id) {

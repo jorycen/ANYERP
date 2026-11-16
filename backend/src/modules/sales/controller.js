@@ -6449,7 +6449,8 @@ async function _moveInventoryToPending(productId, storeId, inventoryType, quanti
     }
   }
 
-  await inv.update(payload, { transaction });
+  const foundationReceipt = await require('../inventory/foundationMovement').inventoryReceipt(productId, storeId, column, inv.location_id || '', transaction);
+  await inv.update(payload, { transaction, foundationReceipt });
 }
 
 async function _finalizePendingInventory(productId, storeId, quantity, transaction = null) {
@@ -6473,10 +6474,11 @@ async function _releasePendingInventory(productId, storeId, inventoryType, quant
   if (!inv) return;
   const qty = Number(quantity) || 0;
   const releaseQty = Math.min(Number(inv.pending_qty || 0), qty);
+  const foundationReceipt = await require('../inventory/foundationMovement').inventoryReceipt(productId, storeId, 'pending_qty', inv.location_id || '', transaction);
   await inv.update({
     pending_qty: Math.max(0, Number(inv.pending_qty || 0) - releaseQty),
     [column]: Number(inv[column] || 0) + releaseQty
-  }, { transaction });
+  }, { transaction, foundationReceipt });
 }
 
 /**

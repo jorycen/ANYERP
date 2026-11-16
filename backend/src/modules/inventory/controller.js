@@ -477,7 +477,8 @@ async function returnTransfer(ctx) {
         continue;
       }
 
-      await updateInventory(item.product_id, transfer.from_store_id, 'normal_qty', quantity, t);
+      await updateInventory(item.product_id, transfer.from_store_id, 'normal_qty', quantity, t, '',
+        await require('./foundationMovement').referenceReceipt(`transfer_item:${item.item_id}`, item.product_id, t));
       restoredQuantity += quantity;
       restoredItems.push({ productId: item.product_id, quantity });
     }
@@ -3546,7 +3547,7 @@ async function getSnTraceInboundDetail(ctx) {
  * @param {number} delta 变化量（入库为正，退库为负）
  * @param {object} transaction Sequelize事务
  */
-async function updateInventory(productId, storeId, field, delta, transaction, locationId = '') {
+async function updateInventory(productId, storeId, field, delta, transaction, locationId = '', foundationReceipt = null) {
   const normalizedLocationId = delta > 0
     ? await resolveInventoryWriteLocation(Location, { storeId, field, locationId, transaction })
     : (locationId || '');
@@ -3577,7 +3578,8 @@ async function updateInventory(productId, storeId, field, delta, transaction, lo
 
   let inv = await Inventory.findOne({
     where: { product_id: productId, store_id: storeId, location_id: normalizedLocationId },
-    transaction
+    transaction,
+    lock: transaction?.LOCK?.UPDATE
   });
 
   if (!inv) {
@@ -3599,7 +3601,7 @@ async function updateInventory(productId, storeId, field, delta, transaction, lo
   }
 
   const newVal = Math.max(0, (inv[field] || 0) + delta);
-  await inv.update({ [field]: newVal }, { transaction });
+  await inv.update({ [field]: newVal }, { transaction, foundationReceipt });
   await syncSerializedInventoryBalance({ productId, storeId, transaction });
 }
 
@@ -3663,8 +3665,9 @@ async function adjustProductLocation(ctx) {
     const source = await Inventory.findOne({ where: { product_id: productId, store_id: storeId, location_id: fromLocationId }, transaction: t, lock: t.LOCK.UPDATE });
     const available = Number(source?.[sourceField] || 0);
     if (available < quantity) ctx.throw(400, `原库位库存不足，当前可调整数量为 ${available}`);
+    const movementReceipt = await require('./foundationMovement').inventoryReceipt(productId, storeId, sourceField, fromLocationId, t);
     await updateInventory(productId, storeId, sourceField, -quantity, t, fromLocationId);
-    await updateInventory(productId, storeId, normalizeInventoryQuantityField(toLocation.type), quantity, t, toLocationId);
+    await updateInventory(productId, storeId, normalizeInventoryQuantityField(toLocation.type), quantity, t, toLocationId, movementReceipt);
     await recordBusinessAction({ businessType: 'inventory', businessId: productId, businessNo: `PRODUCT-LOCATION-${generateUUID().slice(0, 12)}`, action: 'product_location_adjust', user: ctx.state.user || {}, comment: `非SN商品库位调整：${fromLocation.name} → ${toLocation.name}`, detail: { productId, storeId, fromLocationId, toLocationId, quantity }, transaction: t });
     await t.commit();
     ctx.body = { code: 0, message: '库存库位调整成功', data: { productId, storeId, fromLocationId, toLocationId, quantity } };
@@ -4150,7 +4153,7 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
             location_id: locationId,
             inbound_time: new Date(),
             remark: item.remark || salesReturnSn.remark || ''
-          }, { transaction: t });
+          }, { transaction: t, foundationReceipt: await require('./foundationMovement').returnReceipt(inbound, dbItem, t) });
           await dbItem.update({
             sn_id: salesReturnSn.sn_id,
             sn_code: salesReturnSn.sn_code,
@@ -4342,14 +4345,25 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
         await ensureProductPnMaster({ productId: item.productId, pnCode: savedPnCode, transaction: t });
       }
 
-      await updateInventory(item.productId, inbound.store_id, inventoryType, quantity, t, locationId);
+      const foundationReceipt = isPurchaseInbound && purchaseRequest ? {
+        productId: item.productId, purchaseId: purchaseRequest.request_id,
+        purchaseNo: purchaseRequest.request_no, receiptItemId: dbItem.item_id,
+        invoiceType: purchaseRequest.invoice_type, unitCost: Number(dbItem.unit_price),
+        costMode: requestedCostMode
+      } : isSalesReturnInbound ? await require('./foundationMovement').returnReceipt(inbound, dbItem, t)
+        : isTransferInbound ? await require('./foundationMovement').transferReceipt(inbound, dbItem, t) : null;
+      if (dbItem.sn_id && foundationReceipt) {
+        const receivedSn = await ProductSn.findByPk(dbItem.sn_id, { transaction: t });
+        if (receivedSn) await require('./foundationIntake').captureSn(receivedSn, { transaction: t, foundationReceipt });
+      }
+      await updateInventory(item.productId, inbound.store_id, inventoryType, quantity, t, locationId, foundationReceipt);
       await ensureDefaultProductPricing(product, dbItem.unit_price, user, t);
 
       await require('../purchase/zeroCost').recordReceipt(inbound, dbItem, dbItem.sn_id ? { sn_id: dbItem.sn_id } : null, user, t);
       if (inventoryType === 'normal_qty' && dbItem.product_type) {
         const typeField = PRODUCT_TYPE_TO_FIELD[dbItem.product_type];
         if (typeField) {
-          await updateInventory(item.productId, inbound.store_id, typeField, quantity, t, locationId);
+          await updateInventory(item.productId, inbound.store_id, typeField, quantity, t, locationId, foundationReceipt);
         }
       }
     }
@@ -5197,6 +5211,7 @@ async function confirmTransferOutPartial(ctx) {
       const availableQty = await getTransferableStock(product, requestItem.product_id, transfer.from_store_id, t);
       if (availableQty < selectedQuantity) ctx.throw(400, `商品 ${product.name} 库存不足`);
       await requestItem.update({ quantity: selectedQuantity, pn_code: selectedPn }, { transaction: t });
+      await require('./foundationMovement').saveInventory(`transfer_item:${requestItem.item_id}`, requestItem.product_id, transfer.from_store_id, 'normal_qty', '', t);
       await updateInventory(requestItem.product_id, transfer.from_store_id, 'normal_qty', -selectedQuantity, t);
       outboundQuantity += selectedQuantity;
     }
@@ -5450,7 +5465,10 @@ async function confirmTransferOut(ctx) {
       }
 
       if (snId && Number(product?.need_sn) === 1) await syncSerializedInventoryBalance({ productId: item.product_id, storeId: transfer.from_store_id, transaction: t });
-      else await updateInventory(item.product_id, transfer.from_store_id, 'normal_qty', -quantity, t);
+      else {
+        await require('./foundationMovement').saveInventory(`transfer_item:${item.item_id}`, item.product_id, transfer.from_store_id, 'normal_qty', '', t);
+        await updateInventory(item.product_id, transfer.from_store_id, 'normal_qty', -quantity, t);
+      }
     }
 
     await transfer.update({
@@ -5706,7 +5724,8 @@ async function confirmTransferIn(ctx) {
       if (snId && Number(product?.need_sn) === 1) {
         await syncSerializedInventoryBalance({ productId: item.product_id, storeId: transfer.to_store_id, transaction: t });
       } else if (!alreadyInDestination) {
-        await updateInventory(item.product_id, transfer.to_store_id, 'normal_qty', quantity, t, locationId);
+        await updateInventory(item.product_id, transfer.to_store_id, 'normal_qty', quantity, t, locationId,
+          await require('./foundationMovement').referenceReceipt(`transfer_item:${item.item_id}`, item.product_id, t));
       }
     }
 
@@ -6242,6 +6261,15 @@ async function createConversion(ctx) {
     const sourceAction = conversionType === 'assemble' ? 'inventory_assemble_source' : 'inventory_split_source';
     const targetAction = conversionType === 'assemble' ? 'inventory_assemble_target' : 'inventory_split_target';
     const splitRemainingCost = conversionType === 'split' ? money(totalSourceCost - totalTargetCost) : 0;
+    const movement = require('./foundationMovement');
+    const conversionFacts = [];
+    for (const row of sourceRows) {
+      const evidence = row.snRecord
+        ? await movement.referenceReceipt(`sn_current:${row.snRecord.sn_id}`, row.product_id, t)
+        : await movement.inventoryReceipt(row.product_id, storeId, row.inventory_type, row.location_id, t);
+      await movement.save(`conversion_source:${conversionId}:${row.product_id}:${row.location_id || ''}`, row.product_id, evidence, t);
+      conversionFacts.push({ invoiceType: evidence.invoiceType, status: evidence.invoiceType ? 'confirmed' : 'pending', basisId: evidence.basisIds[0] });
+    }
 
     for (const row of sourceRows) {
       if (row.snRecord) {
@@ -6278,6 +6306,8 @@ async function createConversion(ctx) {
 
     for (const row of targetRows) {
       let snId = null;
+      const foundationReceipt = movement.consensus(row.product_id, conversionFacts, `conversion:${conversionId}`);
+      if (serviceCost > 0) { foundationReceipt.invoiceType = null; foundationReceipt.reason = '库存转换含服务成本，需确认服务采购票税'; }
       if (Number(row.product.need_sn) === 1) {
         const pnMaster = await ensurePn(row.product_id, row.pn_code, t);
         snId = generateUUID();
@@ -6298,7 +6328,7 @@ async function createConversion(ctx) {
           batch_no: conversionNo,
           remark: `库存${conversionType === 'assemble' ? '组装' : '拆分'}生成，单号：${conversionNo}`,
           is_deleted: 0
-        }, { transaction: t });
+        }, { transaction: t, foundationReceipt });
         await SnLog.create({
           log_id: generateUUID(),
           sn_id: snId,
@@ -6312,7 +6342,7 @@ async function createConversion(ctx) {
         }, { transaction: t });
       }
 
-      await updateInventory(row.product_id, storeId, row.inventory_type, Number(row.quantity || 1), t, row.location_id);
+      await updateInventory(row.product_id, storeId, row.inventory_type, Number(row.quantity || 1), t, row.location_id, foundationReceipt);
       await createConversionItem(conversionId, { ...row, sn_id: snId }, t);
     }
 
@@ -6419,7 +6449,8 @@ async function voidConversion(ctx) {
         await setProductCostPrice(item.product_id, item.unit_cost || 0, user, t);
       }
       if (conversion.conversion_type !== 'split') {
-        await updateInventory(item.product_id, conversion.store_id, item.inventory_type || 'normal_qty', Number(item.quantity || 1), t, item.location_id || '');
+        await updateInventory(item.product_id, conversion.store_id, item.inventory_type || 'normal_qty', Number(item.quantity || 1), t, item.location_id || '',
+          await require('./foundationMovement').referenceReceipt(`conversion_source:${conversion.conversion_id}:${item.product_id}:${item.location_id || ''}`, item.product_id, t));
       }
     }
 

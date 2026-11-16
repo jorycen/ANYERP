@@ -669,8 +669,11 @@ async function importManufacturerPrices(ctx) {
     const soPolicy = String(getRowValue(row, ['SO政策', 'SO政策说明', 'so_policy'])).trim();
     const poPolicy = String(getRowValue(row, ['PO政策', 'PO政策说明', 'po_policy'])).trim();
     const otherPolicy = String(getRowValue(row, ['其他政策', '其他政策说明', 'other_policy'])).trim();
-    const effectiveDate = new Date();
-    const expireDate = null;
+    const effectiveDateValue = getRowValue(row, ['生效日期', '有效期开始', '有效开始日期', 'effective_date', 'effectiveDate']);
+    const expireDateValue = getRowValue(row, ['失效日期', '有效期结束', '有效结束日期', 'expire_date', 'expireDate']);
+    // 兼容历史模板：未提供生效日期时沿用原规则，以本次上传时间作为生效时间。
+    const effectiveDate = effectiveDateValue ? parseDate(effectiveDateValue) : new Date();
+    const expireDate = expireDateValue ? parseDate(expireDateValue) : null;
 
     if (!pn) {
       errors.push({ row: rowNo, message: '厂商编号不能为空' });
@@ -678,6 +681,18 @@ async function importManufacturerPrices(ctx) {
     }
     if (!Number.isFinite(settlementPrice) || settlementPrice <= 0) {
       errors.push({ row: rowNo, pn, message: '结算价必须大于0' });
+      continue;
+    }
+    if (!effectiveDate) {
+      errors.push({ row: rowNo, pn, message: '生效日期格式无效' });
+      continue;
+    }
+    if (expireDateValue && !expireDate) {
+      errors.push({ row: rowNo, pn, message: '失效日期格式无效' });
+      continue;
+    }
+    if (expireDate && expireDate < effectiveDate) {
+      errors.push({ row: rowNo, pn, message: '失效日期不能早于生效日期' });
       continue;
     }
 

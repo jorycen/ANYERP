@@ -283,7 +283,10 @@ async function updateInventoryQty(productId, storeId, inventoryType, delta, tran
       { status: 409 }
     );
   }
-  await row.update({ [inventoryType]: next }, { transaction });
+  await row.update({ [inventoryType]: next }, { transaction, foundationReceipt: delta > 0 ? {
+    productId, invoiceType: null, source: 'batch_inventory_adjustment',
+    reason: '批量盘盈/补录没有采购凭证关联，请在库存基础资料确认本批票税'
+  } : null });
   return { before: current, after: next };
 }
 

@@ -348,7 +348,7 @@ export default {
   batchAdjustResourceRights: (data) => api.post('/inventory/resource-rights/batch-adjust', data),
   importEducationSubsidyPolicies: (file) => {
     const formData = new FormData(); formData.append('file', file)
-    return api.post('/inventory/resource-rights/education-policy/import', formData, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 180000 })
+    return api.post('/inventory/resource-rights/education-policy/import', formData, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 600000 })
   },
   getSalesCashRebatePolicies: (params) => api.get('/inventory/sales-cash-rebates/policies', { params }),
   getSalesCashRebateTemplate: () => api.get('/inventory/sales-cash-rebates/policies/template', { responseType: 'blob' }),
