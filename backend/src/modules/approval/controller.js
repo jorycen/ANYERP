@@ -349,7 +349,7 @@ async function listInstances(ctx) {
   if (storeWhere) where[Op.and] = [...(where[Op.and] || []), storeWhere];
   const handledFilters = require('./handledFilters');
   let range;
-  if (scope === 'handled') {
+  if (scope === 'handled' || scope === 'mine') {
     try {
       range = handledFilters.dateRange(ctx.query);
       if (ctx.query.title) where.title = { [Op.substring]: String(ctx.query.title).trim() };
@@ -359,7 +359,7 @@ async function listInstances(ctx) {
         const condition = handledFilters.productFilter(require('../../models'), require('./businessRuntime').registry, kind, ctx.query[kind]);
         if (condition) where[Op.and] = [...(where[Op.and] || []), condition];
       }
-      if (range && ctx.query.dateType === 'submitted') where.create_time = range;
+      if (range && (scope === 'mine' || ctx.query.dateType === 'submitted')) where.create_time = range;
     } catch (error) { ctx.throw(400, error.message); }
   }
   let handledTasks = [];
@@ -401,6 +401,10 @@ async function listInstances(ctx) {
     include: [{ model: ApprovalTask, as: 'Tasks', attributes: [], required: true,
       where: { assignee_staff_id: ctx.state.user.staffId, status: { [Op.in]: ['approved','rejected'] } } }],
     group: ['ApprovalFlowInstance.business_type'], raw: true
+  })).map(row => row.business_type) : scope === 'mine' ? (await ApprovalFlowInstance.findAll({
+    attributes: ['business_type'],
+    where: instanceAccessWhere(ctx.state.user, 'mine'),
+    group: ['business_type'], raw: true
   })).map(row => row.business_type) : [];
   const rows = result.rows;
   await enrichInstanceProgress(rows);
@@ -429,7 +433,7 @@ async function listInstances(ctx) {
     return data;
   });
   ctx.body = paginated
-    ? { list, total: result.count, page, pageSize, totalPages: Math.ceil(result.count / pageSize), ...(scope === 'handled' ? { businessTypes } : {}) }
+    ? { list, total: result.count, page, pageSize, totalPages: Math.ceil(result.count / pageSize), ...(['handled', 'mine'].includes(scope) ? { businessTypes } : {}) }
     : list;
 }
 

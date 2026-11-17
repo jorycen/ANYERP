@@ -59,7 +59,18 @@
         </el-tab-pane>
 
         <el-tab-pane label="我的申请" name="instances">
-          <el-table :data="instances" stripe border v-loading="loading">
+          <el-form inline class="handled-filters" @submit.prevent="searchInstances">
+            <el-form-item label="审批主题"><el-input v-model="instanceFilters.title" clearable placeholder="主题或业务单号关键词" @keyup.enter="searchInstances" /></el-form-item>
+            <el-form-item label="业务类型"><el-select v-model="instanceFilters.businessType" filterable clearable placeholder="全部类型" style="width:210px"><el-option v-for="item in instanceBusinessTypes" :key="item.value" :value="item.value" :label="item.label" /></el-select></el-form-item>
+            <el-form-item label="申请编号"><el-input v-model="instanceFilters.instanceNo" clearable placeholder="申请编号关键词" @keyup.enter="searchInstances" /></el-form-item>
+            <el-form-item label="单据状态"><el-select v-model="instanceFilters.status" clearable placeholder="全部状态" style="width:130px"><el-option label="审批中" value="pending" /><el-option label="已通过" value="approved" /><el-option label="已拒绝" value="rejected" /><el-option label="已取消" value="cancelled" /></el-select></el-form-item>
+            <el-form-item label="提交日期"><el-date-picker v-model="instanceDateRange" type="daterange" value-format="YYYY-MM-DD" start-placeholder="开始日期" end-placeholder="结束日期" style="width:250px" /></el-form-item>
+            <el-form-item label="PN"><el-input v-model="instanceFilters.pn" clearable maxlength="128" placeholder="PN关键词" @keyup.enter="searchInstances" /></el-form-item>
+            <el-form-item label="SN"><el-input v-model="instanceFilters.sn" clearable maxlength="128" placeholder="SN关键词" @keyup.enter="searchInstances" /></el-form-item>
+            <el-form-item><el-button type="primary" :loading="instancesLoading" @click="searchInstances">查询</el-button><el-button @click="resetInstanceFilters">重置</el-button></el-form-item>
+          </el-form>
+          <el-alert v-if="instancesError" :title="instancesError" type="error" :closable="false" show-icon style="margin-bottom:12px" />
+          <el-table :data="instances" stripe border v-loading="instancesLoading" empty-text="暂无符合条件的申请">
             <el-table-column prop="title" label="审批主题" min-width="220" />
             <el-table-column label="业务类型" width="150"><template #default="{ row }">{{ businessTypeText(row.business_type) }}</template></el-table-column>
             <el-table-column prop="instance_no" label="申请编号" width="190" />
@@ -77,6 +88,7 @@
               </template>
             </el-table-column>
           </el-table>
+          <el-pagination v-model:current-page="instancesPage" v-model:page-size="instancesPageSize" :total="instancesTotal" :page-sizes="[20, 50, 100]" :disabled="instancesLoading" layout="total, sizes, prev, pager, next, jumper" style="justify-content:flex-end;margin-top:16px;flex-wrap:wrap" @current-change="loadInstances" @size-change="onInstancePageSizeChange" />
         </el-tab-pane>
 
         <el-tab-pane label="我的审批" name="handled">
@@ -393,6 +405,25 @@ const tasks = ref([])
 const salesTasks = ref([])
 const moduleTasks = ref([])
 const instances = ref([])
+const instanceFilters = reactive({ title:'', businessType:'', instanceNo:'', status:'', pn:'', sn:'' })
+const instanceDateRange = ref([])
+const appliedInstanceFilters = ref({})
+const instanceBusinessTypes = ref([])
+const instancesLoading = ref(false)
+const instancesError = ref('')
+const instancesPage = ref(1)
+const instancesPageSize = ref(20)
+const instancesTotal = ref(0)
+function searchInstances() {
+  appliedInstanceFilters.value = { ...instanceFilters, startDate:instanceDateRange.value?.[0] || '', endDate:instanceDateRange.value?.[1] || '' }
+  instancesPage.value = 1
+  loadInstances()
+}
+function resetInstanceFilters() {
+  Object.assign(instanceFilters,{title:'',businessType:'',instanceNo:'',status:'',pn:'',sn:''})
+  instanceDateRange.value = []
+  searchInstances()
+}
 const handledFilters = reactive({ title:'', businessType:'', instanceNo:'', dateType:'reviewed', pn:'', sn:'', reviewStatus:'', status:'' })
 const handledDateRange = ref([])
 const appliedHandledFilters = ref({})
@@ -583,7 +614,30 @@ async function initializeFlows() {
   ElMessage.success('系统流程已补齐')
   await loadFlows()
 }
-async function loadInstances() { instances.value = (await api.getApprovalInstances({ scope: 'mine' })).data || [] }
+let instancesRequestId = 0
+async function loadInstances() {
+  const requestId = ++instancesRequestId
+  instancesLoading.value = true
+  instancesError.value = ''
+  try {
+    const response = await api.getApprovalInstances({ scope:'mine', ...appliedInstanceFilters.value, page:instancesPage.value, pageSize:instancesPageSize.value })
+    if (requestId !== instancesRequestId) return
+    const payload = response?.data
+    if (!payload || !Array.isArray(payload.list) || !Number.isFinite(Number(payload.total))) throw new Error('申请列表分页数据不可用，请刷新重试')
+    instances.value = payload.list
+    instancesTotal.value = Number(payload.total)
+    instanceBusinessTypes.value = (payload.businessTypes || []).map(value => ({value,label:businessTypeText(value)}))
+    if (!payload.list.length && instancesPage.value > 1 && instancesPage.value > Math.max(1, Math.ceil(instancesTotal.value / instancesPageSize.value))) {
+      instancesPage.value = Math.max(1, Math.ceil(instancesTotal.value / instancesPageSize.value))
+      return loadInstances()
+    }
+  } catch (error) {
+    if (requestId !== instancesRequestId) return
+    instances.value = []; instancesTotal.value = 0
+    instancesError.value = error.response?.data?.message || error.message || '查询我的申请失败，请重试'
+  } finally { if (requestId === instancesRequestId) instancesLoading.value = false }
+}
+function onInstancePageSizeChange() { instancesPage.value = 1; loadInstances() }
 let handledRequestId = 0
 async function loadHandledInstances() {
   const requestId = ++handledRequestId
