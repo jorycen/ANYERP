@@ -329,6 +329,32 @@ async function invoiceAdjustment(ctx, amount = 6000) {
     status: 'pending_finance', signed_amount: 0, reason: '原开票金额录入错误', correction_data: { input, evidence: '发票001', previewHash: selected.previewHash, result: selected.result } });
 }
 
+test('原单开普票兼容金额纠错，预览及审批保留票种和归档快照，不允许改为不开票或其他票种', async t => {
+  const f=invoiceFixture(t),ctx=context();
+  f.order.invoice_status='开普票';
+  t.mock.method(M.Store,'findByPk',async()=>({distributor_id:'D'}));
+  t.mock.method(M.ExpenseAccountingPeriod,'findOne',async()=>null);
+  const input=C.validate({adjustmentType:C.INVOICE_TYPE,invoiceAmount:6000,invoiceStatus:'开普票'});
+  assert.equal(input.invoiceStatus,'开普票');
+  const selected=await C.select(ctx,'O',input);
+  assert.equal(selected.result.beforeInvoiceStatus,'开普票');
+  assert.equal(selected.result.afterInvoiceStatus,'开普票');
+  assert.equal(f.order.invoice_amount,0);
+  for (const invoiceStatus of ['不开票','未知类型','']) {
+    assert.throws(()=>C.validate({adjustmentType:C.INVOICE_TYPE,invoiceAmount:6000,invoiceStatus}),/有效开票类型/);
+  }
+  for (const invoiceStatus of ['普通发票','开专票','增值税发票','专票13%']) {
+    await assert.rejects(C.select(ctx,'O',{...input,invoiceStatus}),/开票类型保持不变/);
+  }
+  const adjustment=row({adjustment_id:'IA-PU',adjustment_no:'PPA-PU',adjustment_type:C.INVOICE_TYPE,order_id:'O',store_id:'S',status:'pending_finance',signed_amount:0,
+    correction_data:{input,evidence:'普票凭证',previewHash:selected.previewHash,result:selected.result}});
+  const snapshotBefore=JSON.stringify(f.snapshot.toJSON());
+  await C.apply(ctx,adjustment,tx);
+  assert.equal(f.order.invoice_status,'开普票');
+  assert.equal(f.order.invoice_amount,6000);
+  assert.equal(JSON.stringify(f.snapshot.toJSON()),snapshotBefore);
+});
+
 test('开票金额格式、零元确认及存储长度明确校验', () => {
   assert.ok(C.INVOICE_TYPE.length <= 16);
   for (const invoiceAmount of [-1, true, '', null, '1.234', '1e3', Infinity, [6000], {}]) assert.throws(() => C.validate({adjustmentType:C.INVOICE_TYPE,invoiceAmount}), /开票金额/);

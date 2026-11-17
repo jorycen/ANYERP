@@ -8,6 +8,8 @@ const {fingerprint}=require('./correctionFingerprint');
 
 const TYPE = 'price_correction';
 const INVOICE_TYPE = 'invoice_amount';
+// 保留销售订单已存的类型原文；金额纠错不能借兼容映射改变票种。
+const ISSUED_INVOICE_TYPES = new Set(['普通发票', '开普票', '增值税发票', '开专票', '专票13%']);
 const isCorrection = type => [TYPE, INVOICE_TYPE].includes(type);
 const money = value => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 const plain = row => row?.toJSON ? row.toJSON() : { ...row };
@@ -21,7 +23,7 @@ function validate(body) {
   if (body.adjustmentType === INVOICE_TYPE) {
     if (!['number', 'string'].includes(typeof body.invoiceAmount) || !/^\d{1,9}(\.\d{1,2})?$/.test(String(body.invoiceAmount ?? ''))) fail('开票金额须为非负金额，最多两位小数', 400);
     if (Number(body.invoiceAmount) === 0 && body.confirmZero !== true && body.confirmZero !== 'true') fail('零元开票金额须明确确认', 400);
-    if (body.invoiceStatus !== undefined && !['普通发票', '增值税发票', '开专票', '专票13%'].includes(body.invoiceStatus)) fail('请选择有效开票类型，已开票不能改为不开票', 400);
+    if (body.invoiceStatus !== undefined && !ISSUED_INVOICE_TYPES.has(body.invoiceStatus)) fail('请选择有效开票类型，已开票不能改为不开票', 400);
     if (body.periodMode !== undefined && !['current', 'original'].includes(body.periodMode)) fail('调整归属月份无效', 400);
     return { type: INVOICE_TYPE, invoiceAmount: money(body.invoiceAmount), ...(body.invoiceStatus !== undefined ? { invoiceStatus: body.invoiceStatus } : {}), ...((body.periodMode !== undefined || body.invoiceStatus !== undefined) ? { periodMode: body.periodMode || 'current' } : {}) };
   }
@@ -148,7 +150,7 @@ async function select(ctx, orderId, input = null, transaction = null, includeInv
     if (GP.validPrice(input.invoiceAmount) === null) fail('开票金额必须为非负有限金额', 400);
     if (GP.validPrice(order.invoice_amount) === null || money(order.invoice_amount) !== money(snapshot.invoice_amount)) fail('订单开票金额与归档快照不一致，请先核实原单');
     const invoiceStatus = input.invoiceStatus || order.invoice_status;
-    if (!['普通发票', '增值税发票', '开专票', '专票13%'].includes(invoiceStatus)) fail('请选择补开后的开票类型；已开票不能改为不开票', 400);
+    if (!ISSUED_INVOICE_TYPES.has(invoiceStatus)) fail('请选择补开后的开票类型；已开票不能改为不开票', 400);
     if (order.invoice_status !== '不开票' && invoiceStatus !== order.invoice_status) fail('已开票订单仅支持金额调整，开票类型保持不变', 400);
     const originalMonth = month;
     const targetMonth = new Date(Date.now()+8*3600000).toISOString().slice(0,7);
