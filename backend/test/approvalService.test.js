@@ -10,6 +10,41 @@ const {
 } = require('../src/modules/approval/service');
 const M = require('../src/models');
 
+test('直属上级跨公司按节点范围核实明确授权，缺授权不放行', async t => {
+  const transaction = { marker: 'approval-transaction' };
+  const subject = {staff_id:47,status:1,is_deleted:0,store_id:'HOME',distributor_id:'DIST001',supervisor_staff_id:4};
+  const supervisor = {staff_id:4,status:1,is_deleted:0,distributor_id:'DIST001',role_code:'admin',Roles:[]};
+  let company = true, store = true;
+  t.mock.method(M.Staff,'findByPk',async()=>subject);
+  t.mock.method(M.Staff,'findAll',async options=>{
+    assert.equal(options.where.status,1); assert.equal(options.where.is_deleted,0);
+    return supervisor.status===1 && !supervisor.is_deleted ? [supervisor] : [];
+  });
+  t.mock.method(M.StaffDistributorPermission,'findAll',async options=>{
+    assert.equal(options.transaction,transaction); assert.equal(options.where.distributor_id,'DIST002');
+    return company ? [{staff_id:4}] : [];
+  });
+  t.mock.method(M.StaffStorePermission,'findAll',async options=>{
+    assert.equal(options.transaction,transaction); assert.equal(options.where.store_id,'ORDER_STORE');
+    return store ? [{staff_id:4}] : [];
+  });
+  const instance={subject_staff_id:47,store_id:'ORDER_STORE',distributor_id:'DIST002'};
+  const node=scope=>({name:'直属上级审批',approvers:[{type:'direct_supervisor',scope}]});
+  assert.deepEqual(await resolveApprovers(node('subject_store'),instance,transaction),[4]);
+  company=false;
+  await assert.rejects(resolveApprovers(node('subject_store'),instance,transaction),/未解析到可用审批人/);
+  company=true; store=false;
+  await assert.rejects(resolveApprovers(node('subject_store'),instance,transaction),/未解析到可用审批人/);
+  assert.deepEqual(await resolveApprovers(node('subject_distributor'),instance,transaction),[4]);
+  await assert.rejects(resolveApprovers(node('subject_store'),{...instance,store_id:null},transaction),/未解析到可用审批人/);
+  store=true; supervisor.status=0;
+  await assert.rejects(resolveApprovers(node('subject_store'),instance,transaction),/未解析到可用审批人/);
+  supervisor.status=1; supervisor.is_deleted=1;
+  await assert.rejects(resolveApprovers(node('subject_store'),instance,transaction),/未解析到可用审批人/);
+  supervisor.is_deleted=0; subject.supervisor_staff_id=null;
+  await assert.rejects(resolveApprovers(node('subject_store'),instance,transaction),/未解析到可用审批人/);
+});
+
 test('审批流程配置支持串行签批和或签', () => {
   const config = normalizeFlowConfig({
     nodes: [

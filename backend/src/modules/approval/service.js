@@ -168,9 +168,15 @@ async function resolveApprovers(node, instance, transaction) {
   const ids = [];
   const fixedUserIds = new Set();
   const explicitlyAuthorizedStoreIds = new Set();
+  const supervisorStoreIds = new Set();
+  const supervisorDistributorIds = new Set();
   for (const rule of node.approvers || []) {
     if (rule.type === 'fixed_user' && rule.staffId) fixedUserIds.add(Number(rule.staffId));
     const resolvedIds = await resolveRule(rule, subject, transaction);
+    if (rule.type === 'direct_supervisor') {
+      const scopeIds = rule.scope === 'subject_distributor' ? supervisorDistributorIds : supervisorStoreIds;
+      resolvedIds.forEach(id => scopeIds.add(Number(id)));
+    }
     const usesExplicitStorePermission = ['store_staff', 'store_manager'].includes(rule.type)
       || (rule.type === 'role' && ['subject_store', 'subject_distributor'].includes(rule.scope || 'subject_store'));
     if (usesExplicitStorePermission) {
@@ -183,9 +189,33 @@ async function resolveApprovers(node, instance, transaction) {
     include: [{ model: Role, as: 'Roles', attributes: ['role_code'], through: { attributes: [] }, required: false }],
     transaction
   }) : [];
+  // 直属上级关系只确定候选人；跨公司时仍须核实该候选人的明确授权。
+  // 门店范围同时要求公司与该门店授权，不能用其他公司的主归属替代授权。
+  const crossSupervisorIds = candidates.filter(staff =>
+    subject.distributor_id && String(staff.distributor_id) !== String(subject.distributor_id)
+    && (supervisorStoreIds.has(Number(staff.staff_id)) || supervisorDistributorIds.has(Number(staff.staff_id)))
+  ).map(staff => Number(staff.staff_id));
+  const authorizedSupervisorIds = new Set();
+  if (crossSupervisorIds.length) {
+    const companyPermissions = await StaffDistributorPermission.findAll({
+      where: { staff_id: { [Op.in]: crossSupervisorIds }, distributor_id: subject.distributor_id },
+      attributes: ['staff_id'], transaction
+    });
+    const companyIds = new Set(companyPermissions.map(row => Number(row.staff_id)));
+    const storePermissions = subject.store_id && crossSupervisorIds.some(id => supervisorStoreIds.has(id))
+      ? await StaffStorePermission.findAll({
+        where: { staff_id: { [Op.in]: crossSupervisorIds }, store_id: subject.store_id },
+        attributes: ['staff_id'], transaction
+      }) : [];
+    const storeIds = new Set(storePermissions.map(row => Number(row.staff_id)));
+    crossSupervisorIds.forEach(id => {
+      if (companyIds.has(id) && (supervisorDistributorIds.has(id) || storeIds.has(id))) authorizedSupervisorIds.add(id);
+    });
+  }
   const eligible = candidates
     .filter(staff => fixedUserIds.has(Number(staff.staff_id))
       || explicitlyAuthorizedStoreIds.has(Number(staff.staff_id))
+      || authorizedSupervisorIds.has(Number(staff.staff_id))
       || !subject.distributor_id
       || staff.distributor_id === subject.distributor_id
       || staff.role_code === 'boss'
