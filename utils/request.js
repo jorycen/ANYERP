@@ -1,4 +1,4 @@
-const API_BASE_URL = 'https://anyerp-api-249791-6-1410946266.sh.run.tcloudbase.com/api/v1';
+const API_BASE_URL = 'https://jorycen.fun/api/v1';
 const CLOUDBASE_ENV_ID = 'cloud1-8glwjlnq4c74f7f1';
 const CLOUD_RUN_SERVICE = 'anyerp-api';
 const API_PREFIX = '/api/v1';
