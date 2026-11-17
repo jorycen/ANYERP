@@ -86,7 +86,7 @@ async function assertSnEligible(sn, { transaction = null, targetLocation = null,
 }
 
 async function recordSnReentry(sn, previousStatus, {transaction, actor, document} = {}) {
-  if (previousStatus !== 'out_stock') return;
+  if (!['out_stock', 'returned'].includes(previousStatus)) return;
   if (!transaction) throw new Error('SN重新入库记录必须与入库使用同一事务');
   await require('../models').SnLog.create({
     log_id:require('crypto').randomBytes(16).toString('hex'),sn_id:sn.sn_id,sn_code:sn.sn_code,
