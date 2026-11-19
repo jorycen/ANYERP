@@ -35,6 +35,12 @@ async function captureSn(value,options={}){
   if(!newlyCreated&&previous&&previous.status!=='out_stock'&&basis.product_id===sn.product_id){
     const patch={};
     if(String(previous.inbound_price)!==String(sn.inbound_price))patch.purchase_cost=Number(sn.inbound_price)>0||zeroConfirmed?F.money(sn.inbound_price):null;
+    // The intake snapshot is a business fact. Existing foundations must also
+    // follow an explicit SN pricing-mode change, while preserving a deliberate
+    // manual override made through SN cost-mode maintenance.
+    const sourceData=typeof basis.source_data==='string' ? (()=>{try{return JSON.parse(basis.source_data)||{};}catch(_){return {};}})() : (basis.source_data||{});
+    const explicitMode=sn.gross_profit_use_standard_price===1?'COMPANY_PRICE':sn.gross_profit_use_standard_price===0?'PURCHASE_PRICE':null;
+    if(explicitMode && !sourceData.pricingModeOverride && basis.cost_mode!==explicitMode) patch.cost_mode=explicitMode;
     if(Object.keys(patch).length){const before=basis.toJSON();await basis.update({...patch,revision:Number(basis.revision)+1,updated_by:'system',update_time:new Date()},{transaction});
       await require('../../utils/businessActionLog').recordBusinessAction({businessType:'inventory_foundation',businessId:basisId,action:'sync_inventory_fact',user:{name:'system'},comment:'原库存业务确认的同周期基础信息变更',detail:{before,after:basis.toJSON(),snId:sn.sn_id},transaction});}
   }
