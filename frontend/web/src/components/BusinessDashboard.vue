@@ -236,6 +236,11 @@
           <el-table-column v-if="dashboard.meta.canViewProfit" prop="grossMargin" sortable="custom" label="毛利率" width="105" align="right"><template #default="{row}">{{ row.grossMargin == null ? '—' : `${row.grossMargin}%` }}</template></el-table-column>
           <el-table-column v-if="dashboard.meta.canViewProfit" prop="taskCompletionRate" sortable="custom" label="任务完成率" min-width="155"><template #default="{row}"><el-progress v-if="row.taskCompletionRate != null" :percentage="Math.min(100,Math.max(0,row.taskCompletionRate))" :format="()=>`${row.taskCompletionRate}%`" /><span v-else>未配置</span></template></el-table-column>
           <el-table-column v-if="dashboard.meta.canViewProfit" prop="inventoryAmount" sortable="custom" label="库存金额" min-width="145" align="right"><template #default="{row}">{{ formatCurrency(row.inventoryAmount) }}</template></el-table-column>
+          <el-table-column prop="laptopOrderCount" label="笔记本" width="82" align="right" />
+          <el-table-column prop="tabletOrderCount" label="平板" width="72" align="right" />
+          <el-table-column prop="phoneOrderCount" label="手机" width="72" align="right" />
+          <el-table-column prop="desktopOrderCount" label="台机" width="72" align="right" />
+          <el-table-column prop="serviceOrderCount" label="服务" width="72" align="right" />
           <el-table-column label="销售趋势（7日）" width="155"><template #default="{row}"><svg viewBox="0 0 140 36" width="140" height="36" role="img" :aria-label="`${row.storeName}最近7日销售趋势`"><title>{{ (row.salesTrend||[]).map(point=>`${point.bucket}：${point.salesAmount}元`).join('；') }}</title><polyline :points="sparklinePoints(row.salesTrend)" fill="none" stroke="#3478ff" stroke-width="2" /></svg></template></el-table-column>
           <el-table-column label="操作" width="90"><template #default="{row}"><el-button link type="primary" @click="openStoreAnalysis(row)">查看详情</el-button></template></el-table-column>
         </el-table>

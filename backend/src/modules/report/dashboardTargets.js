@@ -11,8 +11,10 @@ function monthSlices(startDate, endDate) {
   return out;
 }
 function prorate(tasks, slices, storeId) {
+  // 经营任务是月度目标；查询日期只决定统计实际毛利的范围，不按经过天数折算任务。
+  // 否则月中查询会把完整目标缩小，出现实际毛利未完成整月任务却显示超过 100%。
   const rows = slices.map(slice => { const matching = tasks.filter(t => t.month_key === slice.month && String(t.target_id) === String(storeId) && t.target_type === 'store' && t.status === 1);
-    return matching.length === 1 && Number(matching[0].gross_profit_target) > 0 ? Number(matching[0].gross_profit_target) * slice.days / slice.totalDays : null; });
+    return matching.length === 1 && Number(matching[0].gross_profit_target) > 0 ? Number(matching[0].gross_profit_target) : null; });
   return rows.some(n => n === null) ? null : money(rows.reduce((s, n) => s + n, 0));
 }
 async function load(storeIds, range) {

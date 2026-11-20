@@ -604,6 +604,17 @@ class DashboardService {
       overallRows.sort((a,b)=>(a[sort]==null)-(b[sort]==null) || Number(b[sort])-Number(a[sort]) || String(a.storeName).localeCompare(String(b.storeName),'zh-CN'));
     }
     const storeProductTypeMap = new Map((storeProductTypeQuantities || []).map(row => [String(row.storeId), row]));
+    const attachStoreCategoryOrders = (row) => {
+      const category = storeProductTypeMap.get(String(row.storeId)) || {};
+      return {
+        ...row,
+        laptopOrderCount: Number(category.laptopOrderCount || 0),
+        tabletOrderCount: Number(category.tabletOrderCount || 0),
+        phoneOrderCount: Number(category.phoneOrderCount || 0),
+        desktopOrderCount: Number(category.desktopOrderCount || 0),
+        serviceOrderCount: Number(category.serviceOrderCount || 0)
+      };
+    };
     const productQuantities = [...storeProductTypeMap.values()].reduce((totals, row) => ({
       laptop: totals.laptop + Number(row.laptopQuantity || 0),
       phone: totals.phone + Number(row.phoneQuantity || 0),
@@ -644,15 +655,12 @@ class DashboardService {
       kpis: buildKpis(current, yoy, previous, inventory, profitVisible),
       trend: alignTrend(currentTrend, yoyTrend, previousTrend, profitVisible),
       taskProgress,
-      storeRanking: overallRows || storeRanking.map(row => ({
+      storeRanking: (overallRows || storeRanking).map(row => ({
         ...row,
         salesAmount: roundMoney(row.salesAmount),
         grossProfit: profitVisible ? roundMoney(row.grossProfit) : null,
         orderCount: Number(row.orderCount || 0),
-        laptopQuantity: Number(storeProductTypeMap.get(String(row.storeId))?.laptopQuantity || 0),
-        tabletQuantity: Number(storeProductTypeMap.get(String(row.storeId))?.tabletQuantity || 0),
-        phoneQuantity: Number(storeProductTypeMap.get(String(row.storeId))?.phoneQuantity || 0),
-        desktopQuantity: Number(storeProductTypeMap.get(String(row.storeId))?.desktopQuantity || 0),
+        ...attachStoreCategoryOrders(row),
         categoryBreakdown: storeProductTypeMap.get(String(row.storeId))?.categoryBreakdown || {},
         periodCompare: comparisonRate(row.salesAmount, previousStoreMap.get(String(row.storeId))?.salesAmount)
       })),

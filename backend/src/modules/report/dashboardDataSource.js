@@ -460,7 +460,8 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
                 MAX(p.CATEGORY) AS productRootCategory,
                 MAX(p.CATEGORY) AS categoryPath,
                 MAX(COALESCE(p.NAME, oi.PRODUCT_NAME)) AS productName,
-                SUM(COALESCE(oi.QUANTITY, 0) * ${factor}) AS quantity
+                SUM(COALESCE(oi.QUANTITY, 0) * ${factor}) AS quantity,
+                COUNT(DISTINCT o.ORDER_ID) AS orderCount
            FROM T_ORDER o
            INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
            LEFT JOIN T_PRODUCT p ON p.PRODUCT_ID = oi.PRODUCT_ID
@@ -482,10 +483,11 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
       const categoryPath = categoryIndex.byId.get(String(row.categoryId || ''))?.path || row.categoryPath || '';
       const rootCategory = String(row.productRootCategory || '').split('/')[0].trim().toLocaleLowerCase();
       let key = '';
-      if (/^(平板|tablet)$/.test(rootCategory)) key = 'tabletQuantity';
-      else if (/^(手机|phone)$/.test(rootCategory)) key = 'phoneQuantity';
-      else if (/^(台机|台式机|desktop)$/.test(rootCategory)) key = 'desktopQuantity';
-      else if (/^(笔记本|laptop|notebook)$/.test(rootCategory)) key = 'laptopQuantity';
+      if (/^(售后|after[-_ ]?sales)$/.test(rootCategory)) key = 'serviceOrderCount';
+      else if (/^(平板|tablet)$/.test(rootCategory)) key = 'tabletOrderCount';
+      else if (/^(手机|phone)$/.test(rootCategory)) key = 'phoneOrderCount';
+      else if (/^(台机|台式机|desktop)$/.test(rootCategory)) key = 'desktopOrderCount';
+      else if (/^(笔记本|laptop|notebook)$/.test(rootCategory)) key = 'laptopOrderCount';
       if (!key) return;
       const storeId = String(row.storeId || '');
       const result = byStore.get(storeId) || {
@@ -493,6 +495,11 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
         tabletQuantity: 0,
         phoneQuantity: 0,
         desktopQuantity: 0,
+        laptopOrderCount: 0,
+        tabletOrderCount: 0,
+        phoneOrderCount: 0,
+        desktopOrderCount: 0,
+        serviceOrderCount: 0,
         categoryBreakdown: {
           laptopQuantity: new Map(),
           tabletQuantity: new Map(),
@@ -501,11 +508,13 @@ class RealtimeSqlDashboardDataSource extends DashboardDataSource {
         }
       };
       const quantity = Number(row.quantity || 0);
-      result[key] += quantity;
+      const quantityKey = key.replace('OrderCount', 'Quantity');
+      if (quantityKey in result) result[quantityKey] += quantity;
+      result[key] += Number(row.orderCount || 0);
       const pathParts = String(categoryPath || '').split('/').map(part => part.trim()).filter(Boolean);
       const fourthLevelName = pathParts[3] || '未维护四级分类';
       const categoryMap = result.categoryBreakdown[key];
-      categoryMap.set(fourthLevelName, (categoryMap.get(fourthLevelName) || 0) + quantity);
+      if (categoryMap) categoryMap.set(fourthLevelName, (categoryMap.get(fourthLevelName) || 0) + quantity);
       byStore.set(storeId, result);
     });
     return [...byStore.entries()].map(([storeId, quantities]) => {
