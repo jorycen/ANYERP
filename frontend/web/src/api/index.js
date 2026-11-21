@@ -1,4 +1,21 @@
 const pendingSalesSaves = new Map()
+const pendingSalesCreates = new Map()
+function createSalesOnce(url, data) {
+  const key = JSON.stringify([url, data])
+  let attempt = pendingSalesCreates.get(key)
+  if (!attempt) {
+    attempt = { id: crypto.randomUUID() }
+    pendingSalesCreates.set(key, attempt)
+  }
+  if (attempt.inFlight) return attempt.inFlight
+  attempt.inFlight = api.post(url, { ...data, createRequestId: attempt.id })
+    .then(result => {
+      if (result.code === 0) pendingSalesCreates.delete(key)
+      return result
+    })
+    .finally(() => { attempt.inFlight = null })
+  return attempt.inFlight
+}
 function saveSalesDraftOnce(id, data) {
   const key = JSON.stringify({ id, ...data, requestId: undefined })
   if (data.saveContract) {
@@ -283,8 +300,8 @@ export default {
     params,
     responseType: 'blob'
   }),
-  createSales: (data) => api.post('/sales/create', data),
-  saveSalesDraft: (data) => api.post('/sales/draft', data),
+  createSales: (data) => data.orderId ? api.post('/sales/create', data) : createSalesOnce('/sales/create', data),
+  saveSalesDraft: (data) => createSalesOnce('/sales/draft', data),
   updateSalesDraft: saveSalesDraftOnce,
   submitSalesDraft: (id) => api.post(`/sales/draft/${id}/submit`),
   deleteSalesDraft: (id) => api.delete(`/sales/draft/${id}`),

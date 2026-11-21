@@ -2564,6 +2564,39 @@ async function previewCouponReturn(ctx) {
     notice: '优惠券由原平台退回；门店只退其他实收款，正式金额以提交校验为准' } };
 }
 async function create(ctx) {
+  const body = ctx.request.body || {};
+  if (body.orderId || body.createRequestId == null) return createSalesRecord(ctx);
+  if (typeof body.createRequestId !== 'string' || !/^[\w-]{8,64}$/.test(body.createRequestId)) {
+    ctx.throw(400, '新建订单请求编号无效');
+  }
+  const { createHash } = require('node:crypto');
+  const hash = value => createHash('sha256').update(value).digest('hex');
+  const canonical = value => Array.isArray(value) ? value.map(canonical)
+    : value && typeof value === 'object'
+      ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])]))
+      : value;
+  const user = ctx.state.user;
+  const logId = hash(JSON.stringify(['sales_create', user.staffId, body.createRequestId])).slice(0, 32);
+  const { createTime, createDate, create_time, create_date, ...orderContent } = body;
+  const fingerprint = hash(JSON.stringify(canonical(orderContent)));
+  const replay = async () => {
+    const entry = await saveModels.BusinessActionLog.findByPk(logId);
+    if (!entry || entry.business_type !== 'sales_create') return false;
+    const saved = JSON.parse(entry.detail_json);
+    await assertOrderStoreVisible(saved.storeId, user);
+    if (saved.fingerprint !== fingerprint) ctx.throw(409, '同一提交编号的订单内容已变化');
+    ctx.body = saved.response;
+    return true;
+  };
+  if (await replay()) return;
+  try {
+    await createSalesRecord(ctx, { logId, fingerprint });
+  } catch (error) {
+    if (error.name !== 'SequelizeUniqueConstraintError' || !(await replay())) throw error;
+  }
+}
+
+async function createSalesRecord(ctx, creation) {
   const user = ctx.state.user;
   const requestBody = ctx.request.body || {};
   const {
@@ -2693,7 +2726,13 @@ async function create(ctx) {
   let draftToken = null;
   let savedDraft = null;
   let draftReplayed = false;
+  let response;
   await sequelize.transaction(async (transaction) => {
+  const creationLog = creation && await saveModels.BusinessActionLog.create({
+    log_id: creation.logId, business_type: 'sales_create', business_id: orderId,
+    business_no: orderNo, action: 'created', actor_staff_id: user.staffId,
+    actor_name: user.name || '', create_time: auditTime
+  }, { transaction });
   if (existingOrder) {
     await existingOrder.reload({ transaction, lock: transaction.LOCK.UPDATE });
     draftToken = await saveContract.begin(saveModels, existingOrder, requestBody, user, transaction);
@@ -2815,15 +2854,12 @@ async function create(ctx) {
   const persisted = existingOrder || await Order.findByPk(orderId, { transaction });
   savedDraft = await saveContract.finish(saveModels, persisted, requestBody, user, transaction, draftToken,
     { orderId, orderNo, status: finalOrderStatus, message: '订单已保存' });
-  });
-
-  if (draftReplayed) { ctx.body = savedDraft; return; }
   const pricing = pricingCompleteness(grossProfitSnapshot?.product_pricing_details);
   const taxPending = grossProfitSnapshot?.tax_calculation_status === 'pending';
   const grossProfitAmount = grossProfitSnapshot && !taxPending && pricing.pricingComplete ? Number(grossProfitSnapshot.gross_profit_amount || 0) : null;
   const negativeGrossProfit = !isDraft && grossProfitAmount < 0;
 
-  ctx.body = {
+  response = {
     ...savedDraft,
     orderId, orderNo,
     // 保留旧字段兼容已有客户端，但不再返回低价审批结果。
@@ -2839,6 +2875,13 @@ async function create(ctx) {
         ? `订单已提交，当前为负毛利（¥${grossProfitAmount.toFixed(2)}），归档时将进入审批`
         : '订单创建成功')
   };
+  if (creationLog) {
+    await creationLog.update({
+      detail_json: JSON.stringify({ storeId: actualStoreId, fingerprint: creation.fingerprint, response })
+    }, { transaction });
+  }
+  });
+  ctx.body = draftReplayed ? savedDraft : response;
 }
 
 function canEditSalesDraft(user, order) {
