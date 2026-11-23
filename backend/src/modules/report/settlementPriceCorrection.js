@@ -57,14 +57,14 @@ function snapshotPatch(snapshot, itemId, unitPrice, adjustmentId = null, invoice
   } : item);
   const calculate = (productPricingDetails, invoiceAmount = snapshot.invoice_amount) => {
     const supplements = json(snapshot.supplement_details, []);
-    return GP.calculateGrossProfitValues({ receivableAmount: snapshot.receivable_amount,
+    return GP.calculateGrossProfitValues({ receivableAmount: snapshot.receivable_amount, formulaVersion: snapshot.formula_version,
       paymentDetails: json(snapshot.payment_fee_details, []), productPricingDetails,
       supplementDetails: supplements.filter(item => item.source !== 'freight_cost'),
       freightCostDetails: supplements.filter(item => item.source === 'freight_cost'),
       invoiceAmount, ...((invoiceInput || originalInvoiceStatus !== undefined) ? { invoiceStatus: invoiceInput ? invoiceInput.invoiceStatus : originalInvoiceStatus } : {}) });
   };
-  if (snapshot.formula_version !== GP.FORMULA_VERSION || snapshot.snapshot_status !== 'final' || !GP.pricingCompleteness(lines).pricingComplete) fail('原订单须有完整的现行归档毛利快照，请先核实历史口径');
-  const original = invoiceInput ? GP.calculateGrossProfitValues({receivableAmount:snapshot.receivable_amount,
+  if (!GP.CURRENT_FORMULA_VERSIONS.includes(snapshot.formula_version) || snapshot.snapshot_status !== 'final' || !GP.pricingCompleteness(lines).pricingComplete) fail('原订单须有完整的现行归档毛利快照，请先核实历史口径');
+  const original = invoiceInput ? GP.calculateGrossProfitValues({receivableAmount:snapshot.receivable_amount,formulaVersion:snapshot.formula_version,
     paymentDetails:json(snapshot.payment_fee_details,[]),productPricingDetails:lines,
     supplementDetails:json(snapshot.supplement_details,[]).filter(x=>x.source!=='freight_cost'),
     freightCostDetails:json(snapshot.supplement_details,[]).filter(x=>x.source==='freight_cost'),

@@ -36,6 +36,7 @@ const {
 const { careCostDetails } = require('../sales/staffCareCredit');
 const { sendExcel } = require('../../utils/excelExport');
 const commissionDates = require('./commissionDates');
+const { display: displayCorrection } = require('./settlementPriceCorrection');
 
 const dashboardService = new DashboardService();
 const EMPLOYEE_PROFIT_EXPORT_HEADERS = [
@@ -834,7 +835,20 @@ async function getEmployeePerformanceReport(ctx, exportMode = false) {
     const order = row.Order || {};
     const participants = normalizeParticipants(order);
     const shares = allocateAdjustment(participants,order.grossProfitSnapshot?.gross_profit_amount,row.signed_amount);
-    reversals.push({ orderId: 'return-adjustment:' + row.adjustment_id, entryType: 'performance_adjustment',
+    const correction = displayCorrection(row, user);
+    const approvalDetail = {
+      adjustmentNo: row.adjustment_no, type: row.adjustment_type,
+      typeName: correction.correction_type_name || (row.adjustment_no.startsWith('AUTO-CARE-') ? 'Care可用金抵扣' : '审批调整'),
+      reason: row.reason, status: row.status, approvedAt: row.admin_review_time || correction.correction_applied_at || null,
+      postingTime: commissionDates.adjustmentTime(row), amount: roundMoney(row.signed_amount),
+      product: correction.correction_product,
+      beforeValue: correction.correction_before_price ?? correction.correction_before_invoice_amount,
+      afterValue: correction.correction_after_price ?? correction.correction_after_invoice_amount,
+      salesBefore: correction.correction_sales_before, salesAfter: correction.correction_sales_after,
+      productBefore: correction.correction_product_before, productAfter: correction.correction_product_after,
+      productDelta: correction.correction_product_delta
+    };
+    reversals.push({ approvalDetail, orderId: 'return-adjustment:' + row.adjustment_id, entryType: 'performance_adjustment',
       isReturnAdjustment: true, orderNo: row.adjustment_no, sourceOrderNo: row.order_no,
       sourceOrderId: row.order_id, orderTime: commissionDates.adjustmentTime(row), storeName: order.Store?.name || '',
       employeeName: row.employee_name, totalAmount: 0, actualPayment: 0, totalCost: 0,
@@ -849,15 +863,28 @@ async function getEmployeePerformanceReport(ctx, exportMode = false) {
   }
 
   const positiveKeys = await Order.findAll({ where, attributes: ['order_id', 'create_time','archive_time'], raw: true });
-  const eventKeys = [
-    ...positiveKeys.map(row => ({ id: row.order_id, time: commissionDates.saleTime(row), type: 'sale' })),
-    ...reversals.map(row => ({ id: row.orderId, time: row.orderTime, type: 'return' }))
-  ].sort((a, b) => new Date(b.time) - new Date(a.time) || String(a.id).localeCompare(String(b.id)));
+  const orderGroups = new Map(positiveKeys.map(row => [String(row.order_id), {
+    id: String(row.order_id), time: commissionDates.saleTime(row), sale: true, adjustments: []
+  }]));
+  const returnKeys = [];
+  for (const row of reversals) {
+    if (row.entryType !== 'performance_adjustment') {
+      returnKeys.push({ id: row.orderId, time: row.orderTime, returnRow: row });
+      continue;
+    }
+    const id = String(row.sourceOrderId);
+    if (!orderGroups.has(id)) orderGroups.set(id, { id, time: row.orderTime, adjustments: [] });
+    const group = orderGroups.get(id);
+    group.adjustments.push(row);
+    if (!group.sale && new Date(row.orderTime) > new Date(group.time)) group.time = row.orderTime;
+  }
+  const eventKeys = [...orderGroups.values(), ...returnKeys]
+    .sort((a, b) => new Date(b.time) - new Date(a.time) || String(a.id).localeCompare(String(b.id)));
   const count = eventKeys.length;
   const selectedKeys = exportMode ? eventKeys : eventKeys.slice(
     (Math.max(Number(page) || 1, 1) - 1) * Math.max(Number(pageSize) || 20, 1),
     Math.max(Number(page) || 1, 1) * Math.max(Number(pageSize) || 20, 1));
-  const selectedIds = selectedKeys.filter(row => row.type === 'sale').map(row => row.id);
+  const selectedIds = selectedKeys.filter(row => row.sale).map(row => row.id);
   const orders = await Order.findAll({
 
     where: { ...where, order_id: { [Op.in]: selectedIds } },
@@ -1031,8 +1058,46 @@ async function getEmployeePerformanceReport(ctx, exportMode = false) {
     };
   });
 
-  const allEventRows = new Map([...saleList, ...reversals].map(row => [row.orderId, row]));
-  const list = selectedKeys.map(row => allEventRows.get(row.id)).filter(Boolean);
+  const salesById = new Map(saleList.map(row => [String(row.orderId), row]));
+  const list = selectedKeys.flatMap(group => {
+    if (group.returnRow) return [group.returnRow];
+    const sale = salesById.get(group.id);
+    const adjustments = [...group.adjustments].sort((a, b) =>
+      new Date(a.orderTime) - new Date(b.orderTime) || a.orderNo.localeCompare(b.orderNo));
+    if (!adjustments.length) return sale ? [sale] : [];
+    const first = adjustments[0];
+    const base = sale || {
+      ...first, orderId: group.id, orderNo: first.sourceOrderNo, orderTime: group.time,
+      participantAllocations: [], calculation: { items: [] }
+    };
+    const sumAdjustments = key => roundMoney(adjustments.reduce((sum, row) => sum + row[key], 0));
+    const approvedAdjustment = sumAdjustments('approvedAdjustment');
+    const careCreditAdjustment = sumAdjustments('careCreditAdjustment');
+    const otherApprovedAdjustment = sumAdjustments('otherApprovedAdjustment');
+    const grossProfit = roundMoney(base.baseGrossProfit + approvedAdjustment);
+    const allocations = new Map();
+    for (const event of [...(sale ? [sale] : []), ...adjustments]) {
+      for (const allocation of event.participantAllocations) {
+        const key = [allocation.staffId || allocation.employeeName, allocation.role].join(':');
+        const previous = allocations.get(key);
+        allocations.set(key, { ...allocation, ...previous,
+          baseGrossProfit: roundMoney((previous?.baseGrossProfit || 0) + allocation.baseGrossProfit),
+          approvedAdjustment: roundMoney((previous?.approvedAdjustment || 0) + allocation.approvedAdjustment),
+          grossProfit: roundMoney((previous?.grossProfit || 0) + allocation.grossProfit)
+        });
+      }
+    }
+    const { approvalDetail, ...grouped } = base;
+    return [{ ...grouped, approvedAdjustment, careCreditAdjustment, otherApprovedAdjustment, grossProfit,
+      grossRate: sale ? calcRate(grossProfit, base.totalAmount) : null,
+      participantAllocations: [...allocations.values()],
+      approvalAdjustments: adjustments.map(row => row.approvalDetail),
+      calculation: { ...base.calculation,
+        orderFormula: `${base.baseGrossProfit.toFixed(2)} + 审批调整 ${approvedAdjustment.toFixed(2)} = ${grossProfit.toFixed(2)}`,
+        revenueNote: sale ? base.calculation.revenueNote : '筛选期间仅有审批调整差额入账'
+      }
+    }];
+  });
   const returnProfit = roundMoney(reversals.reduce((sum, row) => sum + row.baseGrossProfit, 0));
   const returnSales = roundMoney(reversals.reduce((sum, row) => sum + row.totalAmount, 0));
 
@@ -1182,6 +1247,13 @@ async function getEmployeePerformanceReport(ctx, exportMode = false) {
       }));
     });
     sendExcel(ctx, exportRows, EMPLOYEE_PROFIT_EXPORT_HEADERS, `个人毛利明细_${startDate || '全部'}_${endDate || '全部'}.xlsx`, '销售商品毛利', { textHeaders: ['订单号', 'PN', 'SN'], sheets: [
+      {name:'审批调整明细',rows:list.flatMap(order => (order.approvalAdjustments || []).map(detail => ({
+        原销售单号: order.sourceOrderNo, 审批单号: detail.adjustmentNo, 调整类型: detail.typeName,
+        商品及SN: detail.product, 原因: detail.reason, 审批通过时间: detail.approvedAt,
+        业绩入账时间: detail.postingTime, 调整前: detail.beforeValue, 调整后: detail.afterValue,
+        销售毛利调整前: detail.salesBefore, 销售毛利调整后: detail.salesAfter, 销售业绩差额: detail.amount,
+        产品毛利调整前: detail.productBefore, 产品毛利调整后: detail.productAfter, 产品毛利差额: detail.productDelta
+      })))},
       {name:'费用绩效扣减',rows:visibleExpenseAllocationRows.map(row=>({员工:row.staff_name,费用扣减:Number(row.amount),口径:'指定月份已审批费用分摊，不改销售订单毛利'}))},
       {name:'个人毛利汇总',rows:[{业绩毛利:summary.grossProfit,费用扣减:summary.expensePerformanceDeduction,扣减后毛利:summary.netGrossProfit}]}
     ] });

@@ -319,3 +319,26 @@ test('归档毛利按快照金额展示实际扣除的外调费', () => {
   assert.equal(snapshotToResponse(snapshot).externalAdjustmentFee, 0);
   assert.equal(snapshotToResponse({ ...snapshot, gross_profit_amount: 332.98 }).externalAdjustmentFee, 100);
 });
+
+test('逐元五五分在300元起扣并按外调额度封顶', () => {
+  const { EXTERNAL_SHARE_FORMULA_VERSION } = require('../src/modules/sales/grossProfit');
+  const calculate = (profit, allowance = 200, companyPriced = false) => calculateGrossProfitValues({
+    formulaVersion: EXTERNAL_SHARE_FORMULA_VERSION,
+    receivableAmount: profit,
+    productPricingDetails: [{ quantity: 1, unitPricing: 0, pricingAmount: 0,
+      isCompanyPriced: companyPriced, grossProfitUpliftAmount: allowance, externalAdjustmentEligible: true }]
+  });
+  for (const [profit, fee] of [[299.99, 0], [300, 0], [300.01, 0.01], [500, 100],
+    [500.01, 100.01], [544.2, 122.1], [699.99, 200], [700, 200], [900, 200]]) {
+    assert.equal(calculate(profit).externalAdjustmentFee, fee);
+  }
+  assert.equal(calculate(500, 80).externalAdjustmentFee, 80);
+  assert.equal(calculate(544.2, 200, true).externalAdjustmentFee, 0);
+  assert.equal(calculate(544.2).grossProfitAmount, 422.1);
+  let last = 0;
+  for (let cents = 30000; cents <= 70001; cents++) {
+    const current = calculate(cents / 100).grossProfitAmount;
+    assert.ok(current >= last);
+    last = current;
+  }
+});

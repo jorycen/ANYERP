@@ -18,16 +18,16 @@
             <span class="legend-item"><i class="legend-dot no-subsidy-resource" />无法国补</span>
           </div>
           <div class="filter-bar erp-query-grid">
-            <div v-for="field in inventorySearchFields" :key="field.key" class="erp-query-field"><span class="erp-query-label">{{field.label}}</span><el-input v-model="summaryQuery[field.key]" :placeholder="field.label" clearable style="width:200px" @keyup.enter="summaryQuery.page=1;loadSummary()" /></div>
-            <div class="erp-query-field"><span class="erp-query-label">商品类别</span><el-select v-model="summaryQuery.category" placeholder="商品类别" clearable style="width: 150px" @change="loadSummary">
+            <div v-for="field in inventorySearchFields" :key="field.key" class="erp-query-field"><span class="erp-query-label">{{field.label}}</span><el-input v-model="summaryQuery[field.key]" :placeholder="field.label" clearable style="width:200px" @keyup.enter="querySummary" /></div>
+            <div class="erp-query-field"><span class="erp-query-label">商品类别</span><el-select v-model="summaryQuery.category" placeholder="商品类别" clearable style="width: 150px" @change="querySummary">
               <el-option v-for="cat in categories" :key="cat" :label="cat" :value="cat" />
             </el-select></div>
-            <div class="erp-query-field"><span class="erp-query-label">门店</span><el-select v-model="summaryQuery.storeId" placeholder="门店" clearable style="width: 150px" @change="loadSummary">
+            <div class="erp-query-field"><span class="erp-query-label">门店</span><el-select v-model="summaryQuery.storeId" placeholder="门店" clearable style="width: 150px" @change="querySummary">
           <el-option label="全部门店" :value="''" />
           <el-option v-for="store in summaryStores" :key="store.store_id" :label="`${store.distributor_name || '未知经销商'} / ${store.name}`" :value="store.store_id" />
             </el-select></div>
             <el-checkbox v-model="summaryQuery.stockOnly" :true-value="1" :false-value="0" @change="onSummaryStockOnlyChange">只显示有库存商品</el-checkbox>
-            <div class="erp-query-actions"><el-button type="primary" @click="loadSummary">查询</el-button>
+            <div class="erp-query-actions"><el-button type="primary" @click="querySummary">查询</el-button>
             <el-button type="success" :loading="summaryExporting" @click="handleExportSummary">导出</el-button>
             <el-button type="warning" :loading="summarySimpleExporting" @click="handleExportSummarySimple">导出库存简表</el-button>
             <el-button :loading="supplierImporting" @click="chooseSupplierFile('changhong')">上传佳华库存</el-button>
@@ -61,47 +61,56 @@
             <el-table-column prop="product_name" label="商品名称" min-width="140" />
             <el-table-column prop="spec" label="产品配置" width="130" />
             <el-table-column prop="pn_code" label="PN" width="140" />
-            <el-table-column v-if="isSummaryQuickModelFilter" label="近7天机型指标" width="150">
+            <el-table-column label="门店销量（近7天 / 近30天）" min-width="220">
               <template #default="{ row }">
-                <template v-if="summaryQuery.modelFilter === 'hot7'">
-                  <div>销售数量：{{ row.sales_7_qty || 0 }}</div>
-                  <div class="summary-metric-secondary">近30天：{{ row.sales_30_qty || 0 }}</div>
-                </template>
-                <template v-else>
+                <div v-for="store in row.store_sales" :key="store.store_id" class="breakdown-item">
+                  <span>{{ store.store_name || store.store_id }}</span>
+                  <span>{{ store.sales_7_qty }} / {{ store.sales_30_qty }}</span>
+                </div>
+                <span v-if="!row.store_sales?.length" class="summary-metric-secondary">暂无销量</span>
+              </template>
+            </el-table-column>
+            <el-table-column v-if="summaryQuery.modelFilter === 'highMargin7'" label="近7天机型指标" width="150">
+              <template #default="{ row }">
                   <div>平均毛利：¥{{ Number(row.avg_gross_profit_7 || 0).toFixed(2) }}</div>
                   <div class="summary-metric-secondary">最高毛利：¥{{ Number(row.max_gross_profit_7 || 0).toFixed(2) }}</div>
-                </template>
               </template>
             </el-table-column>
             <el-table-column prop="standard_price" label="销售定价" width="100">
               <template #default="{ row }">¥{{ row.standard_price }}</template>
             </el-table-column>
-            <el-table-column prop="normal_qty" label="现有库存" width="100">
-              <template #default="{ row }">
-                <el-popover placement="bottom" :width="420" trigger="hover">
-                  <template #default>
-                    <div class="stock-breakdown">
-                      <div class="breakdown-title">各门店销售仓库存（按资源类型）</div>
-                      <div v-if="getStockBreakdownRows(row, 'normal_qty').length" class="breakdown-locations">
-                        <div v-for="item in getStockBreakdownRows(row, 'normal_qty')" :key="item.key" class="breakdown-item">
-                          <span class="breakdown-label">{{ item.store_name }}</span>
-                          <span v-if="item.resource_breakdown" class="breakdown-resource-values">
-                            <span class="breakdown-resource full-resource-text">全资源 {{ item.full_resource_qty }}</span>
-                            <span class="breakdown-resource subsidy-resource-text">仅国补 {{ item.subsidy_only_qty }}</span>
-                            <span class="breakdown-resource no-subsidy-resource-text">无法国补 {{ item.no_subsidy_qty }}</span>
-                          </span>
-                          <span v-else class="breakdown-value">{{ item.quantity }}</span>
+            <el-table-column label="销售仓库存">
+              <el-table-column prop="normal_qty" label="合计" width="100">
+                <template #default="{ row }">
+                  <el-popover placement="bottom" :width="420" trigger="hover">
+                    <template #default>
+                      <div class="stock-breakdown">
+                        <div class="breakdown-title">各门店销售仓库存（按资源类型）</div>
+                        <div v-if="getStockBreakdownRows(row, 'normal_qty').length" class="breakdown-locations">
+                          <div v-for="item in getStockBreakdownRows(row, 'normal_qty')" :key="item.key" class="breakdown-item">
+                            <span class="breakdown-label">{{ item.store_name }}</span>
+                            <span v-if="item.resource_breakdown" class="breakdown-resource-values">
+                              <span class="breakdown-resource full-resource-text">全资源 {{ item.full_resource_qty }}</span>
+                              <span class="breakdown-resource subsidy-resource-text">仅国补 {{ item.subsidy_only_qty }}</span>
+                              <span class="breakdown-resource no-subsidy-resource-text">无法国补 {{ item.no_subsidy_qty }}</span>
+                            </span>
+                            <span v-else class="breakdown-value">{{ item.quantity }}</span>
+                          </div>
                         </div>
+                        <div v-else class="breakdown-empty">暂无库存明细</div>
                       </div>
-                      <div v-else class="breakdown-empty">暂无库存明细</div>
-                    </div>
-                  </template>
-                  <template #reference><span class="stock-quantity-reference">{{ row.normal_qty || 0 }}</span></template>
-                </el-popover>
-              </template>
+                    </template>
+                    <template #reference><span class="stock-quantity-reference">{{ row.normal_qty || 0 }}</span></template>
+                  </el-popover>
+                </template>
+              </el-table-column>
+              <el-table-column prop="aino_yun_inventory_qty" label="艾诺云" width="100" />
+              <el-table-column prop="aino_zhixing_inventory_qty" label="艾诺志兴" width="110" />
             </el-table-column>
-            <el-table-column prop="aino_yun_inventory_qty" label="艾诺云库存" width="100" />
-            <el-table-column prop="aino_zhixing_inventory_qty" label="艾诺志兴库存" width="110" />
+            <el-table-column label="总库存（全部仓位）">
+              <el-table-column prop="aino_yun_inventory_qty_total" label="艾诺云" width="100" />
+              <el-table-column prop="aino_zhixing_inventory_qty_total" label="艾诺志兴" width="110" />
+            </el-table-column>
             <el-table-column prop="display_qty" label="铺货仓库存" width="110">
               <template #default="{ row }">
                 <el-popover placement="bottom" :width="260" trigger="hover">
@@ -225,7 +234,7 @@
             :total="summaryTotal"
             :page-sizes="[20, 50, 100]"
             layout="total, sizes, prev, pager, next"
-            @size-change="loadSummary"
+            @size-change="querySummary"
             @current-change="loadSummary"
           />
         </el-tab-pane>
@@ -2074,9 +2083,12 @@ const summaryQuery = reactive({
   stockOnly: 0
 })
 const isSummaryQuickModelFilter = computed(() => ['hot7', 'highMargin7'].includes(summaryQuery.modelFilter))
-const onSummaryStockOnlyChange = () => {
+const querySummary = () => {
   summaryQuery.page = 1
-  loadSummary()
+  return loadSummary()
+}
+const onSummaryStockOnlyChange = () => {
+  return querySummary()
 }
 
 // SN库存清单

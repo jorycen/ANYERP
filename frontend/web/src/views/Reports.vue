@@ -203,11 +203,41 @@
                 <div class="profit-process">
                   <div class="process-line">{{ row.calculation?.revenueNote }}</div>
                   <div class="process-line">整单毛利：{{ row.calculation?.orderFormula }}</div>
-                  <div v-if="row.entryType !== 'return' && (row.careCostAmount || row.careCreditAdjustment)" class="process-line">
+                  <div v-if="row.entryType !== 'return' && row.careCostAmount" class="process-line">
                     Care 商品成本 -¥{{ formatMoney(row.careCostAmount) }} 已计入基础毛利；
                     可用金抵扣 {{ row.careCreditAdjustment >= 0 ? '+' : '-' }}¥{{ formatMoney(Math.abs(row.careCreditAdjustment)) }}；
                     净计入员工成本 ¥{{ formatMoney(row.careCostAmount - row.careCreditAdjustment) }}
                   </div>
+                  <el-table v-if="row.approvalAdjustments?.length" :data="row.approvalAdjustments" size="small" border>
+                    <el-table-column prop="adjustmentNo" label="审批单号" min-width="180" />
+                    <el-table-column prop="typeName" label="调整类型" min-width="140" />
+                    <el-table-column prop="product" label="商品及 SN" min-width="200" />
+                    <el-table-column prop="reason" label="调整原因" min-width="150" />
+                    <el-table-column label="审批通过 / 入账时间" min-width="185">
+                      <template #default="{ row: adjustment }">
+                        <div v-if="adjustment.approvedAt">{{ formatDateTime(adjustment.approvedAt) }}</div>
+                        <div>{{ formatDateTime(adjustment.postingTime) }}</div>
+                      </template>
+                    </el-table-column>
+                    <el-table-column label="定价或开票金额调整" min-width="165">
+                      <template #default="{ row: adjustment }">
+                        <span v-if="adjustment.beforeValue != null && adjustment.afterValue != null">¥{{ formatMoney(adjustment.beforeValue) }} → ¥{{ formatMoney(adjustment.afterValue) }}</span>
+                        <span v-else>—</span>
+                      </template>
+                    </el-table-column>
+                    <el-table-column label="销售毛利调整" min-width="180">
+                      <template #default="{ row: adjustment }">
+                        <div v-if="adjustment.salesBefore != null && adjustment.salesAfter != null">¥{{ formatMoney(adjustment.salesBefore) }} → ¥{{ formatMoney(adjustment.salesAfter) }}</div>
+                        <div>{{ adjustment.amount >= 0 ? '+' : '−' }}¥{{ formatMoney(Math.abs(adjustment.amount)) }}</div>
+                      </template>
+                    </el-table-column>
+                    <el-table-column v-if="row.approvalAdjustments.some(adjustment => adjustment.productDelta != null)" label="产品端毛利调整" min-width="180">
+                      <template #default="{ row: adjustment }">
+                        <span v-if="adjustment.productDelta != null">¥{{ formatMoney(adjustment.productBefore) }} → ¥{{ formatMoney(adjustment.productAfter) }}</span>
+                        <span v-else>—</span>
+                      </template>
+                    </el-table-column>
+                  </el-table>
                   <template v-if="row.calculation?.snapshot">
                     <el-descriptions class="snapshot-breakdown" :column="5" border size="small">
                       <el-descriptions-item label="用户应收">

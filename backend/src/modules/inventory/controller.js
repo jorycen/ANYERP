@@ -1299,7 +1299,7 @@ async function buildSalesCountMap(productIds, storeId = '', scopedStoreIds = [])
   // in an order with several other products, so joining all order items here
   // would multiply the target product quantity by the number of order lines.
   const rows = await sequelize.query(
-    `SELECT oi.PRODUCT_ID AS product_id,
+    `SELECT oi.PRODUCT_ID AS product_id, o.STORE_ID AS store_id,
             SUM(CASE WHEN o.CREATE_TIME >= :date7 THEN oi.QUANTITY ELSE 0 END) AS sales_7_qty,
             SUM(CASE WHEN o.CREATE_TIME >= :date30 THEN oi.QUANTITY ELSE 0 END) AS sales_30_qty,
             SUM(CASE WHEN o.CREATE_TIME >= :date7 THEN oi.SUBTOTAL ELSE 0 END) AS sales_7_amount,
@@ -1311,7 +1311,7 @@ async function buildSalesCountMap(productIds, storeId = '', scopedStoreIds = [])
       WHERE oi.PRODUCT_ID IN (:productIds)
         AND (o.ORDER_STATUS IS NULL OR o.ORDER_STATUS NOT IN ('cancelled', 'rejected'))
         ${storeCondition}
-      GROUP BY oi.PRODUCT_ID`,
+      GROUP BY oi.PRODUCT_ID, o.STORE_ID`,
     {
       replacements: { productIds: uniqueProductIds, date7, date30, ...(salesStoreIds.length ? { salesStoreIds } : {}) },
       type: Sequelize.QueryTypes.SELECT
@@ -1364,18 +1364,31 @@ async function buildSalesCountMap(productIds, storeId = '', scopedStoreIds = [])
     };
   });
 
-  rows.forEach(row => {
-    const orderGrossProfit = orderGrossProfitMap[row.product_id];
+  for (const row of rows) {
+    const totals = salesMap[row.product_id] ||= {
+      sales_7_qty: 0, sales_30_qty: 0, sales_7_amount: 0, gross_profit_7: 0, storeSales: []
+    };
+    const sales_7_qty = Number(row.sales_7_qty || 0);
+    const sales_30_qty = Number(row.sales_30_qty || 0);
+    totals.sales_7_qty += sales_7_qty;
+    totals.sales_30_qty += sales_30_qty;
+    totals.sales_7_amount += Number(row.sales_7_amount || 0);
+    totals.gross_profit_7 += Number(row.gross_profit_7 || 0);
+    if (sales_7_qty !== 0 || sales_30_qty !== 0) {
+      totals.storeSales.push({ store_id: row.store_id, sales_7_qty, sales_30_qty });
+    }
+  }
+  Object.entries(salesMap).forEach(([productId, totals]) => {
+    const orderGrossProfit = orderGrossProfitMap[productId];
     const sales7Amount = orderGrossProfit
       ? orderGrossProfit.sales_7_amount
-      : Number(row.sales_7_amount || 0);
+      : totals.sales_7_amount;
     const grossProfit7 = orderGrossProfit
       ? orderGrossProfit.gross_profit_7
-      : Number(row.gross_profit_7 || 0);
+      : totals.gross_profit_7;
     const orderCount7 = orderGrossProfit ? orderGrossProfit.order_count_7 : 0;
-    salesMap[row.product_id] = {
-      sales_7_qty: Number(row.sales_7_qty || 0),
-      sales_30_qty: Number(row.sales_30_qty || 0),
+    salesMap[productId] = {
+      ...totals,
       sales_7_amount: sales7Amount,
       gross_profit_7: grossProfit7,
       avg_gross_profit_7: orderGrossProfit
@@ -1610,11 +1623,17 @@ function getInventoryDistributorBucket(distributorName) {
 function summarizeDistributorInventory(storeStockRows = []) {
   const summary = {
     aino_yun_inventory_qty: 0,
-    aino_zhixing_inventory_qty: 0
+    aino_zhixing_inventory_qty: 0,
+    aino_yun_inventory_qty_total: 0,
+    aino_zhixing_inventory_qty_total: 0
   };
   storeStockRows.forEach(row => {
     const bucket = getInventoryDistributorBucket(row.distributor_name);
-    if (bucket) summary[bucket] += Number(row.normal_qty || 0);
+    if (!bucket) return;
+    summary[bucket] += Number(row.normal_qty || 0);
+    summary[bucket + '_total'] += STORE_EXPORT_QUANTITY_FIELDS.reduce(
+      (sum, field) => sum + Number(row[field] || 0), 0
+    );
   });
   return summary;
 }
@@ -1655,12 +1674,22 @@ function buildStoreInventoryExportRows(productRows) {
       });
     });
 
+    const salesByStore = new Map((productRow.store_sales || []).map(row => [String(row.store_id), row]));
+    for (const [storeId, sales] of salesByStore) {
+      if (storeMap.has(storeId)) continue;
+      storeMap.set(storeId, {
+        store_id: sales.store_id, store_name: sales.store_name || sales.store_id,
+        regular_qty: 0, subsidy_qty: 0, second_qty: 0,
+        ...Object.fromEntries(STORE_EXPORT_QUANTITY_FIELDS.map(field => [field, 0]))
+      });
+    }
     const storeRows = [...storeMap.values()];
     if (storeRows.length === 0) return;
     const storeTotal = store => STORE_EXPORT_QUANTITY_FIELDS.reduce((sum, field) => sum + store[field], 0);
     const totalStock = storeRows.reduce((sum, store) => sum + storeTotal(store), 0);
     storeRows.forEach(store => {
       const currentStock = storeTotal(store);
+      const sales = salesByStore.get(String(store.store_id));
       rows.push({
         ...productRow,
         store_id: store.store_id,
@@ -1677,6 +1706,8 @@ function buildStoreInventoryExportRows(productRows) {
         current_store_stock_qty: currentStock,
         other_store_stock_qty: totalStock - currentStock,
         total_stock_qty: totalStock,
+        sales_7_qty: sales?.sales_7_qty ?? 0,
+        sales_30_qty: sales?.sales_30_qty ?? 0,
         _store_product_index: productIndex
       });
     });
@@ -1689,7 +1720,7 @@ function buildInventorySummaryExportRows(productRows, primaryPnMap = new Map()) 
   return [...productRows]
     .map(row => ({ row, categoryRank: getInventorySummaryCategoryRank(row.category) }))
     .filter(({ row, categoryRank }) => categoryRank !== null && (
-      Number(row.normal_qty || 0) > 0
+      Number(row.total_inventory_qty ?? row.normal_qty ?? 0) > 0
       || !['-', '0', ''].includes(String(row.changhong_inventory || ''))
       || !['-', '0', ''].includes(String(row.tianjin_inventory || ''))
     ))
@@ -1700,10 +1731,14 @@ function buildInventorySummaryExportRows(productRows, primaryPnMap = new Map()) 
       PN: primaryPnMap.get(row.product_id) || row.pn_code || row.manufacturer_code || '',
       定价: Number(row.standard_price || 0),
       库存: Number(row.normal_qty || 0),
+      艾诺云总库存: Number(row.aino_yun_inventory_qty_total || 0),
+      艾诺志兴总库存: Number(row.aino_zhixing_inventory_qty_total || 0),
       佳华库存: row.changhong_inventory || '-',
       汇一库存: row.tianjin_inventory || '-',
-      近7天销量: Number(row.sales_7_qty || 0),
-      近30天销量: Number(row.sales_30_qty || 0)
+      近7天门店销量: (row.store_sales || []).map(store =>
+        `${store.store_name || store.store_id} ${store.sales_7_qty}`).join('；'),
+      近30天门店销量: (row.store_sales || []).map(store =>
+        `${store.store_name || store.store_id} ${store.sales_30_qty}`).join('；')
     }));
 }
 
@@ -1805,7 +1840,8 @@ async function getList(ctx) {
       ? allProducts.filter(product => getInventoryProductType(product.category, product.accessory_type, product.name, product.config) === productType)
       : allProducts;
     const scopedProductIds = scopedProducts.map(p => p.product_id);
-    const salesMap = await buildSalesCountMap(scopedProductIds, storeId, storeIds);
+    const salesMap = storeIds.length ? await buildSalesCountMap(scopedProductIds, storeId, storeIds) : {};
+    const salesStoreNames = new Map(stores.map(store => [store.store_id, store.name]));
     const specialProductMap = await buildSpecialProductMap(
       scopedProductIds,
       user.distributorId,
@@ -2084,6 +2120,10 @@ async function getList(ctx) {
         other_store_stock_info: stock.otherStores || [],
         sales_7_qty: sales.sales_7_qty,
         sales_30_qty: sales.sales_30_qty,
+        store_sales: (sales.storeSales || []).map(row => ({
+          ...row, store_name: salesStoreNames.get(row.store_id)
+        })).sort((a, b) => b.sales_7_qty - a.sales_7_qty || b.sales_30_qty - a.sales_30_qty
+          || a.store_id.localeCompare(b.store_id)),
         sales_7_amount: sales.sales_7_amount,
         gross_profit_7: sales.gross_profit_7,
         avg_gross_profit_7: sales.avg_gross_profit_7,
@@ -2148,7 +2188,7 @@ async function getList(ctx) {
         if (!primaryPnMap.has(row.product_id)) primaryPnMap.set(row.product_id, row.pn_code || '');
       });
       const data = buildInventorySummaryExportRows(exportRows, primaryPnMap);
-      sendExcel(ctx, data, ['产品类型', '产品名称', 'PN', '定价', '库存', '佳华库存', '汇一库存', '近7天销量', '近30天销量'],
+      sendExcel(ctx, data, ['产品类型', '产品名称', 'PN', '定价', '库存', '艾诺云总库存', '艾诺志兴总库存', '佳华库存', '汇一库存', '近7天门店销量', '近30天门店销量'],
         `库存简表_${new Date().toISOString().slice(0, 10)}.xlsx`, '库存简表');
       return;
     }
@@ -2175,6 +2215,8 @@ async function getList(ctx) {
         当前门店库存: Number(row.current_store_stock_qty || 0),
         其他门店库存: Number(row.other_store_stock_qty || 0),
         总库存: Number(row.total_stock_qty || 0),
+        艾诺云总库存: Number(row.aino_yun_inventory_qty_total || 0),
+        艾诺志兴总库存: Number(row.aino_zhixing_inventory_qty_total || 0),
         佳华库存: row.changhong_inventory || '-',
         汇一库存: row.tianjin_inventory || '-',
         近7天销量: Number(row.sales_7_qty || 0),
@@ -2184,7 +2226,7 @@ async function getList(ctx) {
         '\u95e8\u5e97\u7f16\u53f7',
         '门店', '类别', '商品名称', '产品配置', 'PN', '销售定价',
         '销售仓', '正规货', '国补货', '纯二手货', '铺货仓库存', '样品仓库存',
-        '不可售库存', '占用仓库存', '租赁样机仓库存', '当前门店库存', '其他门店库存', '总库存',
+        '不可售库存', '占用仓库存', '租赁样机仓库存', '当前门店库存', '其他门店库存', '总库存', '艾诺云总库存', '艾诺志兴总库存',
         '佳华库存', '汇一库存', '近7天销量', '近30天销量'
       ], `库存汇总_${new Date().toISOString().slice(0, 10)}.xlsx`, '库存汇总');
       return;

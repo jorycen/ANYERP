@@ -150,6 +150,22 @@ test('员工报表同月、跨月、部分退货汇总与分页保持一致，�
   assert.equal(withRewardReturn.summary.grossProfit, -60);
   assert.equal(withRewardReturn.summary.approvedAdjustment, -20);
   assert.equal(withRewardReturn.list.length, 2);
+  const adjustmentOnly = withRewardReturn.list.find(row => row.entryType === 'performance_adjustment');
+  assert.equal(adjustmentOnly.orderNo, 'SO1');
+  assert.equal(adjustmentOnly.totalAmount, 0);
+  assert.equal(adjustmentOnly.baseGrossProfit, 0);
+  assert.equal(adjustmentOnly.grossProfit, -20);
+  assert.equal(adjustmentOnly.approvalAdjustments[0].adjustmentNo, 'EDUR-TEST');
+  assert.equal(adjustmentOnly.approvalAdjustments[0].postingTime.getTime(), returnDate.getTime());
+  returnDate = new Date('2026-10-02T12:00:00');
+  const grouped = await run('10', 2, 1);
+  assert.equal(grouped.pagination.total, 2);
+  const [saleWithAdjustment] = grouped.list;
+  assert.equal(saleWithAdjustment.orderNo, 'SO1');
+  assert.equal(saleWithAdjustment.baseGrossProfit, 100);
+  assert.equal(saleWithAdjustment.approvedAdjustment, -20);
+  assert.equal(saleWithAdjustment.grossProfit, 80);
+  assert.equal(saleWithAdjustment.approvalAdjustments.length, 1);
 });
 
 test('return export uses recorded negative sales once without inventing product detail', () => {

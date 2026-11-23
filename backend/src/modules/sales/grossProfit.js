@@ -23,6 +23,8 @@ const { Op, QueryTypes } = require('sequelize');
 const { generateUUID } = require('../../utils');
 
 const FORMULA_VERSION = 'ORDER_GP_V11_PRODUCT_COST_MODE';
+const EXTERNAL_SHARE_FORMULA_VERSION = 'ORDER_GP_V12_EXTERNAL_SHARE';
+const CURRENT_FORMULA_VERSIONS = [FORMULA_VERSION, EXTERNAL_SHARE_FORMULA_VERSION];
 const { allocateProfit } = require('../report/performanceAllocation');
 const VAT_RATE = 0.13;
 const NATIONAL_SUBSIDY_RECEIPT_TAX_RATE = 0.006;
@@ -187,6 +189,15 @@ function resolveUnitProductPricing(
   return result(0, 'missing_purchase_price');
 }
 
+function calculateExternalAdjustmentFee(profit, allowance, formulaVersion) {
+  if (allowance <= 0 || profit < 300) return 0;
+  if (formulaVersion === EXTERNAL_SHARE_FORMULA_VERSION) {
+    const excessCents = Math.round(profit * 100) - 30000;
+    return Math.min(allowance, Math.round(excessCents / 2) / 100);
+  }
+  return profit <= 500 ? roundMoney(allowance / 2) : allowance;
+}
+
 function calculateGrossProfitValues({
   receivableAmount = 0,
   paymentDetails = [],
@@ -195,7 +206,8 @@ function calculateGrossProfitValues({
   freightCostDetails = [],
   invoiceAmount = 0,
   invoiceStatus = '',
-  externalAdjustmentEligible = false
+  externalAdjustmentEligible = false,
+  formulaVersion = FORMULA_VERSION
 } = {}) {
   const basePayments = paymentDetails
     .filter(item => !isPolicySubsidyReceivable(item.method))
@@ -278,13 +290,9 @@ function calculateGrossProfitValues({
   const hasEligibleExternalAdjustmentProduct = externalAdjustmentEligible || normalizedProductPricing.some(item =>
     isExternalAdjustmentEligibleLine(item)
   );
-  const externalAdjustmentFee = !hasEligibleExternalAdjustmentProduct || externalAdjustmentAmount <= 0
-    ? 0
-    : grossProfitBeforeExternalAdjustment < 300
-      ? 0
-      : grossProfitBeforeExternalAdjustment <= 500
-        ? roundMoney(externalAdjustmentAmount / 2)
-        : externalAdjustmentAmount;
+  const externalAdjustmentFee = calculateExternalAdjustmentFee(
+    grossProfitBeforeExternalAdjustment, externalAdjustmentAmount, formulaVersion
+  );
   const grossProfitAmount = roundMoney(grossProfitBeforeExternalAdjustment - externalAdjustmentFee);
 
   return {
@@ -353,16 +361,12 @@ function snapshotToResponse(snapshot, order = null) {
     return sum + roundMoney(item.grossProfitUpliftAmount ?? item.gross_profit_uplift_amount) *
       toNumber(item.quantity || 1);
   }, 0));
-  const estimatedExternalAdjustmentFee = !externalAdjustmentEligible || externalAdjustmentAmount <= 0
-    ? 0
-    : grossProfitBeforeExternalAdjustment < 300
-      ? 0
-      : grossProfitBeforeExternalAdjustment <= 500
-        ? roundMoney(externalAdjustmentAmount / 2)
-        : externalAdjustmentAmount;
+  const estimatedExternalAdjustmentFee = calculateExternalAdjustmentFee(
+    grossProfitBeforeExternalAdjustment, externalAdjustmentAmount, row.formula_version
+  );
   // Final snapshots preserve the deduction actually included in the saved profit.
   const hasFrozenExternalFee = row.snapshot_status === 'final' &&
-    ['ORDER_GP_V9_FREIGHT_SEPARATE', FORMULA_VERSION].includes(row.formula_version);
+    ['ORDER_GP_V9_FREIGHT_SEPARATE', ...CURRENT_FORMULA_VERSIONS].includes(row.formula_version);
   const externalAdjustmentFee = hasFrozenExternalFee
     ? Math.max(0, roundMoney(grossProfitBeforeExternalAdjustment - roundMoney(row.gross_profit_amount)))
     : row.snapshot_status === 'final' ? null : estimatedExternalAdjustmentFee;
@@ -1000,13 +1004,16 @@ async function calculateAndSaveOrderGrossProfit(orderId, {
   if (
     existing &&
     existing.snapshot_status === 'final' &&
-    (existing.formula_version === FORMULA_VERSION || !persist) &&
+    (CURRENT_FORMULA_VERSIONS.includes(existing.formula_version) || !persist) &&
     !force
   ) {
     return existing;
   }
 
   const frozenInputs = existing?.snapshot_status === 'final';
+  const formulaVersion = frozenInputs
+    ? (existing.formula_version === EXTERNAL_SHARE_FORMULA_VERSION ? EXTERNAL_SHARE_FORMULA_VERSION : FORMULA_VERSION)
+    : EXTERNAL_SHARE_FORMULA_VERSION;
   const [paymentDetails, productPricingDetails, supplementDetails] = await Promise.all([
     buildPaymentDetails(order, existing, transaction),
     frozenInputs ? Promise.resolve(parseJsonArray(existing.product_pricing_details)) : buildProductPricingDetails(orderId, transaction),
@@ -1039,7 +1046,7 @@ async function calculateAndSaveOrderGrossProfit(orderId, {
       source: frozen.source, correctionId: frozen.correctionId, isCompanyPriced: true,
       grossProfitUpliftAmount: 0, externalAdjustmentEligible: false });
   }
-  if (existing?.snapshot_status === 'final' && existing.formula_version !== FORMULA_VERSION) {
+  if (frozenInputs && !CURRENT_FORMULA_VERSIONS.includes(existing.formula_version)) {
     const previousLines = new Map(parseJsonArray(existing.product_pricing_details)
       .map(line => [String(line.itemId), line]));
     const missingPriceLines = productPricingDetails.filter(line =>
@@ -1063,6 +1070,7 @@ async function calculateAndSaveOrderGrossProfit(orderId, {
     freightCostDetails,
     invoiceAmount: order.invoice_amount,
     invoiceStatus: order.invoice_status,
+    formulaVersion,
     externalAdjustmentEligible: productPricingDetails.some(item => item.externalAdjustmentEligible)
   }); } catch (error) {
     // A non-final estimate is not a prerequisite for saving or printing the
@@ -1085,7 +1093,7 @@ async function calculateAndSaveOrderGrossProfit(orderId, {
     order_id: order.order_id,
     order_no: order.order_no,
     store_id: order.store_id,
-    formula_version: FORMULA_VERSION,
+    formula_version: formulaVersion,
     receivable_amount: values.receivableAmount,
     product_pricing_amount: values.productPricingAmount,
     payment_fee_amount: values.paymentFeeAmount,
@@ -1130,7 +1138,7 @@ async function calculateAndSaveOrderGrossProfit(orderId, {
 async function refreshOutdatedGrossProfitSnapshots({ onProgress } = {}) {
   onProgress?.({ phase: 'load_outdated_snapshots' });
   const snapshots = await OrderGrossProfit.findAll({
-    where: { formula_version: { [Op.ne]: FORMULA_VERSION } },
+    where: { formula_version: { [Op.notIn]: CURRENT_FORMULA_VERSIONS } },
     attributes: ['order_id', 'snapshot_status'],
     raw: true
   });
@@ -1140,13 +1148,13 @@ async function refreshOutdatedGrossProfitSnapshots({ onProgress } = {}) {
        FROM T_ORDER o
        LEFT JOIN T_ORDER_GROSS_PROFIT gp
          ON gp.ORDER_ID = o.ORDER_ID
-        AND gp.FORMULA_VERSION = :formulaVersion
+        AND gp.FORMULA_VERSION IN (:formulaVersions)
       WHERE o.IS_DELETED = 0
         AND o.ORDER_STATUS IN (:archivedStatuses)
         AND gp.GROSS_PROFIT_ID IS NULL`,
     {
       replacements: {
-        formulaVersion: FORMULA_VERSION,
+        formulaVersions: CURRENT_FORMULA_VERSIONS,
         archivedStatuses: ['已归档', 'completed', 'archived', 'returned']
       },
       type: QueryTypes.SELECT
@@ -1186,6 +1194,8 @@ async function refreshOutdatedGrossProfitSnapshots({ onProgress } = {}) {
 
 module.exports = {
   FORMULA_VERSION,
+  CURRENT_FORMULA_VERSIONS,
+  EXTERNAL_SHARE_FORMULA_VERSION,
   VAT_RATE,
   roundMoney,
   isExternalAdjustmentEligibleProduct,
