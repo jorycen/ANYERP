@@ -2114,17 +2114,20 @@ async function getList(ctx) {
       if (keywordRelevanceCompare !== 0) return keywordRelevanceCompare;
       if (a._category_order !== b._category_order) return a._category_order - b._category_order;
       if (a._category_rank !== b._category_rank) return a._category_rank - b._category_rank;
-      return new Date(b._create_time || 0).getTime() - new Date(a._create_time || 0).getTime();
+      return new Date(b._create_time || 0).getTime() - new Date(a._create_time || 0).getTime()
+        || String(a.product_id).localeCompare(String(b.product_id));
     });
 
-    const visibleRows = String(stockOnly) === '1'
-      ? sortedRows.filter(row => [
-        row.normal_qty, row.display_qty, row.demo_qty, row.unsellable_qty,
-        row.pending_qty, row.rental_demo_qty
-      ].some(value => Number(value || 0) > 0))
-      : sortedRows;
+    const visibleRows = sortedRows.filter(row => {
+      if (modelFilter === 'demo') {
+        return Number(row.demo_qty) > 0 || Number(row.rental_demo_qty) > 0;
+      }
+      if (String(stockOnly) !== '1') return true;
+      return [row.normal_qty, row.display_qty, row.demo_qty, row.unsellable_qty,
+        row.pending_qty, row.rental_demo_qty].some(value => Number(value || 0) > 0);
+    });
     const count = visibleRows.length;
-    const exportRows = visibleRows.map(({ _category_order, _category_rank, _keyword_relevance, _create_time, total_inventory_qty, ...row }) => row);
+    const exportRows = visibleRows.map(({ _category_order, _category_rank, _keyword_relevance, _create_time, ...row }) => row);
 
     if (summaryExportMode) {
       const primaryPnRows = exportRows.length > 0
