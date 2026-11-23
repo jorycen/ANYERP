@@ -685,6 +685,7 @@ import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
+import { createSalesRequestId } from '../utils/salesRequestId'
 import { getStoreId, isStoreUser, isDistributorAccount, hasRole, isSalesQueryOnly } from '../utils/user'
 
 const route = useRoute()
@@ -1895,7 +1896,7 @@ const onPnBlur = async (index) => {
 }
 
 const buildSalesOrderPayload = (untaxedInvoiceConfirmed = false) => ({
-  ...(orderForm.orderId ? { saveContract: 1, expectedRevision: orderForm.saveRevision, requestId: crypto.randomUUID() } : {}),
+  ...(orderForm.orderId ? { saveContract: 1, expectedRevision: orderForm.saveRevision, requestId: createSalesRequestId() } : {}),
   storeId: orderForm.storeId,
   customerName: orderForm.customerName,
   customerPhone: orderForm.customerPhone,
@@ -2041,7 +2042,7 @@ const handleSubmit = async () => {
     }
   } catch (err) {
     if (err === 'cancel' || err === 'close') return
-    const msg = err.response?.data?.message || '创建订单失败'
+    const msg = err.response?.data?.message || (err.isAxiosError ? err.message : '') || '创建订单失败'
     ElMessage.error(msg)
   } finally {
     submitLoading.value = false

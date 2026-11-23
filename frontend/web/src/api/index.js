@@ -4,7 +4,7 @@ function createSalesOnce(url, data) {
   const key = JSON.stringify([url, data])
   let attempt = pendingSalesCreates.get(key)
   if (!attempt) {
-    attempt = { id: crypto.randomUUID() }
+    attempt = { id: createSalesRequestId() }
     pendingSalesCreates.set(key, attempt)
   }
   if (attempt.inFlight) return attempt.inFlight
@@ -25,6 +25,7 @@ function saveSalesDraftOnce(id, data) {
   return api.put(`/sales/draft/${id}`, data).then(result => { pendingSalesSaves.delete(key); return result })
 }
 import axios from 'axios'
+import { createSalesRequestId } from '../utils/salesRequestId'
 import router from '../router'
 
 function normalizeApiBaseUrl(value) {
