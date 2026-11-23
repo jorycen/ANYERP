@@ -353,13 +353,19 @@ function snapshotToResponse(snapshot, order = null) {
     return sum + roundMoney(item.grossProfitUpliftAmount ?? item.gross_profit_uplift_amount) *
       toNumber(item.quantity || 1);
   }, 0));
-  const externalAdjustmentFee = !externalAdjustmentEligible || externalAdjustmentAmount <= 0
+  const estimatedExternalAdjustmentFee = !externalAdjustmentEligible || externalAdjustmentAmount <= 0
     ? 0
     : grossProfitBeforeExternalAdjustment < 300
       ? 0
       : grossProfitBeforeExternalAdjustment <= 500
         ? roundMoney(externalAdjustmentAmount / 2)
         : externalAdjustmentAmount;
+  // Final snapshots preserve the deduction actually included in the saved profit.
+  const hasFrozenExternalFee = row.snapshot_status === 'final' &&
+    ['ORDER_GP_V9_FREIGHT_SEPARATE', FORMULA_VERSION].includes(row.formula_version);
+  const externalAdjustmentFee = hasFrozenExternalFee
+    ? Math.max(0, roundMoney(grossProfitBeforeExternalAdjustment - roundMoney(row.gross_profit_amount)))
+    : row.snapshot_status === 'final' ? null : estimatedExternalAdjustmentFee;
   const storedAdjustmentDetails = parseJsonArray(row.supplement_details);
   return {
     grossProfitId: row.gross_profit_id,

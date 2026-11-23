@@ -302,3 +302,20 @@ test('国补POS客户实收到账金额按两位小数保留', () => {
     nationalSubsidyAmount: 1000
   }), 3776);
 });
+
+test('归档毛利按快照金额展示实际扣除的外调费', () => {
+  const snapshot = {
+    snapshot_status: 'final',
+    formula_version: 'ORDER_GP_V11_PRODUCT_COST_MODE',
+    receivable_amount: 15150,
+    product_pricing_amount: 14120,
+    payment_fee_amount: 87.42,
+    vat_amount: 15.60,
+    supplement_amount: -475,
+    freight_cost_amount: 19,
+    product_pricing_details: [{ isCompanyPriced: false, grossProfitUpliftAmount: 200 }],
+    gross_profit_amount: 432.98
+  };
+  assert.equal(snapshotToResponse(snapshot).externalAdjustmentFee, 0);
+  assert.equal(snapshotToResponse({ ...snapshot, gross_profit_amount: 332.98 }).externalAdjustmentFee, 100);
+});

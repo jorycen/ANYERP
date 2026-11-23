@@ -6,7 +6,7 @@ const {
   sequelize, DailyStatement, DailyStatementDetail, Expense, ExpenseType, PurchaseRequest, PurchaseRequestItem, Store, Region, Order, OrderPayment, Supplier, SupplierPaymentAccount, Distributor,
   SettlementAccount, SettlementAccountTransaction, SubsidyAccountRoute, SubsidyReceipt, PaymentMethod, PaymentMethodStore, OrderItem,
   SubsidyReceiptAllocation, SubsidyReceivableAdjustment, ExpensePerformanceAllocation,
-  ApprovalFlowInstance, ApprovalTask, ApprovalActionLog
+  ApprovalFlowInstance, ApprovalTask
 } = require('../../models');
 const { Op, Sequelize, fn, col } = require('sequelize');
 const { generateUUID, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
@@ -14,7 +14,7 @@ const { sendExcel } = require('../../utils/excelExport');
 const { getUserRoles } = require('../../middleware/permission');
 const {
   ensureExpensePayable,
-  cancelExpenseRecord,
+  cancelExpenseRecord, closeExpenseApproval,
   normalizeAttribution,
   startExpenseApproval
 } = require('./expenseService');
@@ -1392,7 +1392,9 @@ async function cancelExpense(ctx) {
     if (!['pending_approval', 'approved', 'pending_payment', 'pending', 'processing'].includes(record.status)) {
       ctx.throw(400, '当前报销状态不允许撤销');
     }
-    await cancelExpenseRecord(record, user, transaction, String(reason || '').trim() || '报销申请已撤销');
+    const comment = String(reason || '').trim() || '报销申请已撤销';
+    await cancelExpenseRecord(record, user, transaction, comment);
+    await closeExpenseApproval(record, user, transaction, comment, 'cancelled');
   });
 
   ctx.body = { code: 0, expenseId: ctx.params.id, status: 'cancelled', message: '报销申请已撤销' };
@@ -1413,23 +1415,7 @@ async function withdrawExpense(ctx) {
     if (!isApplicant) ctx.throw(403, '只有申请人可以撤回费用申请');
 
     const now = new Date();
-    const instances = await ApprovalFlowInstance.findAll({
-      where: { business_type: 'expense', business_id: String(record.expense_id), status: 'pending' },
-      transaction,
-      lock: transaction.LOCK.UPDATE
-    });
-    for (const instance of instances) {
-      await ApprovalTask.update(
-        { status: 'cancelled', acted_time: now },
-        { where: { instance_id: instance.instance_id, status: { [Op.in]: ['pending', 'waiting'] } }, transaction }
-      );
-      await instance.update({ status: 'cancelled', completed_time: now, update_time: now }, { transaction });
-      await ApprovalActionLog.create({
-        log_id: generateUUID(), instance_id: instance.instance_id, task_id: null,
-        action: 'withdrawn', actor_staff_id: staffId, actor_name: user.name || user.phone || '',
-        comment: reason, detail_json: JSON.stringify({ expenseId: record.expense_id })
-      }, { transaction });
-    }
+    await closeExpenseApproval(record, user, transaction, reason, 'withdrawn', now);
     await record.update({ status: 'withdrawn', update_time: now }, { transaction });
   });
   ctx.body = { code: 0, expenseId: ctx.params.id, status: 'withdrawn', message: '费用申请已撤回，可编辑后重新提交' };

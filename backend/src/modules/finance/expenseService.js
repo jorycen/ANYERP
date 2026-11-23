@@ -7,6 +7,9 @@ const {
   ExpensePerformanceAllocation,
   ResourceSettlement,
   ApprovalFlowDefinition,
+  ApprovalFlowInstance,
+  ApprovalTask,
+  ApprovalActionLog,
   Staff,
   Inbound,
   PurchaseAdjustment,
@@ -593,6 +596,27 @@ async function createSettlementReversal(settlement, operator, transaction = null
   return reversal;
 }
 
+async function closeExpenseApproval(record, operator, transaction, reason, action, now = new Date()) {
+  const staffId = operator.staffId || operator.id;
+  const instances = await ApprovalFlowInstance.findAll({
+    where: { business_type: 'expense', business_id: String(record.expense_id), status: 'pending' },
+    transaction,
+    lock: transaction.LOCK.UPDATE
+  });
+  for (const instance of instances) {
+    await ApprovalTask.update(
+      { status: 'cancelled', acted_time: now },
+      { where: { instance_id: instance.instance_id, status: { [Op.in]: ['pending', 'waiting'] } }, transaction }
+    );
+    await instance.update({ status: 'cancelled', completed_time: now, update_time: now }, { transaction });
+    await ApprovalActionLog.create({
+      log_id: generateUUID(), instance_id: instance.instance_id, task_id: null,
+      action, actor_staff_id: staffId, actor_name: operator.name || operator.phone || '',
+      comment: reason, detail_json: JSON.stringify({ expenseId: record.expense_id })
+    }, { transaction });
+  }
+}
+
 async function cancelExpenseRecord(expense, operator, transaction = null, reason = '报销申请已撤销') {
   if (!expense || expense.is_deleted) return null;
   if (expense.status === 'paid') {
@@ -670,5 +694,6 @@ module.exports = {
   arePurchaseInboundsCompleted,
   createPurchaseReimbursementAfterInbound,
   createSettlementReversal,
+  closeExpenseApproval,
   cancelExpenseRecord
 };
