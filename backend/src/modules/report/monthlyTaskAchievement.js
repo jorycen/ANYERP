@@ -377,23 +377,26 @@ async function getMonthlyTaskAchievement(ctx) {
   const user = ctx.state.user;
   const profitVisible = canViewProfit(user);
   const selfOnly = isSelfOnlyReportUser(user);
-  const companyWideRank = String(ctx.query.companyWideRank || ctx.query.company_wide_rank || '') === '1'
+  const leaderboardOnly = String(ctx.query.companyWideLeaderboard || '') === '1';
+  if (leaderboardOnly && !user.staffId) ctx.throw(403, '仅员工账号可查看任务排行榜');
+  const companyWideRank = (leaderboardOnly || String(ctx.query.companyWideRank || ctx.query.company_wide_rank || '') === '1')
     && Boolean(user.staffId);
   const requestedDimension = String(ctx.query.dimension || 'store').trim().toLowerCase() === 'staff' ? 'staff' : 'store';
   const dimension = selfOnly || companyWideRank ? 'staff' : requestedDimension;
   const requestedStaffId = companyWideRank || selfOnly
     ? String(user.staffId || '')
     : String(ctx.query.staffId || ctx.query.staff_id || '').trim();
-  const archiveScope = String(ctx.query.archiveScope || ctx.query.archive_scope || 'archived').trim().toLowerCase() === 'all' ? 'all' : 'archived';
-  const monthKey = String(ctx.query.monthKey || ctx.query.month_key || '').trim() || new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 7);
+  const archiveScope = !leaderboardOnly && String(ctx.query.archiveScope || ctx.query.archive_scope || 'archived').trim().toLowerCase() === 'all' ? 'all' : 'archived';
+  const businessDate = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const monthKey = (leaderboardOnly ? '' : String(ctx.query.monthKey || ctx.query.month_key || '').trim()) || businessDate.slice(0, 7);
   const reportScope = companyWideRank ? ['*'] : await resolveReportStoreIds(user);
   const globalScope = reportScope.includes('*');
   const storeIds = companyWideRank
     ? (await Store.findAll({ where: { is_deleted: 0, status: 1 }, attributes: ['store_id'], raw: true })).map(row => String(row.store_id))
     : await resolveStores(user, dimension === 'store' ? (ctx.query.storeId || ctx.query.store_id) : '');
-  const { startAt, endAt } = reportActualRange(ctx.query, monthKey);
+  const { startAt, endAt } = reportActualRange(leaderboardOnly ? { startDate: `${monthKey}-01`, endDate: businessDate } : ctx.query, monthKey);
   if (!storeIds.length) {
-    ctx.body = { code: 0, data: { monthKey, stores: [], employees: [] } };
+    ctx.body = { code: 0, data: leaderboardOnly ? { monthKey, leaderboard: [] } : { monthKey, stores: [], employees: [] } };
     return;
   }
   const taskWhere = { month_key: monthKey, status: 1 };
@@ -535,6 +538,15 @@ async function getMonthlyTaskAchievement(ctx) {
   const sort = (left, right) => (number(right.overallRate) - number(left.overallRate)) || (number(right.sales.actual) - number(left.sales.actual)) || String(left.targetName).localeCompare(String(right.targetName), 'zh-CN');
   storesResult.sort(sort);
   allEmployeesResult.sort(sort);
+  if (leaderboardOnly) {
+    const leaderboard = allEmployeesResult.map((row, index) => ({
+      rank: index + 1,
+      name: row.targetName,
+      isSelf: String(row.targetId) === requestedStaffId
+    }));
+    ctx.body = { code: 0, data: { monthKey, leaderboard } };
+    return;
+  }
   const companyWideTaskRank = companyWideRank
     ? allEmployeesResult.findIndex(row => String(row.targetId) === requestedStaffId) + 1
     : null;
