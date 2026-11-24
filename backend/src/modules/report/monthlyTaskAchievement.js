@@ -381,6 +381,7 @@ async function getMonthlyTaskAchievement(ctx) {
   if (leaderboardOnly && !user.staffId) ctx.throw(403, '仅员工账号可查看任务排行榜');
   const companyWideRank = (leaderboardOnly || String(ctx.query.companyWideRank || ctx.query.company_wide_rank || '') === '1')
     && Boolean(user.staffId);
+  const homeSummary = ctx.query.homeSummary === '1' && !companyWideRank;
   const requestedDimension = String(ctx.query.dimension || 'store').trim().toLowerCase() === 'staff' ? 'staff' : 'store';
   const dimension = selfOnly || companyWideRank ? 'staff' : requestedDimension;
   const requestedStaffId = companyWideRank || selfOnly
@@ -396,7 +397,10 @@ async function getMonthlyTaskAchievement(ctx) {
     : await resolveStores(user, dimension === 'store' ? (ctx.query.storeId || ctx.query.store_id) : '');
   const { startAt, endAt } = reportActualRange(leaderboardOnly ? { startDate: `${monthKey}-01`, endDate: businessDate } : ctx.query, monthKey);
   if (!storeIds.length) {
-    ctx.body = { code: 0, data: leaderboardOnly ? { monthKey, leaderboard: [] } : { monthKey, stores: [], employees: [] } };
+    ctx.body = { code: 0, data: leaderboardOnly ? { monthKey, leaderboard: [] } : {
+      monthKey, stores: [], employees: [],
+      ...(homeSummary && { regionalTasks: { total: null, chengdu: null, chongqing: null } })
+    } };
     return;
   }
   const taskWhere = { month_key: monthKey, status: 1 };
@@ -405,18 +409,35 @@ async function getMonthlyTaskAchievement(ctx) {
     taskWhere.distributor_id = user.distributorId;
     staffWhere.distributor_id = user.distributorId;
   }
-  const [stores, tasks, staffRows, permissions, allocations, batches, products, actuals, excludedDistributorStaffRows] = await Promise.all([
+  const taskRequest = MonthlyTask.findAll({ where: taskWhere, raw: true });
+  const loadTaskDetails = async () => {
+    if (!homeSummary) return Promise.all([
+      MonthlyTaskGrossProfitAllocation.findAll({ raw: true }),
+      MonthlyTaskProductBatch.findAll({ raw: true }),
+      MonthlyTaskProduct.findAll({ raw: true })
+    ]);
+    const ids = (await taskRequest).map(task => task.task_id);
+    if (!ids.length) return [[], [], []];
+    const where = { task_id: { [Op.in]: ids } };
+    const [allocations, batches] = await Promise.all([
+      MonthlyTaskGrossProfitAllocation.findAll({ where, raw: true }),
+      MonthlyTaskProductBatch.findAll({ where, raw: true })
+    ]);
+    const products = batches.length ? await MonthlyTaskProduct.findAll({
+      where: { batch_id: { [Op.in]: batches.map(batch => batch.batch_id) } }, raw: true
+    }) : [];
+    return [allocations, batches, products];
+  };
+  const [stores, tasks, staffRows, permissions, [allocations, batches, products], actuals, excludedDistributorStaffRows] = await Promise.all([
     Store.findAll({ where: { store_id: { [Op.in]: storeIds }, is_deleted: 0, status: 1 }, attributes: ['store_id', 'name', 'region_id'], raw: true }),
-    MonthlyTask.findAll({ where: taskWhere, raw: true }),
+    taskRequest,
     Staff.findAll({
       where: staffWhere,
       attributes: ['staff_id', 'name', 'store_id', 'role_code', 'distributor_id'],
       include: [{ model: Role, as: 'Roles', attributes: ['role_code'], through: { attributes: [] }, required: false }]
     }),
     StaffStorePermission.findAll({ where: { store_id: { [Op.in]: storeIds } }, attributes: ['staff_id', 'store_id'], raw: true }),
-    MonthlyTaskGrossProfitAllocation.findAll({ raw: true }),
-    MonthlyTaskProductBatch.findAll({ raw: true }),
-    MonthlyTaskProduct.findAll({ raw: true }),
+    loadTaskDetails(),
     loadActuals(storeIds, startAt, endAt, archiveScope),
     companyWideRank
       ? StaffDistributorPermission.findAll({ where: { distributor_id: 'DIST003' }, attributes: ['staff_id'], raw: true })
@@ -556,6 +577,23 @@ async function getMonthlyTaskAchievement(ctx) {
     : requestedStaffId
       ? allEmployeesResult.filter(row => String(row.targetId) === requestedStaffId)
       : allEmployeesResult;
+  if (homeSummary) {
+    const average = rows => {
+      const rates = rows.map(row => row.overallRate).filter(value => value !== null);
+      return rates.length ? rates.reduce((sum, value) => sum + value, 0) / rates.length : null;
+    };
+    const byRegion = pattern => storesResult.filter(row => pattern.test(`${row.regionName} ${row.regionCode}`));
+    ctx.body = { code: 0, data: {
+      monthKey,
+      regionalTasks: {
+        total: average(storesResult),
+        chengdu: average(byRegion(/成都|CD|SICHUAN/i)),
+        chongqing: average(byRegion(/重庆|CQ|CHONGQING/i))
+      },
+      employees: employeesResult.map(({ targetId, overallRate }) => ({ targetId, overallRate }))
+    } };
+    return;
+  }
   ctx.body = {
     code: 0,
     data: {

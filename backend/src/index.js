@@ -52,7 +52,6 @@ app.use(async (ctx, next) => {
   const leaderboard = isDashboard
     ? ctx.query.companyWideGrossProfitLeaderboard === '1'
     : ctx.query.companyWideLeaderboard === '1';
-  if (isDashboard && !companyWideRank && !leaderboard) return next();
   return recordDatabaseTiming(ctx.path, 1000, next, () => ({
     status: ctx.status,
     ...(ctx.path === '/api/v1/inventory/list' && {
@@ -60,7 +59,8 @@ app.use(async (ctx, next) => {
     }),
     ...((isDashboard || ctx.path === '/api/v1/report/monthly-task-achievement') && {
       leaderboard,
-      companyWideRank
+      companyWideRank,
+      homeSummary: ctx.query.homeSummary === '1'
     })
   }));
 });

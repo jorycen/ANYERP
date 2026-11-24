@@ -1279,7 +1279,7 @@ async function getDashboardFilters(ctx) {
 
 async function getDashboardOverview(ctx) {
   const overview = await dashboardService.buildOverview(ctx.state.user, ctx.query);
-  if (Array.isArray(overview.leaderboard)) {
+  if (Array.isArray(overview.leaderboard) || ctx.query.homeSummary === '1') {
     ctx.body = overview;
     return;
   }

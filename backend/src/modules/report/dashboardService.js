@@ -131,6 +131,15 @@ function metric(current, yoy, previous, options = {}) {
   };
 }
 
+function summarizeProductQuantities(rows) {
+  const byStore = new Map((rows || []).map(row => [String(row.storeId), row]));
+  return [...byStore.values()].reduce((totals, row) => ({
+    laptop: totals.laptop + Number(row.laptopQuantity || 0),
+    phone: totals.phone + Number(row.phoneQuantity || 0),
+    tablet: totals.tablet + Number(row.tabletQuantity || 0)
+  }), { laptop: 0, phone: 0, tablet: 0 });
+}
+
 function buildKpis(current, yoy, previous, inventory, canViewProfit) {
   return {
     salesAmount: metric(current.salesAmount, yoy.salesAmount, previous.salesAmount),
@@ -527,6 +536,20 @@ class DashboardService {
         isSelf: String(row.staffId) === String(user.staffId)
       })) };
     }
+    if (query.homeSummary === '1') {
+      const [trend, quantities] = await Promise.all([
+        this.dataSource.getTrend(filters, ranges.current, granularity),
+        this.dataSource.getStoreProductTypeQuantities(filters, ranges.current)
+      ]);
+      const current = summarizeTrend(trend);
+      const metrics = buildKpis(current, {}, {}, {}, profitVisible);
+      const { salesAmount, grossProfit, grossMargin, orderCount, averageOrderValue } = metrics;
+      return {
+        meta: { canViewProfit: profitVisible },
+        kpis: { salesAmount, grossProfit, grossMargin, orderCount, averageOrderValue },
+        productQuantities: summarizeProductQuantities(quantities)
+      };
+    }
     const [
       currentTrend,
       yoyTrend,
@@ -636,11 +659,7 @@ class DashboardService {
         serviceOrderCount: Number(category.serviceOrderCount || 0)
       };
     };
-    const productQuantities = [...storeProductTypeMap.values()].reduce((totals, row) => ({
-      laptop: totals.laptop + Number(row.laptopQuantity || 0),
-      phone: totals.phone + Number(row.phoneQuantity || 0),
-      tablet: totals.tablet + Number(row.tabletQuantity || 0)
-    }), { laptop: 0, phone: 0, tablet: 0 });
+    const productQuantities = summarizeProductQuantities(storeProductTypeQuantities);
     const inventoryView = {
       ...inventory,
       byStore: inventory.byStore?.map(row=>({...row,inventoryAmount:profitVisible?row.inventoryAmount:null})),
