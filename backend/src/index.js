@@ -40,11 +40,29 @@ let schemaInitializationReady = false;
 const monitoredPaths = new Set([
   '/api/v1/inventory/list',
   '/api/v1/inventory/sn-inventory-list',
-  '/api/v1/auth/userinfo'
+  '/api/v1/auth/userinfo',
+  '/api/v1/report/monthly-task-achievement',
+  '/api/v1/report/dashboard/overview'
 ]);
+const inventoryModes = new Set(['demo', 'focus', 'special', 'hot7', 'highMargin7']);
 app.use(async (ctx, next) => {
   if (ctx.method !== 'GET' || !monitoredPaths.has(ctx.path)) return next();
-  return recordDatabaseTiming(ctx.path, 1000, next, () => ({ status: ctx.status }));
+  const isDashboard = ctx.path === '/api/v1/report/dashboard/overview';
+  const companyWideRank = ctx.query.companyWideRank === '1' || ctx.query.company_wide_rank === '1';
+  const leaderboard = isDashboard
+    ? ctx.query.companyWideGrossProfitLeaderboard === '1'
+    : ctx.query.companyWideLeaderboard === '1';
+  if (isDashboard && !companyWideRank && !leaderboard) return next();
+  return recordDatabaseTiming(ctx.path, 1000, next, () => ({
+    status: ctx.status,
+    ...(ctx.path === '/api/v1/inventory/list' && {
+      mode: inventoryModes.has(ctx.query.modelFilter) ? ctx.query.modelFilter : 'default'
+    }),
+    ...((isDashboard || ctx.path === '/api/v1/report/monthly-task-achievement') && {
+      leaderboard,
+      companyWideRank
+    })
+  }));
 });
 app.use(errorHandler);
 app.use(responseFormatter);

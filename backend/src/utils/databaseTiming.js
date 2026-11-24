@@ -2,6 +2,20 @@ const { AsyncLocalStorage } = require('node:async_hooks');
 const { performance } = require('node:perf_hooks');
 
 const timingContext = new AsyncLocalStorage();
+const stageContext = new AsyncLocalStorage();
+
+async function recordDatabaseStage(label, run) {
+  const timing = timingContext.getStore();
+  if (!timing) return run();
+  const stage = { label, elapsedMs: 0, queryCount: 0, queryMaxMs: 0, poolAcquireMaxMs: 0 };
+  const startedAt = performance.now();
+  timing.stages.push(stage);
+  try {
+    return await stageContext.run(stage, run);
+  } finally {
+    stage.elapsedMs = Math.round(performance.now() - startedAt);
+  }
+}
 
 function registerDatabaseTiming(sequelize) {
   const acquisitions = new WeakMap();
@@ -10,7 +24,7 @@ function registerDatabaseTiming(sequelize) {
   sequelize.addHook('beforePoolAcquire', options => {
     const timing = timingContext.getStore();
     if (!timing) return;
-    const started = { timing, at: performance.now() };
+    const started = { timing, stage: stageContext.getStore(), at: performance.now() };
     acquisitions.set(options, started);
     timing.pendingAcquisitions.add(started);
   });
@@ -19,23 +33,28 @@ function registerDatabaseTiming(sequelize) {
     if (!started) return;
     acquisitions.delete(options);
     started.timing.pendingAcquisitions.delete(started);
-    started.timing.poolAcquireMaxMs = Math.max(
-      started.timing.poolAcquireMaxMs, performance.now() - started.at
-    );
+    const elapsed = Math.round(performance.now() - started.at);
+    started.timing.poolAcquireMaxMs = Math.max(started.timing.poolAcquireMaxMs, elapsed);
+    if (started.stage) started.stage.poolAcquireMaxMs = Math.max(started.stage.poolAcquireMaxMs, elapsed);
   });
   sequelize.addHook('beforeQuery', (_options, query) => {
     const timing = timingContext.getStore();
     if (!timing) return;
-    queries.set(query, { timing, at: performance.now() });
+    const stage = stageContext.getStore();
+    queries.set(query, { timing, stage, at: performance.now() });
     timing.queryCount += 1;
+    if (stage) stage.queryCount += 1;
   });
   sequelize.addHook('afterQuery', (_options, query) => {
     const started = queries.get(query);
     if (!started) return;
     queries.delete(query);
-    started.timing.queryMaxMs = Math.max(
-      started.timing.queryMaxMs, performance.now() - started.at
-    );
+    const elapsed = Math.round(performance.now() - started.at);
+    if (elapsed > started.timing.queryMaxMs) {
+      started.timing.queryMaxMs = elapsed;
+      started.timing.queryMaxStage = started.stage?.label || null;
+    }
+    if (started.stage) started.stage.queryMaxMs = Math.max(started.stage.queryMaxMs, elapsed);
   });
 }
 
@@ -45,6 +64,8 @@ async function recordDatabaseTiming(label, thresholdMs, run, details = () => ({}
     poolAcquireMaxMs: 0,
     queryCount: 0,
     queryMaxMs: 0,
+    queryMaxStage: null,
+    stages: [],
     pendingAcquisitions: new Set()
   };
   try {
@@ -65,10 +86,11 @@ async function recordDatabaseTiming(label, thresholdMs, run, details = () => ({}
         unfinishedAcquireCount: timing.pendingAcquisitions.size,
         unfinishedAcquireMaxMs: Math.round(unfinishedAcquireMaxMs),
         queryCount: timing.queryCount,
-        queryMaxMs: Math.round(timing.queryMaxMs)
+        queryMaxMs: timing.queryMaxMs,
+        ...(timing.stages.length && { queryMaxStage: timing.queryMaxStage, stages: timing.stages })
       }));
     }
   }
 }
 
-module.exports = { registerDatabaseTiming, recordDatabaseTiming };
+module.exports = { registerDatabaseTiming, recordDatabaseTiming, recordDatabaseStage };
