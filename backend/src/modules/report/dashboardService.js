@@ -410,6 +410,62 @@ class DashboardService {
     return filters;
   }
 
+  async buildCompanyGrossProfitRanking(range, archiveScope) {
+    const companyStores = await this.dataSource.query(
+      'SELECT STORE_ID AS storeId FROM T_STORE WHERE IS_DELETED = 0 AND STATUS = 1'
+    );
+    const companyStoreIds = companyStores.map(row => String(row.storeId));
+    if (!companyStoreIds.length) return [];
+    const companyFilters = {
+      storeIds: companyStoreIds,
+      archiveScope
+    };
+    const [companyOrderRows, companyAdjustmentRows] = await Promise.all([
+      this.dataSource.getEmployeeOrderRows(companyFilters, range),
+      this.dataSource.getApprovedAdjustments(companyFilters, range)
+    ]);
+    const companyRanking = buildEmployeePerformance(companyOrderRows, companyAdjustmentRows, '', true).ranking;
+    const companyRoster = await this.dataSource.query(`
+      SELECT DISTINCT s.STAFF_ID AS staffId, s.NAME AS employeeName
+        FROM T_STAFF s
+        LEFT JOIN T_STAFF_ROLE sr ON sr.STAFF_ID = s.STAFF_ID
+        LEFT JOIN T_ROLE r ON r.ROLE_ID = sr.ROLE_ID AND r.STATUS = 1
+       WHERE s.STATUS = 1 AND s.IS_DELETED = 0
+         AND (
+           LOWER(COALESCE(r.ROLE_CODE, '')) IN ('staff', 'clerk', 'manager', 'store_manager', 'store_admin')
+           OR LOWER(COALESCE(s.ROLE_CODE, '')) IN ('staff', 'clerk', 'manager', 'store_manager', 'store_admin')
+         )
+         AND COALESCE(s.DISTRIBUTOR_ID, '') <> 'DIST003'
+         AND NOT EXISTS (
+           SELECT 1
+             FROM T_STAFF_DISTRIBUTOR_PERMISSION sdp
+            WHERE sdp.STAFF_ID = s.STAFF_ID
+              AND sdp.DISTRIBUTOR_ID = 'DIST003'
+         )
+    `);
+    const rankingByStaffId = new Map(companyRanking.map(row => [String(row.staffId || ''), row]));
+    companyRoster.forEach(staff => {
+      const staffId = String(staff.staffId || '');
+      if (staffId && !rankingByStaffId.has(staffId)) {
+        rankingByStaffId.set(staffId, {
+          staffId,
+          employeeName: staff.employeeName || staffId,
+          salesAmount: 0,
+          baseGrossProfit: 0,
+          approvedAdjustment: 0,
+          grossProfit: 0,
+          participatedOrderCount: 0
+        });
+      }
+    });
+    const rankedCompanyEmployees = [...rankingByStaffId.values()]
+      .filter(row => companyRoster.some(staff => String(staff.staffId) === String(row.staffId || '')))
+      .sort((a, b) => Number(b.grossProfit || 0) - Number(a.grossProfit || 0)
+        || Number(b.salesAmount || 0) - Number(a.salesAmount || 0)
+        || String(a.employeeName || '').localeCompare(String(b.employeeName || ''), 'zh-CN'));
+    return rankedCompanyEmployees;
+  }
+
   async buildOverview(user, query = {}) {
     const selfOnly = isSelfOnlyReportUser(user);
     const leaderboardOnly = String(query.companyWideGrossProfitLeaderboard || '') === '1';
@@ -463,6 +519,14 @@ class DashboardService {
       error.status = 403;
       throw error;
     }
+    if (leaderboardOnly) {
+      const ranking = await this.buildCompanyGrossProfitRanking(ranges.current, filters.archiveScope);
+      return { leaderboard: ranking.map((row, index) => ({
+        rank: index + 1,
+        name: row.employeeName,
+        isSelf: String(row.staffId) === String(user.staffId)
+      })) };
+    }
     const [
       currentTrend,
       yoyTrend,
@@ -504,72 +568,11 @@ class DashboardService {
     );
     let companyWideGrossProfitRank = null;
     let companyWideGrossProfitTotal = null;
-    if ((leaderboardOnly || String(query.companyWideRank || query.company_wide_rank || '') === '1') && profitVisible && user.staffId) {
-      const companyStores = await this.dataSource.query(
-        'SELECT STORE_ID AS storeId FROM T_STORE WHERE IS_DELETED = 0 AND STATUS = 1'
-      );
-      const companyStoreIds = companyStores.map(row => String(row.storeId));
-      if (companyStoreIds.length) {
-        const companyFilters = {
-          storeIds: companyStoreIds,
-          archiveScope: filters.archiveScope
-        };
-        const [companyOrderRows, companyAdjustmentRows] = await Promise.all([
-          this.dataSource.getEmployeeOrderRows(companyFilters, ranges.current),
-          this.dataSource.getApprovedAdjustments(companyFilters, ranges.current)
-        ]);
-        const companyRanking = buildEmployeePerformance(companyOrderRows, companyAdjustmentRows, '', true).ranking;
-        const companyRoster = await this.dataSource.query(`
-          SELECT DISTINCT s.STAFF_ID AS staffId, s.NAME AS employeeName
-            FROM T_STAFF s
-            LEFT JOIN T_STAFF_ROLE sr ON sr.STAFF_ID = s.STAFF_ID
-            LEFT JOIN T_ROLE r ON r.ROLE_ID = sr.ROLE_ID AND r.STATUS = 1
-           WHERE s.STATUS = 1 AND s.IS_DELETED = 0
-             AND (
-               LOWER(COALESCE(r.ROLE_CODE, '')) IN ('staff', 'clerk', 'manager', 'store_manager', 'store_admin')
-               OR LOWER(COALESCE(s.ROLE_CODE, '')) IN ('staff', 'clerk', 'manager', 'store_manager', 'store_admin')
-             )
-             AND COALESCE(s.DISTRIBUTOR_ID, '') <> 'DIST003'
-             AND NOT EXISTS (
-               SELECT 1
-                 FROM T_STAFF_DISTRIBUTOR_PERMISSION sdp
-                WHERE sdp.STAFF_ID = s.STAFF_ID
-                  AND sdp.DISTRIBUTOR_ID = 'DIST003'
-             )
-        `);
-        const rankingByStaffId = new Map(companyRanking.map(row => [String(row.staffId || ''), row]));
-        companyRoster.forEach(staff => {
-          const staffId = String(staff.staffId || '');
-          if (staffId && !rankingByStaffId.has(staffId)) {
-            rankingByStaffId.set(staffId, {
-              staffId,
-              employeeName: staff.employeeName || staffId,
-              salesAmount: 0,
-              baseGrossProfit: 0,
-              approvedAdjustment: 0,
-              grossProfit: 0,
-              participatedOrderCount: 0
-            });
-          }
-        });
-        const rankedCompanyEmployees = [...rankingByStaffId.values()]
-          .filter(row => companyRoster.some(staff => String(staff.staffId) === String(row.staffId || '')))
-          .sort((a, b) => Number(b.grossProfit || 0) - Number(a.grossProfit || 0)
-            || Number(b.salesAmount || 0) - Number(a.salesAmount || 0)
-            || String(a.employeeName || '').localeCompare(String(b.employeeName || ''), 'zh-CN'));
-        const ownCompanyIndex = rankedCompanyEmployees.findIndex(row => String(row.staffId || '') === String(user.staffId));
-        if (leaderboardOnly) {
-          return { leaderboard: rankedCompanyEmployees.map((row, index) => ({
-            rank: index + 1,
-            name: row.employeeName,
-            isSelf: index === ownCompanyIndex
-          })) };
-        }
-        companyWideGrossProfitRank = ownCompanyIndex >= 0 ? ownCompanyIndex + 1 : 0;
-        companyWideGrossProfitTotal = rankedCompanyEmployees.length;
-      }
+    if (String(query.companyWideRank || query.company_wide_rank || '') === '1' && profitVisible && user.staffId) {
+      const ranking = await this.buildCompanyGrossProfitRanking(ranges.current, filters.archiveScope);
+      companyWideGrossProfitRank = ranking.findIndex(row => String(row.staffId) === String(user.staffId)) + 1;
+      companyWideGrossProfitTotal = ranking.length;
     }
-    if (leaderboardOnly) return { leaderboard: [] };
     const productAnalysis = mapProductRows(productRows, profitVisible);
     const focusCategoryRows = await this.dataSource.query(`SELECT CATEGORY_ID AS categoryId,
       PARENT_ID AS parentId, NAME AS name, LEVEL AS level, SORT_ORDER AS sortOrder,
