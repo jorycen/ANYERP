@@ -3,6 +3,7 @@ const { performance } = require('node:perf_hooks');
 
 const timingContext = new AsyncLocalStorage();
 const stageContext = new AsyncLocalStorage();
+const MAX_QUERY_TIMINGS = 100;
 
 async function recordDatabaseStage(label, run) {
   const timing = timingContext.getStore();
@@ -37,12 +38,16 @@ function registerDatabaseTiming(sequelize) {
     started.timing.poolAcquireMaxMs = Math.max(started.timing.poolAcquireMaxMs, elapsed);
     if (started.stage) started.stage.poolAcquireMaxMs = Math.max(started.stage.poolAcquireMaxMs, elapsed);
   });
-  sequelize.addHook('beforeQuery', (_options, query) => {
+  sequelize.addHook('beforeQuery', (options, query) => {
     const timing = timingContext.getStore();
     if (!timing) return;
     const stage = stageContext.getStore();
-    queries.set(query, { timing, stage, at: performance.now() });
     timing.queryCount += 1;
+    const sample = timing.queryCount <= MAX_QUERY_TIMINGS
+      ? { sequence: timing.queryCount, stage: stage?.label || null, type: options.type || null, elapsedMs: null }
+      : null;
+    if (sample) timing.queryTimings.push(sample);
+    queries.set(query, { timing, stage, sample, at: performance.now() });
     if (stage) stage.queryCount += 1;
   });
   sequelize.addHook('afterQuery', (_options, query) => {
@@ -50,6 +55,8 @@ function registerDatabaseTiming(sequelize) {
     if (!started) return;
     queries.delete(query);
     const elapsed = Math.round(performance.now() - started.at);
+    if (started.sample) started.sample.elapsedMs = elapsed;
+    started.timing.queryTotalMs += elapsed;
     if (elapsed > started.timing.queryMaxMs) {
       started.timing.queryMaxMs = elapsed;
       started.timing.queryMaxStage = started.stage?.label || null;
@@ -63,6 +70,8 @@ async function recordDatabaseTiming(label, thresholdMs, run, details = () => ({}
   const timing = {
     poolAcquireMaxMs: 0,
     queryCount: 0,
+    queryTotalMs: 0,
+    queryTimings: [],
     queryMaxMs: 0,
     queryMaxStage: null,
     stages: [],
@@ -78,7 +87,8 @@ async function recordDatabaseTiming(label, thresholdMs, run, details = () => ({}
       for (const acquisition of timing.pendingAcquisitions) {
         unfinishedAcquireMaxMs = Math.max(unfinishedAcquireMaxMs, finishedAt - acquisition.at);
       }
-      console.warn('[DB Timing]', JSON.stringify({
+      const log = elapsedMs >= 1000 ? console.warn : console.info;
+      log('[DB Timing]', JSON.stringify({
         label,
         ...details(),
         elapsedMs,
@@ -86,7 +96,10 @@ async function recordDatabaseTiming(label, thresholdMs, run, details = () => ({}
         unfinishedAcquireCount: timing.pendingAcquisitions.size,
         unfinishedAcquireMaxMs: Math.round(unfinishedAcquireMaxMs),
         queryCount: timing.queryCount,
+        queryTotalMs: timing.queryTotalMs,
         queryMaxMs: timing.queryMaxMs,
+        queryTimings: timing.queryTimings,
+        omittedQueryTimings: timing.queryCount - timing.queryTimings.length,
         ...(timing.stages.length && { queryMaxStage: timing.queryMaxStage, stages: timing.stages })
       }));
     }

@@ -1,3 +1,4 @@
+const { recordDatabaseStage } = require('../../utils/databaseTiming');
 const { QueryTypes, Op } = require('sequelize');
 const {
   sequelize,
@@ -437,8 +438,8 @@ async function getMonthlyTaskAchievement(ctx) {
       include: [{ model: Role, as: 'Roles', attributes: ['role_code'], through: { attributes: [] }, required: false }]
     }),
     StaffStorePermission.findAll({ where: { store_id: { [Op.in]: storeIds } }, attributes: ['staff_id', 'store_id'], raw: true }),
-    loadTaskDetails(),
-    loadActuals(storeIds, startAt, endAt, archiveScope),
+    recordDatabaseStage('taskConfiguration', () => loadTaskDetails()),
+    recordDatabaseStage('taskActuals', () => loadActuals(storeIds, startAt, endAt, archiveScope)),
     companyWideRank
       ? StaffDistributorPermission.findAll({ where: { distributor_id: 'DIST003' }, attributes: ['staff_id'], raw: true })
       : Promise.resolve([])

@@ -676,7 +676,7 @@ async function getSnInventoryList(ctx) {
     replacements.resourceStatus = resourceStatus;
   }
   if (String(specialOnly) === '1') where.push('sp.PRICE_ID IS NOT NULL');
-  if (['computer', 'phone', 'tablet', 'desktop'].includes(String(productType))) {
+  if (['computer', 'phone', 'tablet', 'desktop', 'accessory', 'option', 'used'].includes(String(productType))) {
     where.push(`${inventoryProductTypeSql()} = :productType`);
     replacements.productType = String(productType);
   }
@@ -1310,6 +1310,7 @@ async function buildSalesCountMap(productIds, storeId = '', scopedStoreIds = [])
        FROM T_ORDER_ITEM oi
        INNER JOIN T_ORDER o ON oi.ORDER_ID = o.ORDER_ID
       WHERE oi.PRODUCT_ID IN (:productIds)
+        AND o.CREATE_TIME >= :date30
         AND (o.ORDER_STATUS IS NULL OR o.ORDER_STATUS NOT IN ('cancelled', 'rejected'))
         ${storeCondition}
       GROUP BY oi.PRODUCT_ID, o.STORE_ID`,

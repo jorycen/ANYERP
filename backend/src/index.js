@@ -37,22 +37,17 @@ const customerOpsRouters = require('./modules/customerOps/routes');
 const PORT = process.env.PORT || 3000;
 let schemaInitializationReady = false;
 
-const monitoredPaths = new Set([
-  '/api/v1/inventory/list',
-  '/api/v1/inventory/sn-inventory-list',
-  '/api/v1/auth/userinfo',
-  '/api/v1/report/monthly-task-achievement',
-  '/api/v1/report/dashboard/overview'
-]);
 const inventoryModes = new Set(['demo', 'focus', 'special', 'hot7', 'highMargin7']);
 app.use(async (ctx, next) => {
-  if (ctx.method !== 'GET' || !monitoredPaths.has(ctx.path)) return next();
+  if (!ctx.path.startsWith('/api/') || ctx.method === 'OPTIONS') return next();
   const isDashboard = ctx.path === '/api/v1/report/dashboard/overview';
   const companyWideRank = ctx.query.companyWideRank === '1' || ctx.query.company_wide_rank === '1';
   const leaderboard = isDashboard
     ? ctx.query.companyWideGrossProfitLeaderboard === '1'
     : ctx.query.companyWideLeaderboard === '1';
-  return recordDatabaseTiming(ctx.path, 1000, next, () => ({
+  return recordDatabaseTiming('api', 0, next, () => ({
+    label: ctx._matchedRoute || 'unmatched-api',
+    method: ctx.method,
     status: ctx.status,
     ...(ctx.path === '/api/v1/inventory/list' && {
       mode: inventoryModes.has(ctx.query.modelFilter) ? ctx.query.modelFilter : 'default'

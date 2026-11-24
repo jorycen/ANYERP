@@ -1,3 +1,4 @@
+const { recordDatabaseStage } = require('../../utils/databaseTiming');
 const {
   RealtimeSqlDashboardDataSource,
   normalizeParticipants,
@@ -430,8 +431,8 @@ class DashboardService {
       archiveScope
     };
     const [companyOrderRows, companyAdjustmentRows] = await Promise.all([
-      this.dataSource.getEmployeeOrderRows(companyFilters, range),
-      this.dataSource.getApprovedAdjustments(companyFilters, range)
+      recordDatabaseStage('companyGrossProfitOrders', () => this.dataSource.getEmployeeOrderRows(companyFilters, range)),
+      recordDatabaseStage('companyGrossProfitAdjustments', () => this.dataSource.getApprovedAdjustments(companyFilters, range))
     ]);
     const companyRanking = buildEmployeePerformance(companyOrderRows, companyAdjustmentRows, '', true).ranking;
     const companyRoster = await this.dataSource.query(`
@@ -538,8 +539,8 @@ class DashboardService {
     }
     if (query.homeSummary === '1') {
       const [trend, quantities] = await Promise.all([
-        this.dataSource.getTrend(filters, ranges.current, granularity),
-        this.dataSource.getStoreProductTypeQuantities(filters, ranges.current)
+        recordDatabaseStage('currentTrend', () => this.dataSource.getTrend(filters, ranges.current, granularity)),
+        recordDatabaseStage('productQuantities', () => this.dataSource.getStoreProductTypeQuantities(filters, ranges.current))
       ]);
       const current = summarizeTrend(trend);
       const metrics = buildKpis(current, {}, {}, {}, profitVisible);
@@ -564,18 +565,18 @@ class DashboardService {
       approvedAdjustments,
       inventory
     ] = await Promise.all([
-      this.dataSource.getTrend(filters, ranges.current, granularity),
-      this.dataSource.getTrend(filters, ranges.yoy, granularity),
-      this.dataSource.getTrend(filters, ranges.previous, granularity),
+      recordDatabaseStage('currentTrend', () => this.dataSource.getTrend(filters, ranges.current, granularity)),
+      recordDatabaseStage('yearOverYearTrend', () => this.dataSource.getTrend(filters, ranges.yoy, granularity)),
+      recordDatabaseStage('previousTrend', () => this.dataSource.getTrend(filters, ranges.previous, granularity)),
       this.dataSource.getStoreRanking(filters, ranges.current),
       this.dataSource.getStoreRanking(filters, ranges.previous),
-      this.dataSource.getStoreProductTypeQuantities(filters, ranges.current),
+      recordDatabaseStage('productQuantities', () => this.dataSource.getStoreProductTypeQuantities(filters, ranges.current)),
       this.dataSource.getProductRows(filters, ranges.current),
       this.dataSource.getProductLineRows(filters, ranges.current),
       this.dataSource.getProductCategoryRows(filters, ranges.current),
       this.dataSource.getEmployeeOrderRows(filters, ranges.current),
       this.dataSource.getApprovedAdjustments(filters, ranges.current),
-      this.dataSource.getInventory({ ...filters, includeStoreAmounts: query.overallMetrics === '1' })
+      recordDatabaseStage('inventory', () => this.dataSource.getInventory({ ...filters, includeStoreAmounts: query.overallMetrics === '1' }))
     ]);
 
     const current = summarizeTrend(currentTrend);
