@@ -60,6 +60,8 @@ function isTransientDatabaseError(error) {
   return TRANSIENT_DB_ERROR_PATTERNS.some(pattern => pattern.test(text));
 }
 
+const { registerDatabaseTiming } = require('../utils/databaseTiming');
+
 const poolMax = parseInteger(process.env.DB_POOL_MAX, 10);
 const poolMin = Math.min(parseInteger(process.env.DB_POOL_MIN, 1), poolMax);
 const connectTimeout = parseInteger(process.env.DB_CONNECT_TIMEOUT_MS, 10000);
@@ -191,6 +193,8 @@ function getDatabaseStatus() {
     } : null
   };
 }
+
+registerDatabaseTiming(sequelize);
 
 console.log(
   `[DB Config] MySQL ${config.database.username}@${config.database.host}:${config.database.port}/${config.database.database}, pool min=${poolMin}, max=${poolMax}`

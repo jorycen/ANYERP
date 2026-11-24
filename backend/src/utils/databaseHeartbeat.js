@@ -82,6 +82,8 @@ function normalizeHeartbeatConfig(rawConfig) {
   };
 }
 
+const { recordDatabaseTiming } = require('./databaseTiming');
+
 async function executeDatabaseHeartbeat(heartbeatConfig) {
   const retryDelays = Array.from(
     { length: heartbeatConfig.retryMax },
@@ -90,10 +92,12 @@ async function executeDatabaseHeartbeat(heartbeatConfig) {
   const startedAt = Date.now();
 
   try {
-    await withDatabaseRetry(
-      () => sequelize.query('SELECT 1', { retry: { max: 0 } }),
-      'scheduled heartbeat',
-      retryDelays
+    await recordDatabaseTiming('database-heartbeat', 500, () =>
+      withDatabaseRetry(
+        () => sequelize.query('SELECT 1', { retry: { max: 0 } }),
+        'scheduled heartbeat',
+        retryDelays
+      )
     );
     console.log(`[DB Heartbeat] completed in ${Date.now() - startedAt}ms`);
   } catch (error) {

@@ -29,6 +29,7 @@ const { authMiddleware, storeAccessMiddleware } = require('./middleware/auth');
 const { snNormalization } = require('./middleware/snNormalization');
 const { applyPendingProductPriceChanges, recoverProductImportTasks } = require('./modules/product/controller');
 const { startDatabaseHeartbeat } = require('./utils/databaseHeartbeat');
+const { recordDatabaseTiming } = require('./utils/databaseTiming');
 const { recoverExecutingBatchApplications } = require('./modules/inventory/batchMaintenance');
 
 const app = new Koa();
@@ -36,6 +37,15 @@ const customerOpsRouters = require('./modules/customerOps/routes');
 const PORT = process.env.PORT || 3000;
 let schemaInitializationReady = false;
 
+const monitoredPaths = new Set([
+  '/api/v1/inventory/list',
+  '/api/v1/inventory/sn-inventory-list',
+  '/api/v1/auth/userinfo'
+]);
+app.use(async (ctx, next) => {
+  if (ctx.method !== 'GET' || !monitoredPaths.has(ctx.path)) return next();
+  return recordDatabaseTiming(ctx.path, 1000, next, () => ({ status: ctx.status }));
+});
 app.use(errorHandler);
 app.use(responseFormatter);
 // koa-cors 0.0.16 omits PATCH from its default method list; customer reward
