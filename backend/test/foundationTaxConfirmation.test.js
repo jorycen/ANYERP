@@ -1,5 +1,25 @@
 const test=require('node:test'),a=require('node:assert/strict'),M=require('../src/models'),F=require('../src/modules/inventory/foundation'),V=require('../src/modules/sales/purchaseVat');
 test.after(()=>M.sequelize.close());
+test('saving an unarchived service line after clearing its SN replaces the old reference', async t => {
+  const old = { basis_id: F.id('import_sale:1'), identity_key: 'import_sale:1', product_id: 'P', sn_code: 'OLD-SN' };
+  let reference = { reference_key: 'order_item:1', basis_id: old.basis_id, async destroy() { reference = null; } };
+  let created;
+  t.mock.method(M.InventoryFoundationRef, 'findAll', async () => [reference]);
+  t.mock.method(M.InventoryFoundationRef, 'findByPk', async () => reference);
+  t.mock.method(M.InventoryFoundationRef, 'create', async row => { reference = row; });
+  t.mock.method(M.InventoryFoundation, 'findAll', async () => [old]);
+  t.mock.method(M.Product, 'findAll', async () => []);
+  t.mock.method(M.ProductPrice, 'findAll', async () => []);
+  t.mock.method(M.InventoryFoundation, 'findByPk', async id => id === old.basis_id ? old : null);
+  t.mock.method(M.InventoryFoundation, 'create', async row => { created = row; return row; });
+  t.mock.method(M.OrderItem, 'findAll', async () => [{ item_id: 1, product_id: 'P', sn_id: null, sn_code: '' }]);
+  t.mock.method(V, 'resolveDocumentTaxBasis', async (_order, lines) => lines);
+  await F.ensureSalesReferences({ order_status: '未归档' }, [{ itemId: 1, productId: 'P', snCode: '' }], { LOCK: { UPDATE: 'UPDATE' } });
+  a.equal(created.sn_code, '');
+  a.equal(reference.basis_id, created.basis_id);
+  a.notEqual(reference.basis_id, old.basis_id);
+  a.equal(old.sn_code, 'OLD-SN');
+});
 test('tax confirmation audits one canonical fact and preserves acquisition cost and pricing',async t=>{
   const row={basis_id:'B',status:'pending',invoice_type:null,purchase_cost:15,company_price:16,cost_mode:'COMPANY_PRICE',revision:1,source_data:{},
     toJSON(){return {...this};},async update(patch){Object.assign(this,patch);}};

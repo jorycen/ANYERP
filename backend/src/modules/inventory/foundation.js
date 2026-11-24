@@ -153,6 +153,7 @@ async function applySalesPricing(order, lines, transaction) {
 }
 async function ensureSalesReferences(order,lines,transaction){
   if(!transaction)return M.sequelize.transaction(tx=>ensureSalesReferences(order,lines,tx));
+  const editable = ['draft','未归档','pending_approval','pending_store_approval','pending_distributor_approval'].includes(order.order_status);
   const present=await load(lines.map(l=>'order_item:'+l.itemId),transaction);
   // Existing draft references also need to retain newly traced purchase facts.
   // Previously only missing references were initialized, so a resolved return
@@ -177,7 +178,6 @@ async function ensureSalesReferences(order,lines,transaction){
     const previous=await M.InventoryFoundationRef.findByPk('order_item:'+item.item_id,{transaction,lock:transaction.LOCK.UPDATE});
     if(previous){
       const previousRow=await M.InventoryFoundation.findByPk(previous.basis_id,{transaction,lock:transaction.LOCK.UPDATE});
-      const editable = ['draft','未归档','pending_approval','pending_store_approval','pending_distributor_approval'].includes(order.order_status);
       if(!editable && previousRow && String(previousRow.product_id)!==String(item.product_id))
         fail(`订单商品与已关联基础档案不一致，请先核实原单：订单商品ID ${item.product_id}，档案商品ID ${previousRow.product_id}，档案ID ${previousRow.basis_id}`);
       if(!editable)fail('历史商品基础关联变化，需先核实原单');
@@ -198,9 +198,13 @@ async function ensureSalesReferences(order,lines,transaction){
       const b=line.purchaseTaxBasis||{};
       row=await M.InventoryFoundation.findByPk(id(key),{transaction,lock:transaction.LOCK.UPDATE});
       // 未归档更换商品时保留旧档案，新商品使用独立身份，不能沿用旧成本/票税。
-      if (!resolvedSnId && row && String(row.product_id)!==String(item.product_id)
-        && ['draft','未归档','pending_approval','pending_store_approval','pending_distributor_approval'].includes(order.order_status)) {
+      if (!resolvedSnId && row && String(row.product_id)!==String(item.product_id) && editable) {
         key += ':product:' + item.product_id;
+        row=await M.InventoryFoundation.findByPk(id(key),{transaction,lock:transaction.LOCK.UPDATE});
+      }
+      if (!resolvedSnId && row && String(row.product_id) === String(item.product_id)
+        && String(row.sn_code || '') !== String(line.snCode || '') && editable) {
+        key += ':sn:' + id(String(line.snCode || ''));
         row=await M.InventoryFoundation.findByPk(id(key),{transaction,lock:transaction.LOCK.UPDATE});
       }
       if(row && String(row.product_id)!==String(item.product_id))
