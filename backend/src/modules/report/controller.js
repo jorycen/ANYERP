@@ -1279,6 +1279,10 @@ async function getDashboardFilters(ctx) {
 
 async function getDashboardOverview(ctx) {
   const overview = await dashboardService.buildOverview(ctx.state.user, ctx.query);
+  if (Array.isArray(overview.leaderboard)) {
+    ctx.body = overview;
+    return;
+  }
   overview.decisionInsights = buildDecisionInsights(overview);
   overview.aiAdvisor = buildAiAdvisor(overview);
   ctx.body = overview;

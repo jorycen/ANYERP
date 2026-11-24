@@ -412,6 +412,11 @@ class DashboardService {
 
   async buildOverview(user, query = {}) {
     const selfOnly = isSelfOnlyReportUser(user);
+    const leaderboardOnly = String(query.companyWideGrossProfitLeaderboard || '') === '1';
+    if (leaderboardOnly) {
+      const endDate = new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10);
+      query = { startDate: `${endDate.slice(0, 7)}-01`, endDate };
+    }
     const ranges = buildRanges(query);
     const granularity = ['day', 'week', 'month'].includes(query.granularity)
       ? query.granularity
@@ -453,6 +458,11 @@ class DashboardService {
       archiveScope: query.archiveScope === 'all' ? 'all' : 'archived'
     };
     const profitVisible = canViewProfit(user);
+    if (leaderboardOnly && (!profitVisible || !user.staffId)) {
+      const error = new Error('当前账号无权查看毛利榜单');
+      error.status = 403;
+      throw error;
+    }
     const [
       currentTrend,
       yoyTrend,
@@ -494,7 +504,7 @@ class DashboardService {
     );
     let companyWideGrossProfitRank = null;
     let companyWideGrossProfitTotal = null;
-    if (String(query.companyWideRank || query.company_wide_rank || '') === '1' && profitVisible && user.staffId) {
+    if ((leaderboardOnly || String(query.companyWideRank || query.company_wide_rank || '') === '1') && profitVisible && user.staffId) {
       const companyStores = await this.dataSource.query(
         'SELECT STORE_ID AS storeId FROM T_STORE WHERE IS_DELETED = 0 AND STATUS = 1'
       );
@@ -548,10 +558,18 @@ class DashboardService {
             || Number(b.salesAmount || 0) - Number(a.salesAmount || 0)
             || String(a.employeeName || '').localeCompare(String(b.employeeName || ''), 'zh-CN'));
         const ownCompanyIndex = rankedCompanyEmployees.findIndex(row => String(row.staffId || '') === String(user.staffId));
+        if (leaderboardOnly) {
+          return { leaderboard: rankedCompanyEmployees.map((row, index) => ({
+            rank: index + 1,
+            name: row.employeeName,
+            isSelf: index === ownCompanyIndex
+          })) };
+        }
         companyWideGrossProfitRank = ownCompanyIndex >= 0 ? ownCompanyIndex + 1 : 0;
         companyWideGrossProfitTotal = rankedCompanyEmployees.length;
       }
     }
+    if (leaderboardOnly) return { leaderboard: [] };
     const productAnalysis = mapProductRows(productRows, profitVisible);
     const focusCategoryRows = await this.dataSource.query(`SELECT CATEGORY_ID AS categoryId,
       PARENT_ID AS parentId, NAME AS name, LEVEL AS level, SORT_ORDER AS sortOrder,
