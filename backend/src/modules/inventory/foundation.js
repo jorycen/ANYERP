@@ -187,7 +187,11 @@ async function ensureSalesReferences(order,lines,transaction){
     }
     const current=resolvedSnId?await M.InventoryFoundationRef.findByPk('sn_current:'+resolvedSnId,{transaction,lock:transaction.LOCK.UPDATE}):null;
     let row=current?await M.InventoryFoundation.findByPk(current.basis_id,{transaction,lock:transaction.LOCK.UPDATE}):null;
-    if(row&&row.product_id!==item.product_id)fail(`SN关联商品基础档案不一致：商品行${item.item_id}「${item.product_name||line.productName||''}」，SN ${item.sn_code||line.snCode||resolvedSnId}，订单商品ID ${item.product_id}，档案商品ID ${row.product_id}，档案ID ${row.basis_id}`);
+    if (row && String(row.product_id) !== String(item.product_id)) {
+      // A typed SN is provisional until archive. Keep the stock foundation intact.
+      if (editable && !item.sn_id) continue;
+      fail(`SN关联商品基础档案不一致：商品行${item.item_id}「${item.product_name||line.productName||''}」，SN ${item.sn_code||line.snCode||resolvedSnId}，订单商品ID ${item.product_id}，档案商品ID ${row.product_id}，档案ID ${row.basis_id}`);
+    }
     if(row){const scope=json(row.source_data||{}).taxScope,month=new Date(new Date(order.create_time).getTime()+8*3600000).toISOString().slice(0,7);
       if(scope&&scope!==month)await clearScopedTax(row,transaction);}
     if(row&&row.status==='pending'&&!row.invoice_type&&['system','migration'].includes(row.updated_by)&&line.purchaseTaxBasis?.status==='confirmed'){

@@ -75,3 +75,21 @@ test('new imported non-SN sales reuse unanimous current-stock tax, never histori
   facts[1].invoice_type='收据';facts[1].status='pending';a.equal(await F.inventoryTaxConsensus(order,line),null);
   facts[1].status='confirmed';facts[1].source_data={taxScope:'2026-10'};a.equal(await F.inventoryTaxConsensus(order,line),null);
 });
+
+test('typed SN with a different current stock foundation does not block an unarchived sale', async t => {
+  const stockReference = { basis_id: 'stock-basis' };
+  t.mock.method(M.InventoryFoundationRef, 'findAll', async () => []);
+  t.mock.method(M.InventoryFoundationRef, 'findByPk', async key => key === 'sn_current:SN-ID' ? stockReference : null);
+  t.mock.method(M.InventoryFoundationRef, 'create', async () => a.fail('不能绑定错误的档案'));
+  t.mock.method(M.InventoryFoundation, 'findByPk', async () => ({ basis_id: 'stock-basis', product_id: 'OTHER' }));
+  t.mock.method(M.InventoryFoundation, 'create', async () => a.fail('不能创建SN库存档案'));
+  const item = { item_id: 1, product_id: 'P', sn_id: null, sn_code: '20261126' };
+  t.mock.method(M.OrderItem, 'findAll', async () => [item]);
+  t.mock.method(V, 'resolveDocumentTaxBasis', async (_order, lines) => lines);
+  const lines = [{ itemId: 1, productId: 'P', snCode: '20261126', pricingOrigin: { snId: 'SN-ID' } }];
+  const transaction = { LOCK: { UPDATE: 'UPDATE' } };
+  await F.ensureSalesReferences({ order_status: '未归档' }, lines, transaction);
+  await a.rejects(F.ensureSalesReferences({ order_status: '已归档' }, lines, transaction), /SN关联商品基础档案不一致/);
+  item.sn_id = 'SN-ID';
+  await a.rejects(F.ensureSalesReferences({ order_status: '未归档' }, lines, transaction), /SN关联商品基础档案不一致/);
+});
