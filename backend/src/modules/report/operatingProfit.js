@@ -60,12 +60,18 @@ function aggregateOperatingProfit(orders, adjustments, filters = {}) {
   return { rows, summary, source: 'OPERATING_FROZEN_EVENTS_V1' };
 }
 
-async function queryOperatingProfit(filters, range, source) {
+async function loadOperatingEvents(filters, range, source) {
+  if (filters.storeIds?.length === 0) return { orders: [], adjustments: [] };
   const { RealtimeSqlDashboardDataSource } = require('./dashboardDataSource');
   const dataSource = source || new RealtimeSqlDashboardDataSource();
   const [orders, adjustments] = await Promise.all([
     dataSource.getEmployeeOrderRows(filters, range), dataSource.getApprovedAdjustments(filters, range)
   ]);
+  return { orders, adjustments };
+}
+
+async function queryOperatingProfit(filters, range, source) {
+  const { orders, adjustments } = await loadOperatingEvents(filters, range, source);
   const result = aggregateOperatingProfit(orders, adjustments, filters);
   const groups = new Map();
   for (const order of orders) {
@@ -96,4 +102,4 @@ async function getOperatingProfit(ctx) {
     summary: visible ? result.summary : { ...result.summary, grossProfit: null, baseGrossProfit: null, approvedAdjustment: null, retailOperationsGrossProfit: null } } };
 }
 
-module.exports = { getOperatingProfit, aggregateOperatingProfit, queryOperatingProfit };
+module.exports = { getOperatingProfit, aggregateOperatingProfit, queryOperatingProfit, loadOperatingEvents };

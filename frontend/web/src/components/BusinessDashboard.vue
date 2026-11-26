@@ -1,15 +1,19 @@
 <template>
   <div class="bi-dashboard" :class="`dimension-${activeDimension}`" v-loading="loading">
-    <div class="page-heading">
-      <div>
-        <div class="breadcrumb">ERP&nbsp;&nbsp;/&nbsp;&nbsp;数据看板</div>
-        <h1>经营数据看板 <span>（{{ dimensionTabs.find(tab => tab.value === activeDimension)?.label }}）</span></h1>
+    <header class="dashboard-header">
+      <h1>经营数据看板 <span>（{{ activeDimension === 'store' ? '门店经营分析' : dimensionTabs.find(tab => tab.value === activeDimension)?.label }}）</span></h1>
+      <div class="dimension-tabs">
+        <button
+          v-for="tab in dimensionTabs"
+          :key="tab.value"
+          :class="{ active: activeDimension === tab.value }"
+          @click="selectDimension(tab.value)"
+        >
+          <el-icon v-if="tab.icon" class="dimension-tab-icon"><component :is="tab.icon" /></el-icon>
+          <span>{{ tab.label }}</span>
+        </button>
       </div>
-      <div class="scope-note">
-        <el-icon><InfoFilled /></el-icon>
-        仅展示经营结果数据：排名、趋势、结构、同比、环比
-      </div>
-    </div>
+    </header>
 
     <section class="filter-panel">
       <label>区域：</label>
@@ -72,18 +76,6 @@
       </div>
     </section>
 
-    <div class="dimension-tabs">
-      <button
-        v-for="tab in dimensionTabs"
-        :key="tab.value"
-        :class="{ active: activeDimension === tab.value }"
-        @click="selectDimension(tab.value)"
-      >
-        <el-icon v-if="tab.icon" class="dimension-tab-icon"><component :is="tab.icon" /></el-icon>
-        <span>{{ tab.label }}</span>
-      </button>
-    </div>
-
     <el-alert
       v-if="errorMessage"
       :title="errorMessage"
@@ -104,8 +96,8 @@
         </article>
       </div>
       <div class="source-overview-grid">
-        <DashboardPanel title="客户来源销售占比"><div ref="sourceSalesRef" class="medium-chart"></div></DashboardPanel>
-        <DashboardPanel title="客户来源毛利贡献"><div ref="sourceProfitRef" class="medium-chart"></div></DashboardPanel>
+        <DashboardPanel title="客户来源销售额"><div ref="sourceSalesRef" class="medium-chart"></div></DashboardPanel>
+        <DashboardPanel title="客户来源经营毛利"><div ref="sourceProfitRef" class="medium-chart"></div></DashboardPanel>
         <DashboardPanel title="客户来源单数（按商品一级分类）">
           <template #actions>
             <el-select v-model="customerSourceCategory" size="small" style="width: 150px" @change="renderCustomerSourceChart">
@@ -168,6 +160,97 @@
       </article>
     </section>
 
+    <section v-show="activeDimension === 'store'" class="store-analysis">
+      <DashboardPanel title="门店销售额与经营毛利对比" class="store-comparison">
+        <div ref="storeComparisonRef" class="large-chart"></div>
+      </DashboardPanel>
+      <DashboardPanel title="门店任务达成率">
+        <div class="overall-task-progress">
+          <el-progress
+            type="circle" :width="132" :stroke-width="12" color="#32b880"
+            :percentage="Math.min(100, Math.max(0, dashboard.taskProgress?.completionRate ?? 0))"
+            :format="() => dashboard.taskProgress?.completionRate == null ? '—' : `${dashboard.taskProgress.completionRate}%`"
+          />
+          <dl>
+            <div><dt>毛利目标</dt><dd>{{ storeMoney(dashboard.taskProgress?.target) }}</dd></div>
+            <div><dt>已完成毛利</dt><dd>{{ storeMoney(dashboard.taskProgress?.actual) }}</dd></div>
+          </dl>
+        </div>
+        <p v-if="dashboard.taskProgress?.reason" class="overall-task-note">{{ dashboard.taskProgress.reason }}</p>
+      </DashboardPanel>
+      <DashboardPanel title="关键经营效率">
+        <dl class="store-efficiency">
+          <div v-for="label in ['员工人效', '库存周转天数', '库存周转率（周）']" :key="label">
+            <dt>{{ label }}</dt><dd>暂不可用</dd>
+          </div>
+        </dl>
+      </DashboardPanel>
+      <DashboardPanel title="门店经营排名" class="store-ranking">
+        <template #actions>
+          <el-select v-model="storeRankingSort" size="small" style="width: 130px" @change="loadOverview">
+            <el-option label="按销售额" value="salesAmount" />
+            <el-option v-if="dashboard.meta.canViewProfit" label="按经营毛利" value="grossProfit" />
+          </el-select>
+        </template>
+        <el-table :data="dashboard.storeRanking" size="small" max-height="290" empty-text="暂无门店经营数据">
+          <el-table-column label="排名" width="55">
+            <template #default="{ $index }"><span class="store-rank" :class="`rank-${$index + 1}`">{{ $index + 1 }}</span></template>
+          </el-table-column>
+          <el-table-column prop="storeName" label="门店" min-width="94" show-overflow-tooltip />
+          <el-table-column label="销售额" min-width="108" align="right"><template #default="{ row }">{{ storeMoney(row.salesAmount) }}</template></el-table-column>
+          <el-table-column v-if="dashboard.meta.canViewProfit" label="经营毛利" min-width="104" align="right"><template #default="{ row }">{{ storeMoney(row.grossProfit) }}</template></el-table-column>
+          <el-table-column v-if="dashboard.meta.canViewProfit" label="毛利率" width="72" align="right"><template #default="{ row }">{{ row.grossMargin == null ? '—' : row.grossMargin + '%' }}</template></el-table-column>
+          <el-table-column v-if="dashboard.meta.canViewProfit" label="任务完成率" width="94" align="right"><template #default="{ row }">{{ row.taskCompletionRate == null ? '—' : row.taskCompletionRate + '%' }}</template></el-table-column>
+          <el-table-column prop="orderCount" label="成交单量" width="82" align="right" />
+          <el-table-column v-if="dashboard.meta.canViewProfit" label="库存金额" min-width="110" align="right"><template #default="{ row }">{{ storeMoney(row.inventoryAmount) }}</template></el-table-column>
+          <el-table-column label="操作" width="62"><template #default="{ row }"><el-button link type="primary" @click="openStoreAnalysis(row)">详情</el-button></template></el-table-column>
+        </el-table>
+      </DashboardPanel>
+      <DashboardPanel title="门店销售趋势" class="store-trend">
+        <template #actions>
+          <el-radio-group v-model="storeTrendMetric" size="small" @change="renderStoreCharts">
+            <el-radio-button label="salesAmount">销售额</el-radio-button>
+            <el-radio-button v-if="dashboard.meta.canViewProfit" label="grossProfit">经营毛利</el-radio-button>
+          </el-radio-group>
+          <el-radio-group v-model="filters.granularity" size="small" @change="loadOverview">
+            <el-radio-button label="day">日</el-radio-button>
+            <el-radio-button label="week">周</el-radio-button>
+            <el-radio-button label="month">月</el-radio-button>
+          </el-radio-group>
+        </template>
+        <div ref="storeTrendRef" class="large-chart"></div>
+      </DashboardPanel>
+    </section>
+
+    <DashboardPanel
+      v-if="activeDimension === 'store' && storeFinance.state !== 'hidden'"
+      title="门店财务经营利润"
+      class="store-finance-panel"
+      v-loading="storeFinance.state === 'loading'"
+    >
+      <p v-if="storeFinance.state === 'filtered'" class="overall-task-note">财务利润按区域、门店和日期查询。清除员工及产品线筛选后查询。</p>
+      <el-alert v-else-if="storeFinance.state === 'error'" type="error" :closable="false" title="门店财务经营利润暂不可用，请重新查询。" />
+      <el-table v-else-if="storeFinance.state === 'ready'" :data="storeFinance.rows" row-key="storeId" size="small" empty-text="当前范围暂无门店利润数据">
+        <el-table-column prop="storeName" label="门店" min-width="120" />
+        <el-table-column label="总毛利" min-width="120" align="right">
+          <template #default="{ row }">{{ storeMoney(row.operatingMetrics?.grossProfit) }}</template>
+        </el-table-column>
+        <el-table-column label="成本（经营费用）" min-width="140" align="right">
+          <template #default="{ row }">{{ storeMoney(row.operatingMetrics?.cost ?? row.summary?.operatingExpense) }}</template>
+        </el-table-column>
+        <el-table-column label="经营利润" min-width="120" align="right">
+          <template #default="{ row }">
+            <span :class="profitTone(storeFinancialProfit(row))">{{ storeMoney(storeFinancialProfit(row)) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="核实状态" min-width="115">
+          <template #default="{ row }">
+            {{ row.operatingMetrics?.operatingProfit != null ? '已核实' : storeFinancialProfit(row) != null ? '暂估 · 待核实' : '待核算' }}
+          </template>
+        </el-table-column>
+      </el-table>
+    </DashboardPanel>
+
     <section v-show="showSection('trend') && activeDimension !== 'employee'" class="chart-grid trend-section">
       <DashboardPanel title="销售额趋势（按日/周/月）">
         <template #actions>
@@ -222,7 +305,7 @@
     </section>
 
     <section v-show="activeDimension !== 'employee' && (showSection('store') || showSection('employee') || showSection('productLine'))" class="analysis-grid ranking-section">
-      <DashboardPanel v-show="showSection('store')" title="门店经营排名">
+      <DashboardPanel v-show="showSection('store')" :title="activeDimension === 'store' ? '门店销售品类明细' : '门店经营排名'">
         <template v-if="activeDimension === 'overall'" #actions>
           <el-select v-model="storeRankingSort" style="width:160px" size="small" @change="loadOverview"><el-option label="按销售额排名" value="salesAmount" /><el-option v-if="dashboard.meta.canViewProfit" label="按毛利额排名" value="grossProfit" /><el-option v-if="dashboard.meta.canViewProfit" label="按毛利率排名" value="grossMargin" /><el-option v-if="dashboard.meta.canViewProfit" label="按任务完成率排名" value="taskCompletionRate" /><el-option v-if="dashboard.meta.canViewProfit" label="按库存金额排名" value="inventoryAmount" /></el-select>
         </template>
@@ -393,7 +476,6 @@ import {
   Coin,
   DataAnalysis,
   Document,
-  InfoFilled,
   Money,
   Shop,
   UserFilled
@@ -489,6 +571,10 @@ const ProductTable = defineComponent({
 const loading = ref(false)
 const errorMessage = ref('')
 const datePickerRef = ref(null)
+const storeComparisonRef = ref(null)
+const storeTrendRef = ref(null)
+const storeFinance = reactive({ state: 'hidden', rows: [] })
+const storeTrendMetric = ref('salesAmount')
 const salesTrendRef = ref(null)
 const profitTrendRef = ref(null)
 const productLineRef = ref(null)
@@ -557,31 +643,11 @@ const customerSourceKpiCards = computed(() => [
   { key: 'average', label: '客单价', value: customerSourceSummary.value.averageOrderValue == null ? '不可用' : formatCurrency(customerSourceSummary.value.averageOrderValue), icon: UserFilled, color: 'cyan' },
   { key: 'stores', label: '涉及门店数', value: customerSourceSummary.value.storeCount == null ? '不可用' : formatNumber(customerSourceSummary.value.storeCount), icon: Shop, color: 'orange' }
 ])
-const customerSourceChartData = computed(() => {
-  const entities = new Map()
-  const sourceTotals = new Map()
-  customerSourceRows.value.forEach(row => {
-    const dimensionName = String(row.dimensionName || customerSourceDimensionLabel.value).trim()
-    const entityId = String(row.dimensionId || dimensionName)
-    const source = String(row.customerSource || '未填写来源').trim()
-    const entity = entities.get(entityId) || { id: entityId, name: dimensionName, sources: {} }
-    const sourceValues = entity.sources[source] || { orderCount: 0, salesAmount: 0, grossProfit: 0 }
-    sourceValues.orderCount += Number(row.orderCount || 0)
-    sourceValues.salesAmount += Number(row.salesAmount || 0)
-    sourceValues.grossProfit += Number(row.grossProfit || 0)
-    entity.sources[source] = sourceValues
-    entities.set(entityId, entity)
-    sourceTotals.set(source, (sourceTotals.get(source) || 0) + Number(row[customerSourceMetric.value] || 0))
-  })
-  const rows = [...entities.values()].map(entity => ({
-    ...entity,
-    total: Object.values(entity.sources).reduce((sum, values) => sum + Number(values[customerSourceMetric.value] || 0), 0)
-  })).sort((a, b) => b.total - a.total || a.name.localeCompare(b.name, 'zh-CN'))
-  const sources = [...sourceTotals.entries()]
-    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'zh-CN'))
-    .map(([source]) => source)
-  return { rows, sources }
-})
+const customerSourceChartRows = ref([])
+const customerSourceChartData = computed(() => ({
+  rows: [...customerSourceChartRows.value].sort((a, b) => b[customerSourceMetric.value] - a[customerSourceMetric.value]),
+  sources: sourceDistribution.value.map(row => row.customerSource)
+}))
 
 function emptyDashboard() {
   return {
@@ -618,7 +684,7 @@ const kpiCards = computed(() => {
   const kpis = dashboard.kpis || {}
   return [
     card('salesAmount', '销售额', Money, 'blue', 'currency', kpis.salesAmount),
-    card('grossProfit', '毛利额', DataAnalysis, 'green', 'currency', kpis.grossProfit),
+    card('grossProfit', '经营毛利', DataAnalysis, 'green', 'currency', kpis.grossProfit),
     card('grossMargin', '毛利率', Coin, 'orange', 'percent', kpis.grossMargin),
     card('orderCount', '成交单量', Document, 'purple', 'number', kpis.orderCount),
     card('averageOrderValue', '客单价', UserFilled, 'cyan', 'currency', kpis.averageOrderValue),
@@ -714,12 +780,16 @@ function focusEmployee(row) {
   loadOverview()
 }
 
+let customerSourceSequence = 0
 async function loadCustomerSourceAnalysis() {
   if (!Array.isArray(dateRange.value) || dateRange.value.length !== 2) return
+  const sequence = ++customerSourceSequence
   customerSourceLoading.value = true
   try {
     const res = await api.getCustomerSourceAnalysis({ startDate: dateRange.value[0], endDate: dateRange.value[1], dimension: customerSourceDimension.value, regionId: filters.regionId || undefined, storeId: filters.storeId || undefined, employeeId: filters.employeeId || undefined, productLine: filters.productLine || undefined })
-    if (res.code === 0) {
+    if (sequence !== customerSourceSequence || activeDimension.value !== 'customerSource') return
+    if (res.code === 0 && res.data?.formulaVersion === 'OPERATING_FROZEN_EVENTS_V1') {
+      customerSourceChartRows.value = res.data.chartRows
       customerSourceRows.value = res.data?.rows || []
       customerSourceSummary.value = res.data?.summary || {}
       sourceDistribution.value = res.data?.sourceDistribution || []
@@ -730,18 +800,28 @@ async function loadCustomerSourceAnalysis() {
       if (!customerSourceCanViewProfit.value && customerSourceMetric.value === 'grossProfit') customerSourceMetric.value = 'salesAmount'
       await nextTick()
       renderCustomerSourceChart()
+    } else {
+      throw new Error('统一经营流水的客户来源数据暂不可用')
     }
   } catch (error) {
-    ElMessage.error(error.response?.data?.message || '客户来源分析加载失败')
+    if (sequence !== customerSourceSequence || activeDimension.value !== 'customerSource') return
+    customerSourceRows.value = []
+    customerSourceChartRows.value = []
+    customerSourceSummary.value = {}
+    sourceDistribution.value = []
+    categorySourceDistribution.value = []
+    customerSourceCanViewProfit.value = false
+    renderCustomerSourceChart()
+    ElMessage.error(error.response?.data?.message || error.message || '客户来源分析加载失败')
   } finally {
-    customerSourceLoading.value = false
+    if (sequence === customerSourceSequence) customerSourceLoading.value = false
   }
 }
 
 function showSection(section) {
   if (activeDimension.value === 'overall') return ['trend', 'store'].includes(section)
   if (activeDimension.value === 'customerSource') return false
-  if (section === 'trend') return ['store', 'employee', 'productLine', 'product'].includes(activeDimension.value)
+  if (section === 'trend') return ['employee', 'productLine', 'product'].includes(activeDimension.value)
   return activeDimension.value === section
 }
 
@@ -755,6 +835,7 @@ async function loadFilterOptions() {
 }
 
 async function loadOverview() {
+  if (activeDimension.value === 'customerSource') return loadCustomerSourceAnalysis()
   const sequence = ++focusOverviewSequence
   if (!Array.isArray(dateRange.value) || dateRange.value.length !== 2) {
     ElMessage.warning('请选择日期范围')
@@ -762,8 +843,9 @@ async function loadOverview() {
   }
   loading.value = true
   errorMessage.value = ''
+  Object.assign(storeFinance, { state: 'hidden', rows: [] })
   try {
-    const res = await api.getDashboardOverview({
+    const params = {
       startDate: dateRange.value[0],
       endDate: dateRange.value[1],
       regionId: filters.regionId || undefined,
@@ -771,21 +853,55 @@ async function loadOverview() {
       employeeId: filters.employeeId || undefined,
       productLine: filters.productLine || undefined,
       granularity: filters.granularity,
-      overallMetrics: activeDimension.value === 'overall' ? '1' : undefined,
+      overallMetrics: ['overall', 'store'].includes(activeDimension.value) ? '1' : undefined,
       storeSort: storeRankingSort.value,
-    })
+    }
+    const res = await api.getDashboardOverview(params)
     if(sequence!==focusOverviewSequence)return
     if (res.code === 0) {
       Object.assign(dashboard, emptyDashboard(), res.data || {})
       await nextTick()
       renderCharts()
-      if (activeDimension.value === 'customerSource') await loadCustomerSourceAnalysis()
+      if (activeDimension.value === 'store') void loadStoreFinance(params, sequence)
     }
   } catch (error) {
     if(sequence===focusOverviewSequence)errorMessage.value = error.response?.data?.message || error.message || '经营看板加载失败'
   } finally {
     if(sequence===focusOverviewSequence)loading.value = false
   }
+}
+
+async function loadStoreFinance({ startDate, endDate, regionId, storeId, employeeId, productLine }, sequence) {
+  if (employeeId || productLine) {
+    storeFinance.state = 'filtered'
+    return
+  }
+  storeFinance.state = 'loading'
+  const isCurrent = () => sequence === focusOverviewSequence && activeDimension.value === 'store'
+  try {
+    const response = await api.getFinancialProfitOrders({
+      mobile: '1', startDate, endDate, regionId, storeId, page: 1, pageSize: 1
+    })
+    if (!isCurrent()) return
+    const data = response.data
+    if (response.code !== 0 || !Array.isArray(data?.storeSummaries)) {
+      storeFinance.state = 'error'
+      return
+    }
+    Object.assign(storeFinance, { state: 'ready', rows: data.storeSummaries })
+  } catch (error) {
+    if (isCurrent()) storeFinance.state = error.response?.status === 403 ? 'hidden' : 'error'
+  }
+}
+
+function storeFinancialProfit({ operatingMetrics }) {
+  return operatingMetrics?.operatingProfit ?? operatingMetrics?.estimatedOperatingProfit
+}
+
+function profitTone(value) {
+  if (Number(value) > 0) return 'store-profit-positive'
+  if (Number(value) < 0) return 'store-profit-negative'
+  return ''
 }
 
 function getChart(element, key) {
@@ -803,14 +919,23 @@ function renderCustomerSourceChart() {
     const chart = getChart(element, key)
     if (!chart) continue
     const available = field !== 'grossProfit' || customerSourceCanViewProfit.value
-    chart.setOption({ color: ['#3084ff', '#66c587', '#ffd43b', '#ff766c', '#60cddd', '#9c80ed', '#a5adba'], tooltip: { trigger: 'item' }, legend: { type: 'scroll', orient: 'vertical', right: 0, top: 'middle' }, series: [{ type: 'pie', radius: ['48%', '73%'], center: ['32%', '50%'], label: { show: false }, data: available ? sourceDistribution.value.filter(row => row[field] != null).map(row => ({ name: row.customerSource, value: row[field] })) : [] }], title: available ? undefined : { text: '无毛利查看权限', left: 'center', top: 'middle', textStyle: { fontSize: 13 } } }, true)
+    const rows = available ? sourceDistribution.value : []
+    chart.setOption({
+      color: [field === 'grossProfit' ? '#32b880' : '#2874f8'],
+      tooltip: { trigger: 'axis', valueFormatter: storeMoney },
+      grid: { left: 8, right: 16, top: 12, bottom: 8, containLabel: true },
+      xAxis: { type: 'category', data: rows.map(row => row.customerSource), axisLabel: { hideOverlap: true } },
+      yAxis: { type: 'value', axisLabel: { formatter: compactNumber } },
+      dataZoom: rows.length > 10 ? [{ type: 'inside', endValue: 9 }] : [],
+      series: [{ type: 'bar', barMaxWidth: 24, data: rows.map(row => row[field]) }],
+      title: available ? undefined : { text: '无毛利查看权限', left: 'center', top: 'middle', textStyle: { fontSize: 13 } }
+    }, true)
   }
   const trendChart = getChart(sourceTrendRef.value, 'sourceTrend')
   if (trendChart) {
     const rows = categorySourceDistribution.value.filter(row => !customerSourceCategory.value || row.category === customerSourceCategory.value)
-    const sourceCounts = new Map()
-    rows.forEach(row => sourceCounts.set(row.customerSource, (sourceCounts.get(row.customerSource) || 0) + Number(row.orderCount || 0)))
-    trendChart.setOption({ color: ['#3084ff', '#66c587', '#ffd43b', '#ff766c', '#60cddd', '#9c80ed', '#a5adba'], tooltip: { trigger: 'item', formatter: '{b}<br/>单数：{c} 单（{d}%）' }, legend: { type: 'scroll', orient: 'vertical', right: 0, top: 'middle' }, series: [{ type: 'pie', radius: ['48%', '73%'], center: ['32%', '50%'], label: { show: false }, data: [...sourceCounts.entries()].sort((a, b) => b[1] - a[1]).map(([name, value]) => ({ name, value })) }] }, true)
+    const counts = customerSourceCategory.value ? rows : sourceDistribution.value
+    trendChart.setOption({ color: ['#3084ff', '#66c587', '#ffd43b', '#ff766c', '#60cddd', '#9c80ed', '#a5adba'], tooltip: { trigger: 'item', formatter: '{b}<br/>单数：{c} 单（{d}%）' }, legend: { type: 'scroll', orient: 'vertical', right: 0, top: 'middle' }, series: [{ type: 'pie', radius: ['48%', '73%'], center: ['32%', '50%'], label: { show: false }, data: counts.map(row => ({ name: row.customerSource, value: row.orderCount })) }] }, true)
   }
   const { rows, sources } = customerSourceChartData.value
   const valueKey = customerSourceMetric.value
@@ -866,7 +991,7 @@ function renderCustomerSourceChart() {
       stack: 'customer-source',
       barMaxWidth: 22,
       emphasis: { focus: 'series' },
-      data: rows.map(row => Number(row.sources[source]?.[valueKey] || 0))
+      data: rows.map(row => Object.hasOwn(row.sources, source) ? row.sources[source][valueKey] : null)
     }))
   }, true)
 }
@@ -933,7 +1058,50 @@ function trendOption(kind) {
   }
 }
 
+function storeMoney(value) {
+  return value == null ? '—' : formatCurrency(value)
+}
+
+function renderStoreCharts() {
+  if (activeDimension.value !== 'store') return
+  const rows = dashboard.storeRanking
+  const canViewProfit = dashboard.meta.canViewProfit
+  const colors = ['#2874f8', '#32b880']
+  const moneyAxis = { type: 'value', axisLabel: { formatter: compactNumber }, splitLine: { lineStyle: { color: '#edf1f8' } } }
+  const categoryAxis = data => ({ type: 'category', data, axisLabel: { hideOverlap: true }, axisTick: { show: false } })
+  const sales = { key: 'salesAmount', name: '销售额' }
+  const profit = { key: 'grossProfit', name: '经营毛利' }
+  getChart(storeComparisonRef.value, 'storeComparison')?.setOption({
+    color: colors,
+    tooltip: { trigger: 'axis', valueFormatter: storeMoney },
+    legend: { top: 0 },
+    grid: { left: 12, right: 16, top: 36, bottom: 12, containLabel: true },
+    xAxis: categoryAxis(rows.map(row => row.storeName)),
+    yAxis: moneyAxis,
+    series: (canViewProfit ? [sales, profit] : [sales]).map(({ key, name }) => ({
+      name, type: 'bar', barMaxWidth: 28,
+      itemStyle: { borderRadius: [4, 4, 0, 0] },
+      data: rows.map(row => row[key])
+    }))
+  }, true)
+
+  const metric = canViewProfit && storeTrendMetric.value === profit.key ? profit : sales
+  getChart(storeTrendRef.value, 'storeTrend')?.setOption({
+    color: colors,
+    tooltip: { trigger: 'axis', valueFormatter: storeMoney },
+    grid: { left: 12, right: 16, top: 16, bottom: 12, containLabel: true },
+    xAxis: categoryAxis(dashboard.trend.map(row => row.bucket)),
+    yAxis: moneyAxis,
+    series: [{
+      name: metric.name, type: 'line', smooth: true, symbolSize: 6,
+      areaStyle: { opacity: 0.08 }, data: dashboard.trend.map(row => row[metric.key])
+    }]
+  }, true)
+  if (rows.length) resizeCharts()
+}
+
 function renderCharts() {
+  renderStoreCharts()
   getChart(salesTrendRef.value, 'sales')?.setOption(trendOption('sales'), true)
   const profitChart = getChart(profitTrendRef.value, 'profit')
   if (profitChart) {
@@ -1045,41 +1213,6 @@ onBeforeUnmount(() => {
   min-width: 0;
   color: var(--text);
   padding: 2px 2px 18px;
-}
-
-.page-heading {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  margin-bottom: 10px;
-}
-
-.breadcrumb {
-  color: #6f7b8e;
-  font-size: 13px;
-  margin-bottom: 8px;
-}
-
-.page-heading h1 {
-  margin: 0;
-  font-size: 24px;
-  line-height: 1.2;
-}
-
-.page-heading h1 span {
-  font-size: 19px;
-}
-
-.scope-note {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: #4e6079;
-  font-size: 12px;
-}
-
-.scope-note .el-icon {
-  color: var(--primary);
 }
 
 .filter-panel {
@@ -1639,12 +1772,6 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 980px) {
-  .page-heading {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 6px;
-  }
-
   .filter-panel :deep(.el-select),
   .date-filter {
     width: 180px !important;
@@ -1726,4 +1853,54 @@ onBeforeUnmount(() => {
 .overall-task-note { margin:0; color:#53627a; font-size:12px; line-height:1.6; }
 @media(max-width:1300px) { .dimension-overall .trend-section { grid-template-columns:1fr 1fr; } .dimension-overall .trend-section > :last-child { grid-column:1 / -1; } }
 @media(max-width:760px) { .dimension-overall .trend-section { grid-template-columns:1fr; } }
+
+.dashboard-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 22px;
+  padding: 0 14px;
+  background: #1043a6;
+  color: #fff;
+  border-radius: 8px 8px 0 0;
+}
+.dashboard-header h1 { margin: 10px 0; font-size: 20px; }
+.dashboard-header h1 span { font-size: 16px; }
+.dashboard-header .dimension-tabs { border: 0; margin: 0; padding: 0; max-width: 100%; }
+.dashboard-header .dimension-tabs button { color: #fff; white-space: nowrap; }
+.dashboard-header .dimension-tabs button:hover { background: #2056bd; }
+.dashboard-header .dimension-tabs button.active { background: #1b5ff2; }
+.dashboard-header .dimension-tabs button.active::after { display: none; }
+.filter-panel { padding-inline: 12px; }
+.store-analysis {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.store-analysis > .dashboard-panel { grid-column: span 3; min-width: 0; }
+.store-analysis > .store-comparison { grid-column: span 6; }
+.store-analysis > .store-ranking { grid-column: span 8; }
+.store-analysis > .store-trend { grid-column: span 4; }
+.store-analysis :deep(.panel-header) { flex-wrap: wrap; gap: 8px; }
+.store-trend .el-radio-group + .el-radio-group { margin-inline-start: 8px; }
+.store-efficiency { display: grid; gap: 8px; margin: 0; }
+.store-efficiency div { display: flex; justify-content: space-between; padding: 12px; background: #f3f7fc; border-radius: 6px; }
+.store-efficiency dd { margin: 0; color: #53627a; }
+.store-rank { display: inline-grid; place-items: center; width: 23px; height: 23px; border-radius: 5px; background: #eef2f8; font-weight: 700; }
+.store-rank.rank-1 { background: #cc3e2b; color: white; }
+.store-rank.rank-2 { background: #9e5000; color: white; }
+.store-rank.rank-3 { background: #ffca37; }
+@media (max-width: 1200px) {
+  .store-analysis > .dashboard-panel { grid-column: span 6; }
+  .store-analysis > .store-ranking { grid-column: span 12; }
+}
+@media (max-width: 720px) {
+  .store-analysis > .dashboard-panel { grid-column: span 12; }
+  .dashboard-header .dimension-tabs { overflow-x: auto; }
+}
+.store-finance-panel { margin-bottom: 12px; min-height: 76px; }
+.store-profit-positive, .store-profit-negative { border-radius: 4px; padding: 3px 6px; }
+.store-profit-positive { background: #eaf7ee; color: #14663c; }
+.store-profit-negative { background: #fff0ed; color: #a52b20; }
 </style>

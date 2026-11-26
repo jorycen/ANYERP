@@ -476,17 +476,8 @@ class DashboardService {
     return rankedCompanyEmployees;
   }
 
-  async buildOverview(user, query = {}) {
+  async resolveOperatingFilters(user, query) {
     const selfOnly = isSelfOnlyReportUser(user);
-    const leaderboardOnly = String(query.companyWideGrossProfitLeaderboard || '') === '1';
-    if (leaderboardOnly) {
-      const endDate = new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10);
-      query = { startDate: `${endDate.slice(0, 7)}-01`, endDate };
-    }
-    const ranges = buildRanges(query);
-    const granularity = ['day', 'week', 'month'].includes(query.granularity)
-      ? query.granularity
-      : 'day';
     let storeIds = await resolveReportStoreIds(user);
     if (storeIds.includes('*')) {
       const rows = await this.dataSource.query(
@@ -515,7 +506,7 @@ class DashboardService {
       storeIds = regionStores.map(row => String(row.storeId));
     }
 
-    const filters = {
+    return {
       storeIds,
       storeId: query.storeId || '',
       regionId: query.regionId || '',
@@ -523,6 +514,21 @@ class DashboardService {
       productLine: query.productLine || '',
       archiveScope: query.archiveScope === 'all' ? 'all' : 'archived'
     };
+  }
+
+  async buildOverview(user, query = {}) {
+    const selfOnly = isSelfOnlyReportUser(user);
+    const leaderboardOnly = String(query.companyWideGrossProfitLeaderboard || '') === '1';
+    if (leaderboardOnly) {
+      const endDate = new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10);
+      query = { startDate: `${endDate.slice(0, 7)}-01`, endDate };
+    }
+    const ranges = buildRanges(query);
+    const granularity = ['day', 'week', 'month'].includes(query.granularity)
+      ? query.granularity
+      : 'day';
+    const filters = await this.resolveOperatingFilters(user, query);
+    const { storeIds } = filters;
     const profitVisible = canViewProfit(user);
     if (leaderboardOnly && (!profitVisible || !user.staffId)) {
       const error = new Error('当前账号无权查看毛利榜单');

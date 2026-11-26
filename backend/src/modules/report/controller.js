@@ -469,63 +469,52 @@ function buildInventoryReportMetrics(categoryStats = []) {
   return { rows, summary };
 }
 
-async function getCustomerSourceAnalysis(ctx) {
-  const { startDate, endDate, dimension = 'company', storeId = '', employeeId = '', regionId = '', productLine = '' } = ctx.query;
-  const user = ctx.state.user;
-  const groupBy = ['company', 'store', 'employee'].includes(dimension) ? dimension : 'company';
-  const storeIds = await resolveReportStoreIds(user);
-  const where = {
-    is_deleted: 0,
-    store_id: storeIds.includes('*') ? { [Op.ne]: null } : { [Op.in]: storeIds },
-    order_status: { [Op.in]: POSITIVE_SALES_ORDER_STATUSES }
-  };
-  appendOperatingSourceCondition(where);
-  if (storeId) {
-    if (!storeIds.includes('*') && !storeIds.map(String).includes(String(storeId))) ctx.throw(403, '无权查看该门店');
-    where.store_id = String(storeId);
-  }
-  if (employeeId) where[Op.and] = [...(where[Op.and] || []), buildEmployeeParticipationCondition(employeeId)];
-  if (startDate && endDate) {
-    where.create_time = { [Op.gte]: new Date(startDate), [Op.lte]: new Date(`${endDate} 23:59:59`) };
-  }
-  if (isSelfOnlyReportUser(user)) {
-    const participation = buildEmployeeParticipationCondition(user.staffId);
-    where[Op.and] = [...(where[Op.and] || []), participation];
-  }
+async function loadCustomerSourceEvents(ctx) {
+  const { buildRanges } = require('./dashboardService');
+  const { loadOperatingEvents } = require('./operatingProfit');
+  const filters = await dashboardService.resolveOperatingFilters(ctx.state.user, ctx.query);
+  const range = buildRanges(ctx.query).current;
+  const { orders, adjustments } = await loadOperatingEvents(filters, range, dashboardService.dataSource);
+  return { filters, orders, adjustments, profitVisible: canViewProfit(ctx.state.user) };
+}
 
-  const [orders, categories] = await Promise.all([
-    Order.findAll({
-      where,
-      attributes: [
-        'order_id', 'store_id', 'create_staff_id', 'create_user', 'operator_staff_id', 'operator_name',
-        'customer_source', 'customer_source_detail', 'total_amount', 'create_time'
-      ],
-      include: [
-        { model: Store, attributes: ['store_id', 'name', 'distributor_id'], ...(regionId ? { where: { region_id: regionId }, required: true } : {}), include: [{ model: Distributor, attributes: ['distributor_id', 'name'], required: false }] },
-        { model: Staff, as: 'Applicant', attributes: ['staff_id', 'name'], required: false },
-        { model: OrderGrossProfit, as: 'grossProfitSnapshot', attributes: ['gross_profit_amount'], required: false },
-        { model: OrderItem, include: [{ model: Product, as: 'Product', attributes: ['category_id', 'category'], required: false }] }
-      ],
-      order: [['create_time', 'DESC']]
-    }),
-    ProductCategory.findAll({ attributes: ['category_id', 'parent_id', 'name'], raw: true })
+async function customerSourceReport(ctx, detail = false) {
+  const { aggregateOperatingProfit } = require('./operatingProfit');
+  const { filters, orders, adjustments, profitVisible } = await loadCustomerSourceEvents(ctx);
+  const dimension = ['store', 'employee'].includes(ctx.query.dimension) ? ctx.query.dimension : 'company';
+  const orderIds = [...new Set(orders.filter(row => !row.entry_type || row.source_order_id)
+    .map(row => String(row.source_order_id || row.order_id)))];
+  const [metadata, categories, returnRows, stores] = await Promise.all([
+    orderIds.length ? Order.findAll({
+      where: { order_id: { [Op.in]: orderIds } },
+      attributes: ['order_id', 'operator_staff_id', 'operator_name', 'customer_source', 'customer_source_detail'],
+      include: detail ? [] : [{ model: OrderItem, include: [{ model: Product, as: 'Product', attributes: ['category_id', 'category'], required: false }] }]
+    }) : [],
+    detail ? [] : ProductCategory.findAll({ attributes: ['category_id', 'parent_id', 'name'], raw: true }),
+    !detail && orderIds.length ? SalesReturnRequest.findAll({
+      where: { order_id: { [Op.in]: orderIds }, status: { [Op.notIn]: ['cancelled', 'canceled', 'voided', 'rejected'] } },
+      attributes: ['order_id'], raw: true
+    }) : [],
+    orders.length && dimension === 'company' ? Store.findAll({
+      where: { store_id: { [Op.in]: [...new Set(orders.map(row => row.store_id))] } },
+      attributes: ['store_id', 'distributor_id'],
+      include: [{ model: Distributor, attributes: ['distributor_id', 'name'], required: false }]
+    }) : []
   ]);
-
-  if (!orders.length) {
-    ctx.body = { dimension: groupBy, canViewProfit: canViewProfit(user), summary: { orderCount: 0, salesAmount: 0, grossProfit: 0, afterSalesOrderCount: 0 }, rows: [] };
-    return;
-  }
-
-  const orderIds = orders.map(order => order.order_id);
-  const orderIdSet = new Set(orderIds.map(String));
-  const returnRows = await SalesReturnRequest.findAll({
-    where: { order_id: { [Op.in]: orderIds }, status: { [Op.notIn]: ['cancelled', 'canceled', 'voided', 'rejected'] } },
-    attributes: ['order_id'],
-    raw: true
-  });
+  const metadataByOrder = new Map(metadata.map(row => [String(row.order_id), row]));
+  const storeById = new Map(stores.map(row => [String(row.store_id), row]));
   const afterSalesOrderIds = new Set(returnRows.map(row => String(row.order_id)));
   const categoryMap = new Map(categories.map(row => [String(row.category_id), row]));
-  const groups = new Map();
+  const adjustmentsByOrder = new Map();
+  for (const row of adjustments) {
+    const key = String(row.orderId);
+    if (!adjustmentsByOrder.has(key)) adjustmentsByOrder.set(key, []);
+    adjustmentsByOrder.get(key).push(row);
+  }
+  const totals = events => {
+    const { summary } = aggregateOperatingProfit(events, events.flatMap(row => adjustmentsByOrder.get(String(row.order_id)) || []), filters);
+    return { ...summary, grossProfit: profitVisible ? summary.grossProfit : null, baseGrossProfit: profitVisible ? summary.baseGrossProfit : null };
+  };
   const getRootCategory = product => {
     let current = categoryMap.get(String(product?.category_id || ''));
     let root = current;
@@ -551,113 +540,113 @@ async function getCustomerSourceAnalysis(ctx) {
     return `${name}销售`;
   };
 
+  const groups = new Map();
   const sourceGroups = new Map();
+  const dimensionSourceGroups = new Map();
   const categorySourceGroups = new Map();
   const productCategoryNames = new Set();
-  orders.forEach(order => {
-    const store = order.Store || {};
-    const distributor = store.Distributor || {};
-    const employeeId = order.operator_staff_id || order.create_staff_id || '';
-    const employeeName = order.operator_name || order.create_user || order.Applicant?.name || '未指定员工';
-    let dimensionId, dimensionName;
-    if (groupBy === 'store') {
-      dimensionId = store.store_id || order.store_id;
-      dimensionName = store.name || '未命名门店';
-    } else if (groupBy === 'employee') {
-      dimensionId = employeeId || employeeName;
-      dimensionName = employeeName;
-    } else {
-      dimensionId = distributor.distributor_id || store.distributor_id || 'unknown-company';
-      dimensionName = distributor.name || '未配置公司';
+  const details = [];
+  const employeeDetails = detail && filters.employeeId
+    ? require('./dashboardService').buildEmployeePerformance(orders, adjustments, filters.employeeId, true).details
+    : [];
+  const employeeDetailsByEvent = new Map(employeeDetails.map(row => [String(row.orderId), row]));
+  for (const event of orders) {
+    const order = metadataByOrder.get(String(event.source_order_id || event.order_id));
+    const store = storeById.get(String(event.store_id));
+    const customerSource = event.entry_type === 'reward_redemption'
+      ? '积分兑换' : String(order?.customer_source || '').trim() || '未填写来源';
+    const sourceDetail = String(order?.customer_source_detail || '').trim() || '-';
+    const employeeId = filters.employeeId || order?.operator_staff_id || event.create_staff_id || '';
+    const employeeName = String(employeeId) === String(event.create_staff_id)
+      ? event.create_user : order?.operator_name;
+    const [dimensionId, dimensionName] = dimension === 'store'
+      ? [event.store_id, event.store_name]
+      : dimension === 'employee'
+        ? [employeeId, employeeName || employeeId || '未指定员工']
+        : [store?.distributor_id || 'unknown-company', store?.Distributor?.name || '未配置公司'];
+    if (detail) {
+      if (ctx.query.dimensionId && String(dimensionId) !== String(ctx.query.dimensionId)) continue;
+      if (ctx.query.customerSource && customerSource !== ctx.query.customerSource) continue;
+      if (ctx.query.sourceDetail && sourceDetail !== ctx.query.sourceDetail) continue;
+      const allocation = employeeDetailsByEvent.get(String(event.order_id));
+      const { salesAmount, grossProfit } = filters.employeeId
+        ? { salesAmount: allocation?.allocatedSalesAmount ?? 0, grossProfit: profitVisible ? allocation?.allocatedGrossProfit ?? 0 : null }
+        : totals([event]);
+      details.push({
+        eventId: event.order_id, orderId: event.source_order_id || event.order_id,
+        orderNo: event.order_no, sourceOrderNo: event.source_order_no,
+        entryType: event.entry_type || 'sale', saleTime: event.create_time,
+        customerSource, sourceDetail, storeId: event.store_id, storeName: event.store_name,
+        salesAmount, grossProfit
+      });
+      continue;
     }
-    const sourceName = String(order.customer_source || '').trim() || '未填写来源';
-    const sourceDetail = String(order.customer_source_detail || '').trim() || '-';
-    const source = sourceGroups.get(sourceName) || { customerSource: sourceName, salesAmount: 0, grossProfit: 0, orderCount: 0 };
-    source.salesAmount += toNumber(order.total_amount); source.grossProfit += toNumber(order.grossProfitSnapshot?.gross_profit_amount); source.orderCount += 1; sourceGroups.set(sourceName, source);
-    const orderCategories = new Set((order.OrderItems || []).map(item => getRootCategory(item.Product)));
+    const key = JSON.stringify([dimensionId, customerSource, sourceDetail]);
+    if (!groups.has(key)) groups.set(key, { dimensionId: String(dimensionId), dimensionName, customerSource, sourceDetail, events: [], afterSalesOrderCount: 0, categories: new Map() });
+    if (!sourceGroups.has(customerSource)) sourceGroups.set(customerSource, []);
+    sourceGroups.get(customerSource).push(event);
+    if (!dimensionSourceGroups.has(dimensionId)) dimensionSourceGroups.set(dimensionId, { id: String(dimensionId), name: dimensionName, sources: new Map() });
+    const entity = dimensionSourceGroups.get(dimensionId);
+    if (!entity.sources.has(customerSource)) entity.sources.set(customerSource, []);
+    entity.sources.get(customerSource).push(event);
+    const group = groups.get(key);
+    group.events.push(event);
+    if (event.entry_type) continue;
+    if (afterSalesOrderIds.has(String(event.order_id))) group.afterSalesOrderCount++;
+    const products = (order?.OrderItems || []).map(item => item.Product)
+      .filter(product => !filters.productLine || product?.category === filters.productLine || product?.category?.startsWith(filters.productLine + '/'));
+    const orderCategories = new Set(products.map(getRootCategory));
     if (!orderCategories.size) orderCategories.add('其他');
-    orderCategories.forEach(categoryName => {
-      productCategoryNames.add(categoryName);
-      const categoryKey = `${categoryName}\u0000${sourceName}`;
-      const categorySource = categorySourceGroups.get(categoryKey) || { category: categoryName, customerSource: sourceName, orderCount: 0 };
-      categorySource.orderCount += 1;
-      categorySourceGroups.set(categoryKey, categorySource);
-    });
-    const key = JSON.stringify([dimensionId, sourceName, sourceDetail]);
-    const group = groups.get(key) || {
-      dimensionId: String(dimensionId || ''), dimensionName, customerSource: sourceName, sourceDetail,
-      orderCount: 0, salesAmount: 0, grossProfit: 0, afterSalesOrderCount: 0, categories: new Map()
-    };
-    group.orderCount += 1;
-    group.salesAmount += toNumber(order.total_amount);
-    group.grossProfit += toNumber(order.grossProfitSnapshot?.gross_profit_amount);
-    if (afterSalesOrderIds.has(String(order.order_id))) group.afterSalesOrderCount += 1;
-    const displayCategories = new Set((order.OrderItems || []).map(item => categoryLabel(getRootCategory(item.Product))));
-    displayCategories.forEach(name => group.categories.set(name, (group.categories.get(name) || 0) + 1));
-    groups.set(key, group);
-  });
-
-  const rows = [...groups.values()].map(group => ({
-    ...group,
-    salesAmount: roundMoney(group.salesAmount),
-    grossProfit: canViewProfit(user) ? roundMoney(group.grossProfit) : null,
-    categories: [...group.categories.entries()].map(([name, orderCount]) => ({ name, orderCount })).sort((a, b) => b.orderCount - a.orderCount || a.name.localeCompare(b.name, 'zh-CN'))
-  })).sort((a, b) => b.salesAmount - a.salesAmount || a.dimensionName.localeCompare(b.dimensionName, 'zh-CN'));
-  ctx.body = {
-    dimension: groupBy,
-    canViewProfit: canViewProfit(user),
-    summary: {
-      orderCount: orders.length,
-      salesAmount: roundMoney(orders.reduce((sum, order) => sum + toNumber(order.total_amount), 0)),
-      grossProfit: canViewProfit(user) ? roundMoney(orders.reduce((sum, order) => sum + toNumber(order.grossProfitSnapshot?.gross_profit_amount), 0)) : null,
-      afterSalesOrderCount: [...afterSalesOrderIds].filter(id => orderIdSet.has(id)).length
-      ,storeCount: new Set(orders.map(order => String(order.store_id))).size
-      ,averageOrderValue: roundMoney(orders.reduce((sum, order) => sum + toNumber(order.total_amount), 0) / orders.length)
-      ,grossMargin: canViewProfit(user) ? calcRate(orders.reduce((sum, order) => sum + toNumber(order.grossProfitSnapshot?.gross_profit_amount), 0), orders.reduce((sum, order) => sum + toNumber(order.total_amount), 0)) : null
-    },
-    sourceDistribution: [...sourceGroups.values()].map(row => ({ ...row, salesAmount: roundMoney(row.salesAmount), grossProfit: canViewProfit(user) ? roundMoney(row.grossProfit) : null })),
+    const displayCategories = new Set();
+    for (const category of orderCategories) {
+      productCategoryNames.add(category);
+      const categoryKey = JSON.stringify([category, customerSource]);
+      if (!categorySourceGroups.has(categoryKey)) categorySourceGroups.set(categoryKey, { category, customerSource, orderCount: 0 });
+      categorySourceGroups.get(categoryKey).orderCount++;
+      displayCategories.add(categoryLabel(category));
+    }
+    for (const name of displayCategories) group.categories.set(name, (group.categories.get(name) || 0) + 1);
+  }
+  const formulaVersion = 'OPERATING_FROZEN_EVENTS_V1';
+  if (detail) {
+    const page = Math.max(1, Math.trunc(Number(ctx.query.page)) || 1);
+    const pageSize = Math.min(200, Math.max(1, Math.trunc(Number(ctx.query.pageSize)) || 20));
+    return { rows: details.slice((page - 1) * pageSize, page * pageSize), canViewProfit: profitVisible, formulaVersion,
+      pagination: { total: details.length, page, pageSize, totalPages: Math.ceil(details.length / pageSize) } };
+  }
+  const metrics = events => {
+    const { salesAmount, grossProfit, orderCount } = totals(events);
+    return { salesAmount, grossProfit, orderCount };
+  };
+  const rows = [...groups.values()].map(({ events, categories, ...group }) => ({
+    ...group, ...metrics(events),
+    categories: [...categories].map(([name, orderCount]) => ({ name, orderCount })).sort((a, b) => b.orderCount - a.orderCount || a.name.localeCompare(b.name, 'zh-CN'))
+  })).sort((a, b) => b.salesAmount - a.salesAmount || String(a.dimensionName).localeCompare(String(b.dimensionName), 'zh-CN'));
+  const summary = metrics(orders);
+  return {
+    dimension, formulaVersion, canViewProfit: profitVisible,
+    summary: { ...summary, afterSalesOrderCount: rows.reduce((sum, row) => sum + row.afterSalesOrderCount, 0),
+      storeCount: new Set(orders.map(row => String(row.store_id))).size,
+      averageOrderValue: summary.orderCount ? roundMoney(summary.salesAmount / summary.orderCount) : null,
+      grossMargin: profitVisible ? calcRate(summary.grossProfit, summary.salesAmount) : null },
+    sourceDistribution: [...sourceGroups].map(([customerSource, events]) => ({ customerSource, ...metrics(events) }))
+      .sort((a, b) => b.salesAmount - a.salesAmount || a.customerSource.localeCompare(b.customerSource, 'zh-CN')),
+    chartRows: [...dimensionSourceGroups.values()].map(({ id, name, sources }) => ({
+      id, name, ...metrics([...sources.values()].flat()),
+      sources: Object.fromEntries([...sources].map(([source, events]) => [source, metrics(events)]))
+    })),
     productCategoryOptions: [...productCategoryNames].sort((a, b) => a.localeCompare(b, 'zh-CN')),
-    categorySourceDistribution: [...categorySourceGroups.values()].sort((a, b) => b.orderCount - a.orderCount || a.category.localeCompare(b.category, 'zh-CN') || a.customerSource.localeCompare(b.customerSource, 'zh-CN')),
+    categorySourceDistribution: [...categorySourceGroups.values()].sort((a, b) => b.orderCount - a.orderCount),
     rows
   };
 }
 
+async function getCustomerSourceAnalysis(ctx) {
+  ctx.body = await customerSourceReport(ctx);
+}
+
 async function getCustomerSourceDetail(ctx) {
-  const { startDate, endDate, regionId = '', dimension = 'company', dimensionId = '', customerSource = '', page = 1, pageSize = 20 } = ctx.query;
-  const user = ctx.state.user;
-  const allowedStores = await resolveReportStoreIds(user);
-  if (!allowedStores.length) { ctx.body = { rows: [], pagination: { total: 0, page: 1, pageSize: Number(pageSize) } }; return; }
-  const storeClause = allowedStores.includes('*') ? '1=1' : 'o.STORE_ID IN (:storeIds)';
-  const conditions = [`o.IS_DELETED = 0`, storeClause, `o.ORDER_STATUS IN (:statuses)`];
-  const replacements = { storeIds: allowedStores, statuses: POSITIVE_SALES_ORDER_STATUSES };
-  if (startDate && endDate) { conditions.push('o.CREATE_TIME >= :startAt AND o.CREATE_TIME <= :endAt'); replacements.startAt = `${startDate} 00:00:00`; replacements.endAt = `${endDate} 23:59:59`; }
-  if (customerSource) { conditions.push('COALESCE(NULLIF(TRIM(o.CUSTOMER_SOURCE), \'\'), \'未填写来源\') = :customerSource'); replacements.customerSource = customerSource; }
-  if (regionId) { conditions.push('s.REGION_ID = :regionId'); replacements.regionId = String(regionId); }
-  if (isSelfOnlyReportUser(user)) { conditions.push(`(o.CREATE_STAFF_ID = :staffId OR JSON_SEARCH(o.AUXILIARY_SALES_LIST, 'one', :staffId, NULL, '$[*].staffId') IS NOT NULL OR JSON_SEARCH(o.AUXILIARY_SALES_LIST, 'one', :staffId, NULL, '$[*].staff_id') IS NOT NULL)`); replacements.staffId = String(user.staffId); }
-  const dimensionSql = dimension === 'store' ? 'o.STORE_ID' : dimension === 'employee' ? 'COALESCE(o.OPERATOR_STAFF_ID, o.CREATE_STAFF_ID)' : 'COALESCE(s.DISTRIBUTOR_ID, \'\')';
-  if (dimensionId) { conditions.push(`${dimensionSql} = :dimensionId`); replacements.dimensionId = String(dimensionId); }
-  const where = conditions.join(' AND ');
-  const rows = await sequelize.query(`
-    SELECT o.ORDER_ID AS orderId, o.ORDER_NO AS orderNo, o.CREATE_TIME AS saleTime,
-           o.CUSTOMER_SOURCE AS customerSource, o.CUSTOMER_SOURCE_DETAIL AS sourceDetail,
-           o.STORE_ID AS storeId, s.NAME AS storeName,
-           oi.ITEM_ID AS itemId, oi.PRODUCT_ID AS productId, oi.PRODUCT_NAME AS productName,
-           oi.PN_CODE AS pn, oi.SN_CODE AS sn, oi.QUANTITY AS quantity,
-           oi.PRODUCT_UNIT_PRICE AS unitPrice, oi.SUBTOTAL AS salesAmount,
-           CASE WHEN gp.ORDER_ID IS NULL THEN NULL ELSE gp.GROSS_PROFIT_AMOUNT *
-             CASE WHEN COALESCE(ot.ITEM_SUBTOTAL, 0) <> 0 THEN COALESCE(oi.SUBTOTAL, 0) / ot.ITEM_SUBTOTAL ELSE 1 / GREATEST(ot.ITEM_COUNT, 1) END END AS grossProfit
-      FROM T_ORDER o
-      INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
-      LEFT JOIN T_STORE s ON s.STORE_ID = o.STORE_ID
-      LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID AND gp.SNAPSHOT_STATUS = 'final'
-      LEFT JOIN (SELECT ORDER_ID, SUM(COALESCE(SUBTOTAL,0)) ITEM_SUBTOTAL, COUNT(*) ITEM_COUNT FROM T_ORDER_ITEM GROUP BY ORDER_ID) ot ON ot.ORDER_ID = o.ORDER_ID
-     WHERE ${where}
-    ORDER BY o.CREATE_TIME DESC, oi.ITEM_ID DESC`, { replacements, type: QueryTypes.SELECT });
-  const canProfit = canViewProfit(user);
-  const mapped = rows.map(row => ({ ...row, salesAmount: roundMoney(row.salesAmount), grossProfit: canProfit && row.grossProfit != null ? roundMoney(row.grossProfit) : null }));
-  const offset = Math.max(0, Number(page) - 1) * Math.min(200, Math.max(1, Number(pageSize) || 20));
-  const size = Math.min(200, Math.max(1, Number(pageSize) || 20));
-  ctx.body = { rows: mapped.slice(offset, offset + size), canViewProfit: canProfit, pagination: { total: mapped.length, page: Math.max(1, Number(page) || 1), pageSize: size, totalPages: Math.ceil(mapped.length / size) } };
+  ctx.body = await customerSourceReport(ctx, true);
 }
 
 async function getProductAnalysisDetail(ctx) {
