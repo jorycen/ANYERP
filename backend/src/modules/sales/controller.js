@@ -2867,7 +2867,7 @@ async function createSalesRecord(ctx, creation) {
     negativeGrossProfit,
     grossProfitAmount,
     pricingStatus: taxPending ? 'pending' : pricing.pricingStatus,
-    pricingMessage: taxPending ? '' : pricing.pricingMessage,
+    pricingMessage: taxPending ? (grossProfitSnapshot.pricingMessage || '') : pricing.pricingMessage,
     status: finalOrderStatus,
     message: isDraft
       ? '销售订单草稿已保存'
@@ -6118,6 +6118,10 @@ async function validateAndDeductInventoryForArchive(order, transaction = null, {
     throw archiveError('订单中没有商品，无法归档');
   }
   assertUniqueOrderSnItems(items, '订单');
+  const pendingProduct = items.find(item => !String(item.product_id || '').trim());
+  if (pendingProduct) {
+    throw archiveError(`商品「${pendingProduct.product_name || pendingProduct.item_id}」待补档，请选择正式商品后归档`);
+  }
 
   const pnCodes = [...new Set(items.map(item => normalizePnCode(item.pn_code)).filter(Boolean))];
   const pnRows = pnCodes.length
@@ -6147,10 +6151,6 @@ async function validateAndDeductInventoryForArchive(order, transaction = null, {
     }
     if (item.product_id && String(item.product_id) !== String(pnRecord.product_id)) {
       throw archiveError(`PN码 [${pnCode}] 与订单商品不匹配，不能归档`);
-    }
-    if (!item.product_id) {
-      await item.update({ product_id: pnRecord.product_id }, { transaction });
-      item.product_id = pnRecord.product_id;
     }
   }
 

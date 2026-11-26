@@ -1029,10 +1029,14 @@ async function calculateAndSaveOrderGrossProfit(orderId, {
   }
   if (persist && !frozenInputs) {
     const foundation = require('../inventory/foundation');
-    await foundation.ensureSalesReferences(order, productPricingDetails, transaction);
-    const priced = await foundation.applySalesPricing(order, productPricingDetails, transaction);
+    const catalogLines = productPricingDetails.filter(line => line.productId);
+    await foundation.ensureSalesReferences(order, catalogLines, transaction);
+    const priced = await foundation.applySalesPricing(order, catalogLines, transaction);
     const based = await foundation.applySalesTaxBasis(order, priced, transaction);
-    productPricingDetails.splice(0, productPricingDetails.length, ...based);
+    const byItem = new Map(based.map(line => [String(line.itemId), line]));
+    productPricingDetails.forEach((line, index) => {
+      if (line.productId) productPricingDetails[index] = byItem.get(String(line.itemId));
+    });
   }
   const freightCostDetails = frozenInputs
     ? parseJsonArray(existing.supplement_details).filter(line => line.source === 'freight_cost')
@@ -1061,6 +1065,20 @@ async function calculateAndSaveOrderGrossProfit(orderId, {
   const archived = frozenInputs || (final === null
     ? ['已归档', 'completed', 'archived'].includes(String(order.order_status || ''))
     : !!final);
+  if (!frozenInputs) {
+    const unregistered = productPricingDetails.filter(line => !line.productId);
+    if (unregistered.length) {
+      const reason = `商品待补档，毛利待核算：${unregistered.map(line => line.productName || line.itemId).join('、')}`;
+      if (archived || requireComplete) {
+        throw Object.assign(new Error(reason), { status: 400, code: 'ORDER_PRODUCT_PENDING' });
+      }
+      if (persist) await OrderGrossProfit.destroy({ where: { order_id: order.order_id, snapshot_status: 'draft' }, transaction });
+      return { order_id: order.order_id, order_no: order.order_no, snapshot_status: 'draft',
+        tax_calculation_status: 'pending', tax_calculation_reason: reason, pricingMessage: reason,
+        gross_profit_amount: null, vat_amount: null, vat_taxable_amount: null,
+        product_pricing_details: productPricingDetails };
+    }
+  }
   let values;
   try { values = calculateGrossProfitValues({
     receivableAmount: calculateOrderReceivable(order),

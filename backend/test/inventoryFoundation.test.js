@@ -28,9 +28,12 @@ test('来源冲突明确隔离，未知成本不伪装零，零值可保留',()=
 });
 test('订单和库存引用同一档案读取相同字段，未关联不得取商品或供应商默认',async t=>{
   t.mock.method(M.InventoryFoundationRef,'findAll',async()=>[{reference_key:'order_item:1',basis_id:'B'},{reference_key:'sn_current:S',basis_id:'B'}]);
-  t.mock.method(M.InventoryFoundation,'findAll',async()=>[{basis_id:'B',status:'confirmed',invoice_type:'收据',purchase_cost:'100.00',cost_mode:'COMPANY_PRICE',company_price:'1639.00',revision:2}]);
+  t.mock.method(M.InventoryFoundation,'findAll',async()=>[{basis_id:'B',product_id:'P',status:'confirmed',invoice_type:'收据',purchase_cost:'100.00',cost_mode:'COMPANY_PRICE',company_price:'1639.00',revision:2}]);
+  t.mock.method(M.Product,'findAll',async()=>[]);
+  t.mock.method(M.ProductPrice,'findAll',async()=>[]);
   const refs=await F.load(['order_item:1','sn_current:S']);a.deepEqual(refs.get('order_item:1'),refs.get('sn_current:S'));
-  const line=(await F.applySalesTaxBasis({},[{itemId:1,quantity:2}],null))[0];a.equal(line.purchaseTaxBasis.invoiceType,'收据');a.equal(line.purchaseTaxBasis.purchaseAmount,200);a.equal(line.purchaseTaxBasis.basisRevision,2);
+  const line=(await F.applySalesTaxBasis({},[{itemId:1,productId:'P',quantity:2}],null))[0];a.equal(line.purchaseTaxBasis.invoiceType,'收据');a.equal(line.purchaseTaxBasis.purchaseAmount,200);a.equal(line.purchaseTaxBasis.basisRevision,2);
+  const unregistered=(await F.salesBasis({},[{itemId:1,productId:'',quantity:2}]))[0];a.equal(unregistered.inventoryFoundation.basisId,null);
   const missing=(await F.salesBasis({},[{itemId:999,productId:'same-product'}]))[0];a.equal(missing.inventoryFoundation.basisId,null);a.equal(missing.inventoryFoundation.purchaseCost,null);
 });
 test('迁移只合并同SN同周期；非SN历史明细不按同商品强合批次',()=>{

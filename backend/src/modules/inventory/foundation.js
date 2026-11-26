@@ -92,7 +92,7 @@ async function inventoryTaxConsensus(order,line,transaction) {
 }
 function matchesLine(basis,line){
   if(!basis)return false;
-  if(line.productId&&basis.productId!==line.productId)return false;
+  if(!line.productId || String(basis.productId)!==String(line.productId))return false;
   const snId=line.snId||line.pricingOrigin?.snId;
   if(snId)return String(basis.identityKey||'').startsWith('sn:'+snId+':');
   if(line.snCode)return basis.snCode===line.snCode;
@@ -109,7 +109,7 @@ async function applySalesTaxBasis(order, lines, transaction) {
       service, purchaseAmount, invoiceType: b.invoiceType, basisId: b.basisId, basisRevision: b.revision,
       source: 'inventory_foundation', reason: b.reason || (purchaseAmount === null ? '采购成本尚未确认' : '') } };
   });
-  const unresolved = result.filter(line => line.purchaseTaxBasis.status !== 'confirmed' && line.inventoryFoundation.status !== 'conflict');
+  const unresolved = result.filter(line => line.productId && line.purchaseTaxBasis.status !== 'confirmed' && line.inventoryFoundation.status !== 'conflict');
   if (!unresolved.length) return result;
   const documented = await require('../sales/purchaseVat').resolveDocumentTaxBasis(order, unresolved, transaction);
   const byItem = new Map(documented.map(line => [String(line.itemId),line.purchaseTaxBasis]));
@@ -154,6 +154,8 @@ async function applySalesPricing(order, lines, transaction) {
 async function ensureSalesReferences(order,lines,transaction){
   if(!transaction)return M.sequelize.transaction(tx=>ensureSalesReferences(order,lines,tx));
   const editable = ['draft','未归档','pending_approval','pending_store_approval','pending_distributor_approval'].includes(order.order_status);
+  if (editable) lines = lines.filter(line => line.productId);
+  if (!lines.length) return;
   const present=await load(lines.map(l=>'order_item:'+l.itemId),transaction);
   // Existing draft references also need to retain newly traced purchase facts.
   // Previously only missing references were initialized, so a resolved return

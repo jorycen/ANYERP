@@ -10,6 +10,7 @@ const { distributorWhere, canAccessDistributor } = require('../../utils/distribu
 const SALES_REPORT_CREDIT = 160;
 const SALE_REPORT_SOURCE = 'SALE_REPORT_APPROVAL';
 const CARE_ORDER_SOURCE = 'CARE_ORDER';
+const CARE_REALLOCATION_SOURCE = 'CARE_ORDER_REALLOCATION';
 
 function money(value) {
   return Math.round((Number(value || 0) + Number.EPSILON) * 100) / 100;
@@ -466,15 +467,13 @@ async function reverseForSalesReturn({ request, order, requestItems, orderItemMa
     return sum + (detail ? Number(detail.unitPricing || 0) * Number(requestItem.quantity || 0) : 0);
   }, 0));
   if (totalCost <= 0 || returnedCost <= 0) return;
-  const priorRefunds = await StaffCareCreditTransaction.sum('amount', {
-    where: { source_type: 'CARE_ORDER_RETURN', order_id: order.order_id, status: 'active' }, transaction
+  const reallocations = await StaffCareCreditTransaction.findAll({
+    where: { source_type: CARE_REALLOCATION_SOURCE, order_id: order.order_id, status: 'active' }, transaction
   });
-  const refund = money(Math.min(Number(used.amount || 0) - Number(priorRefunds || 0),
-    Number(used.amount || 0) * returnedCost / totalCost));
+  const refund = reallocations.length
+    ? await refundReallocatedCare({ used, reallocations, request, order, returnedCost, totalCost, transaction })
+    : await refundLegacyCare({ used, request, order, returnedCost, totalCost, staffId, staff, transaction });
   if (refund <= 0) return;
-  await createCreditEntry({ staffId, staffName: order.create_user || staff.name,
-    type: 'income', amount: refund, sourceType: 'CARE_ORDER_RETURN', sourceId: request.return_id,
-    order, remark: `销售退货${request.return_no}返还CARE抵扣`, transaction });
   const adjustmentNo = `AUTO-CARE-RET-${request.return_id}`;
   await PerformanceProfitAdjustment.findOrCreate({
     where: { adjustment_no: adjustmentNo },
@@ -490,6 +489,47 @@ async function reverseForSalesReturn({ request, order, requestItems, orderItemMa
       create_time: new Date(), update_time: new Date()
     }, transaction
   });
+}
+
+async function refundLegacyCare({ used, request, order, returnedCost, totalCost, staffId, staff, transaction }) {
+  const priorRefunds = await StaffCareCreditTransaction.sum('amount', {
+    where: { source_type: 'CARE_ORDER_RETURN', order_id: order.order_id, status: 'active' }, transaction
+  });
+  const refund = money(Math.min(Number(used.amount || 0) - Number(priorRefunds || 0),
+    Number(used.amount || 0) * returnedCost / totalCost));
+  if (refund > 0) await createCreditEntry({ staffId, staffName: order.create_user || staff.name,
+    type: 'income', amount: refund, sourceType: 'CARE_ORDER_RETURN', sourceId: request.return_id,
+    order, remark: `销售退货${request.return_no}返还CARE抵扣`, transaction });
+  return refund;
+}
+
+async function refundReallocatedCare({ used, reallocations, request, order, returnedCost, totalCost, transaction }) {
+  const owners = new Map();
+  for (const entry of [used, ...reallocations]) {
+    const key = String(entry.staff_id);
+    const paid = owners.get(key)?.paid || 0;
+    owners.set(key, { name: entry.staff_name, paid: money(paid + (entry.type === 'income' ? -1 : 1) * Number(entry.amount)) });
+  }
+  const refunds = await StaffCareCreditTransaction.findAll({
+    where: { source_type: 'CARE_ORDER_RETURN', order_id: order.order_id, status: 'active' }, transaction
+  });
+  let total = 0;
+  for (const [staffId, owner] of [...owners].sort(([a], [b]) => a.localeCompare(b))) {
+    const sourceId = `${request.return_id}:${staffId}`;
+    const existing = refunds.find(row => row.source_id === sourceId);
+    if (existing) {
+      total = money(total + Number(existing.amount));
+      continue;
+    }
+    const prior = refunds.filter(row => String(row.staff_id) === staffId).reduce((sum, row) => sum + Number(row.amount), 0);
+    const refund = money(Math.min(owner.paid - prior, owner.paid * returnedCost / totalCost));
+    if (refund <= 0) continue;
+    await lockStaff(staffId, transaction);
+    await createCreditEntry({ staffId, staffName: owner.name, type: 'income', amount: refund,
+      sourceType: 'CARE_ORDER_RETURN', sourceId, order, remark: `销售退货${request.return_no}返还个人CARE抵扣`, transaction });
+    total = money(total + refund);
+  }
+  return total;
 }
 
 module.exports = {

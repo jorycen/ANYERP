@@ -69,6 +69,29 @@ function fixture(t, standardPrice) {
   return { order, item };
 }
 
+test('正式商品与手填商品混合时可保留未归档订单，整单毛利待核算', async t => {
+  const { item } = fixture(t, 1500);
+  const manual = { item_id: 2, product_id: null, product_name: '手填固态硬盘', quantity: 1 };
+  manual.toJSON = () => ({ ...manual });
+  t.mock.method(M.OrderItem, 'findAll', async () => [item, manual]);
+  t.mock.method(M.InventoryFoundationRef, 'findAll', async () => []);
+  const foundation = require('../src/modules/inventory/foundation');
+  t.mock.method(foundation, 'ensureSalesReferences', async (_order, lines) => {
+    assert.deepEqual(lines.map(line => line.productId), ['product']);
+  });
+  const tx = { LOCK: { UPDATE: 'UPDATE' } };
+  t.mock.method(M.OrderGrossProfit, 'destroy', async options => {
+    assert.equal(options.transaction, tx);
+    assert.equal(options.where.snapshot_status, 'draft');
+  });
+  const snapshot = await calculateAndSaveOrderGrossProfit('order', { transaction: tx, final: false });
+  assert.equal(snapshot.gross_profit_amount, null);
+  assert.match(snapshot.pricingMessage, /手填固态硬盘/);
+  assert.equal(snapshot.product_pricing_details.length, 2);
+  await assert.rejects(calculateAndSaveOrderGrossProfit('order', { persist: false, final: true }),
+    { code: 'ORDER_PRODUCT_PENDING' });
+});
+
 test('开票订单保存时票税预估未知不抛错，清理旧草稿毛利缓存且不伪造零税额',async t=>{
   const {order}=fixture(t,1500);order.invoice_status='普通发票';order.invoice_amount=1800;
   const tx={LOCK:{UPDATE:'UPDATE'}};let invalidated=false;

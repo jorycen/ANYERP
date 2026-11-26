@@ -70,6 +70,32 @@ customer.get('/member/points', async ctx => {
   const balance = rows.reduce((sum, row) => sum + BigInt(row.balance || 0), 0n);
   ctx.body = { balance: String(balance), available: String(balance > 0n ? balance : 0n) };
 });
+const welcomePoints = '200';
+const welcomeKey = memberId => `activity:phone-welcome:v1:${memberId}`;
+async function welcomePointsStatus(member, transaction) {
+  const claimed = Boolean(await M.Ledger.findOne({
+    where: { business_key: welcomeKey(member.id) }, attributes: ['id'], transaction
+  }));
+  return { points: welcomePoints, claimed, phoneAuthorized: Boolean(member.phone && member.phone_verified_at) };
+}
+customer.get('/member/welcome-points', async ctx => {
+  ctx.body = await welcomePointsStatus(ctx.state.member);
+});
+customer.post('/member/welcome-points', async ctx => {
+  ctx.body = await V.transaction(async transaction => {
+    const member = await M.Member.findByPk(ctx.state.member.id, V.lock(transaction));
+    if (!member || member.status !== 'active') S.fail(403, '会员账号不可用');
+    const status = await welcomePointsStatus(member, transaction);
+    if (status.claimed) return status;
+    if (!status.phoneAuthorized) S.fail(409, '请先使用微信验证手机号');
+    const account = await V.account(member.id, 'DIST001', transaction);
+    await V.post(account, BigInt(welcomePoints), {
+      type: 'activity', business_key: welcomeKey(member.id),
+      actor: 'system', reason: '会员绑号活动奖励'
+    }, transaction);
+    return { ...status, claimed: true };
+  });
+});
 function pagination(ctx) {
   const page = Math.max(1, Math.min(10000, parseInt(ctx.query.page) || 1));
   const limit = Math.max(1, Math.min(100, parseInt(ctx.query.pageSize) || 20));

@@ -16,7 +16,7 @@ function buildOrderItem(overrides = {}) {
   };
 }
 
-async function withArchiveStubs({ pnRows, products, inventory }, callback) {
+async function withArchiveStubs({ pnRows, products, inventory, itemOverrides }, callback) {
   const originals = {
     itemFindAll: models.OrderItem.findAll,
     pnFindAll: models.ProductPn.findAll,
@@ -25,7 +25,7 @@ async function withArchiveStubs({ pnRows, products, inventory }, callback) {
     inventoryFindAll: models.Inventory.findAll,
     locationFindAll: models.Location.findAll
   };
-  const item = buildOrderItem();
+  const item = buildOrderItem(itemOverrides);
   buildOrderItem.item = item;
   const inv = {
     product_id: 'PRODUCT_1',
@@ -58,6 +58,20 @@ async function withArchiveStubs({ pnRows, products, inventory }, callback) {
     models.Location.findAll = originals.locationFindAll;
   }
 }
+
+test('手填商品必须补档，即使 PN 已能解析也不自动归档', async () => {
+  await withArchiveStubs({
+    itemOverrides: { product_id: null, product_name: '手填固态硬盘' },
+    pnRows: [{ product_id: 'PRODUCT_1', pn_code: '870017165' }],
+    products: [{ product_id: 'PRODUCT_1', name: '正式固态硬盘', need_sn: 0 }]
+  }, async order => {
+    await assert.rejects(salesController._test.validateAndDeductInventoryForArchive(order),
+      /手填固态硬盘.*待补档/);
+    assert.equal(buildOrderItem.item.product_id, null);
+    buildOrderItem.item.product_id = 'PRODUCT_1';
+    await salesController._test.validateAndDeductInventoryForArchive(order);
+  });
+});
 
 test('归档要求PN主数据存在，不再使用manufacturer_code兜底', async () => {
   await withArchiveStubs({
