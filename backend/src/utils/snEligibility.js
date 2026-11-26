@@ -85,13 +85,13 @@ async function assertSnEligible(sn, { transaction = null, targetLocation = null,
   return state;
 }
 
-async function recordSnReentry(sn, previousStatus, {transaction, actor, document} = {}) {
-  if (!['out_stock', 'returned'].includes(previousStatus)) return;
+async function recordSnReentry(sn, previousStatus, {transaction, actor, document, foundationReceipt} = {}) {
+  if (!['out_stock', 'sold', 'returned'].includes(previousStatus)) return;
   if (!transaction) throw new Error('SN重新入库记录必须与入库使用同一事务');
   await require('../models').SnLog.create({
     log_id:require('crypto').randomBytes(16).toString('hex'),sn_id:sn.sn_id,sn_code:sn.sn_code,
     product_id:sn.product_id,store_id:sn.store_id,action:'stock_cycle_reentry',
     remark:JSON.stringify({document,fromStatus:previousStatus,toType:sn.inventory_type,locationId:sn.location_id}),create_user:String(actor||'system')
-  },{transaction});
+  },{transaction, foundationReceipt});
 }
 module.exports = { isSpecialWarehouse, evaluateEvidence, inspectSnEligibility, assertSnEligible, recordSnReentry };

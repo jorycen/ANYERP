@@ -92,6 +92,7 @@ apiRouter.use('/auth', authRouter.routes());
 apiRouter.use(authMiddleware);
 apiRouter.use(storeAccessMiddleware);
 apiRouter.use(snNormalization);
+apiRouter.use('/daily-quiz', require('./modules/dailyQuiz/routes').routes());
 apiRouter.use('/sales', salesRouter.routes());
 apiRouter.use('/inventory', inventoryRouter.routes());
 apiRouter.use('/purchase', purchaseRouter.routes());

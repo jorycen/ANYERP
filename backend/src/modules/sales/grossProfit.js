@@ -521,7 +521,7 @@ async function resolveSupplierContext(items, order, transaction) {
   const snMap = new Map();
   snRows.forEach(row => {
     if (row.sn_id) snMap.set(`id:${row.sn_id}`, row);
-    if (row.sn_code) snMap.set(`code:${row.sn_code}`, row);
+    if (row.sn_code) snMap.set(`product-code:${row.product_id}:${String(row.sn_code).trim().toUpperCase()}`, row);
     if (row.supplier_id) itemSupplierIds.add(String(row.supplier_id));
   });
 
@@ -634,12 +634,10 @@ async function buildProductPricingDetails(orderId, transaction) {
       })
     : [];
   const specialPriceBySnId = new Map();
-  const specialPriceBySnCode = new Map();
   specialPrices.forEach(row => {
     const price = validPrice(row.special_price);
     if (price === null) return;
     if (row.sn_id) specialPriceBySnId.set(String(row.sn_id), price);
-    if (row.sn_code) specialPriceBySnCode.set(String(row.sn_code).trim().toUpperCase(), price);
   });
   const foundationByItem = await require('../inventory/foundation').load(items.map(item => 'order_item:'+item.item_id), transaction);
   const pricingLines = items.map(item => {
@@ -648,7 +646,10 @@ async function buildProductPricingDetails(orderId, transaction) {
     const inventoryBasis = require('../inventory/foundation').matchesLine(rawInventoryBasis,{productId:row.product_id,snId:row.sn_id,snCode:row.sn_code}) ? rawInventoryBasis : null;
     const productPrice = priceByProduct.get(String(row.product_id || ''));
     const product = productById.get(String(row.product_id || '')) || {};
-    const snRow = supplierContext.snMap.get(`id:${row.sn_id}`) || supplierContext.snMap.get(`code:${row.sn_code}`);
+    const snCandidate = row.sn_id
+      ? supplierContext.snMap.get(`id:${row.sn_id}`)
+      : supplierContext.snMap.get(`product-code:${row.product_id}:${String(row.sn_code || '').trim().toUpperCase()}`);
+    const snRow = snCandidate && String(snCandidate.product_id) === String(row.product_id) ? snCandidate : null;
     const inboundSupplier = supplierContext.latestInboundByProduct.get(String(row.product_id || ''));
     const receiptSource = snRow ? snRow.source_type : inboundSupplier?.source_type;
     const isNonPurchase = ['GIFT', 'SALES_COMPONENT_RECOVERY'].includes(receiptSource);
@@ -663,8 +664,7 @@ async function buildProductPricingDetails(orderId, transaction) {
       ?? (!snRow && productPrice && Number(productPrice.status ?? 1) === 1
         && (Number(productPrice.cost_price) > 0 || Number(productPrice.cost_price_locked) === 1)
         ? validPrice(productPrice.cost_price) : null);
-    const specialPrice = specialPriceBySnId.get(String(snRow?.sn_id || row.sn_id || ''))
-      ?? specialPriceBySnCode.get(String(snRow?.sn_code || row.sn_code || '').trim().toUpperCase()) ?? null;
+    const specialPrice = specialPriceBySnId.get(String(snRow?.sn_id || '')) ?? null;
     // Once an inventory foundation is linked, its frozen mode wins. Only an
     // order without a foundation may use the product master default.
     const mode = inventoryBasis?.basisId ? inventoryBasis.costMode : product.gross_profit_cost_mode;

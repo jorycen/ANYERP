@@ -42,7 +42,7 @@ async function loadLegacyCostMaps(items = []) {
 
   return {
     snById: new Map(snRows.map(sn => [String(sn.sn_id), sn])),
-    snByCode: new Map(snRows.map(sn => [String(sn.sn_code), sn])),
+    snByCode: new Map(snRows.map(sn => [`${sn.product_id}:${sn.sn_code}`, sn])),
     priceByProduct: new Map(priceRows.map(price => [String(price.product_id), price]))
   };
 }
@@ -60,8 +60,9 @@ function calculateItemBaseProfit(item, maps = {}) {
     };
   }
 
-  const sn = (item.sn_id ? maps.snById?.get(String(item.sn_id)) : null)
-    || maps.snByCode?.get(String(item.sn_code || ''));
+  const candidate = item.sn_id ? maps.snById?.get(String(item.sn_id))
+    : maps.snByCode?.get(`${item.product_id}:${item.sn_code || ''}`);
+  const sn = String(candidate?.product_id) === String(item.product_id) ? candidate : null;
   const price = maps.priceByProduct?.get(String(item.product_id || ''));
   const unitCost = roundMoney(sn?.inbound_price || price?.cost_price || 0);
   const costAmount = roundMoney(unitCost * quantity);

@@ -44,7 +44,7 @@ async function validateItems(rows, sourceItems, transaction, storeId = null) {
     if (Number(product.need_sn) !== 1 && snCode) fail(400, '该商品不按SN管理，请留空SN；需要逐件追溯时请先使用SN管理的商品');
     if (snCode.length > 128) fail(400, 'SN最长128字符');
     const inventory = require('./controller');
-    const existingSn = snCode ? await inventory.findInboundSnByIdentity({ snCode, transaction }) : null;
+    const existingSn = snCode ? await inventory.findInboundSnByIdentity({ productId: product.product_id, snCode, transaction }) : null;
     if (raw.existingSnId && (!existingSn || String(existingSn.sn_id) !== String(raw.existingSnId))) fail(409, `SN ${snCode} 的历史记录已变化，请重新核对`);
     if (existingSn) {
       if (Number(existingSn.is_deleted) === 1) fail(409, `SN ${snCode} 的历史记录已停用，请先核对`);
@@ -59,8 +59,8 @@ async function validateItems(rows, sourceItems, transaction, storeId = null) {
     const price = await M.ProductPrice.findOne({ where: { product_id: product.product_id, status: 1 }, order: [['effective_time', 'DESC']], transaction });
     if (!price || !(Number(price.standard_price) > 0)) fail(400, `${product.name} 尚未配置有效公司定价，请先配置`);
     const key = `${source?.item_id || ''}:${product.product_id}`;
-    if (seen.has(snCode ? `sn:${snCode.toUpperCase()}` : key)) fail(400, '同一商品请合并数量，SN不能重复');
-    seen.add(snCode ? `sn:${snCode.toUpperCase()}` : key);
+    if (seen.has(snCode ? `sn:${product.product_id}:${snCode.toUpperCase()}` : key)) fail(400, '同一商品请合并数量，SN不能重复');
+    seen.add(snCode ? `sn:${product.product_id}:${snCode.toUpperCase()}` : key);
     result.push({ productId: product.product_id, productName: product.name, quantity, snCode,
       needSn: Number(product.need_sn) === 1, pnCode: String(raw.pnCode || product.manufacturer_code || '').split(/[,，;；\s]+/)[0],
       orderItemId: source?.item_id || null, sourceProductId: source?.product_id || null, sourceProductName: source?.product_name || '', sourcePn: source?.pn_code || '', sourceSn: source?.sn_code || '',

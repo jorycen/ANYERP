@@ -1,3 +1,4 @@
+const { findInboundSnByIdentity } = require('../../utils/snIdentity');
 const { recordDatabaseStage } = require('../../utils/databaseTiming');
 const { requireInboundPn } = require('../../utils/inboundPn');
 const productSearch = require('../../utils/productSearch');
@@ -978,27 +979,6 @@ function normalizeSnIdentityValue(value) {
 
 function samePnCode(left, right) {
   return normalizeSnIdentityValue(left) === normalizeSnIdentityValue(right);
-}
-
-async function findInboundSnByIdentity({ pnCode, snCode, transaction }) {
-  // SN 是全局身份标识。重新入库必须复用原记录，不能因 PN 不同再创建一条。
-  const exact = await ProductSn.findOne({
-    where: { sn_code: String(snCode || '').trim() },
-    transaction,
-    lock: transaction?.LOCK?.UPDATE
-  });
-  if (exact) return exact;
-
-  // 兼容历史 SN 中存在前后空格或大小写差异的记录。
-  const candidates = await ProductSn.findAll({
-    where: sequelize.where(
-      sequelize.fn('UPPER', sequelize.fn('TRIM', sequelize.col('sn_code'))),
-      String(snCode || '').trim().toUpperCase()
-    ),
-    transaction,
-    lock: transaction?.LOCK?.UPDATE
-  });
-  return candidates[0] || null;
 }
 
 async function ensureDefaultProductPricing(product, purchasePrice, user, transaction) {
@@ -2649,7 +2629,7 @@ async function snTrace(ctx) {
       `SELECT log_id, sn_id, sn_code, old_sn_code, action, remark, create_user, create_time
        FROM T_SN_LOG
        WHERE ${snMatch('T_SN_LOG', 'sn_id', 'sn_code')}
-          OR BINARY HEX(CAST(UPPER(TRIM(old_sn_code)) AS BINARY)) IN (:snCodesHex)
+          ${requestedSnId ? '' : 'OR BINARY HEX(CAST(UPPER(TRIM(old_sn_code)) AS BINARY)) IN (:snCodesHex)'}
        ORDER BY create_time ASC`,
       { replacements, type: sequelize.QueryTypes.SELECT }
     );
@@ -4113,6 +4093,12 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
         : (product.gross_profit_cost_mode === 'COMPANY_PRICE' ? 'COMPANY_PRICE' : 'PURCHASE_PRICE');
       const expectedPricingFlag = receiptCostMode === 'COMPANY_PRICE' ? 1 : 0;
       // 采购申请决定计价方式；入库只继承，不能通过入库请求改写采购事实。
+      const purchaseFoundationReceipt = isPurchaseInbound && purchaseRequest ? {
+        productId: item.productId, purchaseId: purchaseRequest.request_id,
+        purchaseNo: purchaseRequest.request_no, receiptItemId: dbItem.item_id,
+        invoiceType: purchaseRequest.invoice_type, unitCost: Number(dbItem.unit_price),
+        costMode: requestedCostMode
+      } : null;
       if (isPurchaseInbound && receiptPurchaseItem && !requestedCostMode) {
         fail(409, `采购明细 ${receiptPurchaseItem.item_id} 缺少有效计价方式，请先修正采购申请`);
       }
@@ -4286,9 +4272,8 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
 
         const existingSn = await findInboundSnByIdentity({ pnCode, snCode, transaction: t });
         if (existingSn
-          && String(existingSn.product_id || '') !== String(dbItem.product_id || '')
-          && !isReusableInboundSnStatus(existingSn.status)) {
-          fail(409, `SN码 [${snCode}] 已全局关联其他商品（原PN：${existingSn.pn_code || '-'}），不能重复创建`);
+          && String(existingSn.product_id || '') !== String(dbItem.product_id || '')) {
+          fail(409, `SN码 [${snCode}] 的 PN 已关联其他商品（原PN：${existingSn.pn_code || '-'}），不能重复创建`);
         }
         if (existingSn && !isReusableInboundSnStatus(existingSn.status)) {
           fail(400, `SN码 [${snCode}] 当前状态为${existingSn.status || '未知'}，不允许重复入库`);
@@ -4330,13 +4315,13 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
           is_deleted: 0
         };
         const snRecord = existingSn
-          ? (await existingSn.update(snData, { transaction: t }))
+          ? (await existingSn.update(snData, { transaction: t, deferFoundationToReentry: true }))
           : await ProductSn.create({
               sn_id: generateUUID(),
               ...snData
-            }, { transaction: t });
+            }, { transaction: t, foundationReceipt: purchaseFoundationReceipt });
 
-        await recordSnReentry(snRecord,previousSnStatus,{transaction:t,actor:inboundInitiator,document:inbound.inbound_no});
+        await recordSnReentry(snRecord,previousSnStatus,{transaction:t,actor:inboundInitiator,document:inbound.inbound_no,foundationReceipt:purchaseFoundationReceipt});
 
         await initializeSnResourceRightsFromInbound({
           sn: snRecord,
@@ -4394,13 +4379,8 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
         await ensureProductPnMaster({ productId: item.productId, pnCode: savedPnCode, transaction: t });
       }
 
-      const foundationReceipt = isPurchaseInbound && purchaseRequest ? {
-        productId: item.productId, purchaseId: purchaseRequest.request_id,
-        purchaseNo: purchaseRequest.request_no, receiptItemId: dbItem.item_id,
-        invoiceType: purchaseRequest.invoice_type, unitCost: Number(dbItem.unit_price),
-        costMode: requestedCostMode
-      } : isSalesReturnInbound ? await require('./foundationMovement').returnReceipt(inbound, dbItem, t)
-        : isTransferInbound ? await require('./foundationMovement').transferReceipt(inbound, dbItem, t) : null;
+      const foundationReceipt = purchaseFoundationReceipt || (isSalesReturnInbound ? await require('./foundationMovement').returnReceipt(inbound, dbItem, t)
+        : isTransferInbound ? await require('./foundationMovement').transferReceipt(inbound, dbItem, t) : null);
       if (dbItem.sn_id && foundationReceipt) {
         const receivedSn = await ProductSn.findByPk(dbItem.sn_id, { transaction: t });
         if (receivedSn) await require('./foundationIntake').captureSn(receivedSn, { transaction: t, foundationReceipt });
@@ -6104,15 +6084,9 @@ async function buildConversionTargetRows(targetItems, conversionType, storeId, s
         err.status = 400;
         throw err;
       }
-      const existingSn = await ProductSn.findOne({
-        where: sequelize.where(
-          sequelize.fn('UPPER', sequelize.fn('TRIM', sequelize.col('sn_code'))),
-          snCode.toUpperCase()
-        ),
-        transaction
-      });
+      const existingSn = await findInboundSnByIdentity({ pnCode, snCode, transaction });
       if (existingSn) {
-        const err = new Error(`SN码 [${snCode}] 已存在，SN在全系统不允许重复`);
+        const err = new Error(`SN码 [${snCode}] 已存在，同一 PN 下不允许重复`);
         err.status = 400;
         throw err;
       }

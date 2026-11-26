@@ -1,3 +1,4 @@
+const { findInboundSnByIdentity } = require('../../utils/snIdentity');
 const { requireInboundPn } = require('../../utils/inboundPn');
 const { assertSnEligible, recordSnReentry } = require('../../utils/snEligibility');
 const { normalizeSnCode } = require('../../utils/snCode');
@@ -54,25 +55,6 @@ function normalizeText(value) {
 
 function normalizeSnIdentityValue(value) {
   return String(value || '').trim().replace(/\s+/g, '').toLowerCase();
-}
-
-async function findInboundSnByIdentity({ pnCode, snCode, transaction }) {
-  const exact = await ProductSn.findOne({
-    where: { sn_code: String(snCode || '').trim() },
-    transaction,
-    lock: transaction?.LOCK?.UPDATE
-  });
-  if (exact) return exact;
-
-  const candidates = await ProductSn.findAll({
-    where: sequelize.where(
-      sequelize.fn('UPPER', sequelize.fn('TRIM', sequelize.col('sn_code'))),
-      String(snCode || '').trim().toUpperCase()
-    ),
-    transaction,
-    lock: transaction?.LOCK?.UPDATE
-  });
-  return candidates[0] || null;
 }
 
 // @koa/multer/busboy 在部分请求头编码下会把 UTF-8 文件名按 latin1 交给业务层。
@@ -391,7 +373,7 @@ async function validateRows(ctx, rows, options, transaction) {
       }
       if (operationType === 'ADJUST') rowErrors.push('SN商品不得通过数量调整维护，请使用SN清单入库或出库');
       if (!snCode) rowErrors.push('SN商品必须填写SN');
-      const snKey = normalizeSnCode(snCode);
+      const snKey = JSON.stringify([String(pnCode || '').trim().toUpperCase(), normalizeSnCode(snCode).toUpperCase()]);
       if (snCode && seenSn.has(snKey)) rowErrors.push('导入文件中SN重复');
       if (snCode) seenSn.add(snKey);
 
@@ -399,11 +381,10 @@ async function validateRows(ctx, rows, options, transaction) {
         if (snCode) {
           const existing = await findInboundSnByIdentity({ pnCode, snCode, transaction });
           if (existing
-            && String(existing.product_id || '') !== String(product.product_id || '')
-            && !isReusableInboundSnStatus(existing.status)) {
-            rowErrors.push(`SN已全局关联其他商品（原PN：${existing.pn_code || '-'}），不能按当前商品重复创建`);
+            && String(existing.product_id || '') !== String(product.product_id || '')) {
+            rowErrors.push(`SN的 PN 已关联其他商品（原PN：${existing.pn_code || '-'}），不能按当前商品重复创建`);
           }
-          if (existing && !isReusableInboundSnStatus(existing.status)) {
+          if (existing ) {
             rowErrors.push(`SN当前状态为${existing.status || '未知'}，不允许重复入库`);
           }
         }
@@ -613,14 +594,13 @@ async function createSnInbound(item, application, transaction) {
     transaction
   });
   if (existing
-    && String(existing.product_id || '') !== String(item.product_id || '')
-    && !isReusableInboundSnStatus(existing.status)) {
+    && String(existing.product_id || '') !== String(item.product_id || '')) {
     throw Object.assign(
       new Error(`第 ${item.row_no} 行SN ${item.sn_code} 已关联其他商品，不能按当前商品入库`),
       { status: 409 }
     );
   }
-  if (existing && !isReusableInboundSnStatus(existing.status)) {
+  if (existing ) {
     throw Object.assign(
       new Error(`第 ${item.row_no} 行SN ${item.sn_code} 当前状态为${existing.status || '未知'}，不允许重复入库`),
       { status: 409 }
@@ -678,7 +658,7 @@ async function createSnInbound(item, application, transaction) {
       batch_no: application.application_no,
       remark: `批量入库 ${application.application_no}`,
       is_deleted: 0
-    }, { transaction });
+    }, { transaction, deferFoundationToReentry: true });
   }
 
   await recordSnReentry(sn,previousSnStatus,{transaction,actor:application.applicant_name || application.reviewer_name,document:application.application_no});

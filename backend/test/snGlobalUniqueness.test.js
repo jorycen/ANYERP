@@ -2,47 +2,39 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const models = require('../src/models');
-const inventoryController = require('../src/modules/inventory/controller');
+const { ProductSn, SnLog } = require('../src/models');
+const { findInboundSnByIdentity } = require('../src/utils/snIdentity');
+const { recordSnReentry } = require('../src/utils/snEligibility');
 
-test('重新入库按SN全局查找并复用已销售记录，不再受PN限制', async () => {
-  const originalFindOne = models.ProductSn.findOne;
-  const sold = { sn_id: 'SN-ID-1', sn_code: 'MP2VJAEP', pn_code: '83VK008XCD', status: 'sold' };
-  let receivedWhere;
-  models.ProductSn.findOne = async options => {
-    receivedWhere = options.where;
-    return sold;
-  };
-
-  try {
-    const result = await inventoryController._test.findInboundSnByIdentity({
-      pnCode: 'DIFFERENT-PN',
-      snCode: ' MP2VJAEP '
-    });
-    assert.equal(result, sold);
-    assert.deepEqual(receivedWhere, { sn_code: 'MP2VJAEP' });
-  } finally {
-    models.ProductSn.findOne = originalFindOne;
-  }
+test('same SN under another PN never reuses the sold stock row', async t => {
+  const sold = { sn_id: 'old', pn_code: 'SERVICE', sn_code: '20261126', product_id: 'P1', status: 'sold' };
+  const memory = { sn_id: 'new', pn_code: 'MEMORY', sn_code: '20261126', product_id: 'P2', status: 'in_stock' };
+  const rows = [sold];
+  t.mock.method(ProductSn, 'findAll', async ({ where }) =>
+    rows.filter(row => row.pn_code === where.pn_code && row.sn_code === where.sn_code));
+  assert.equal(await findInboundSnByIdentity({ pnCode: 'MEMORY', snCode: ' 20261126 ' }), null);
+  rows.push(memory);
+  assert.equal(await findInboundSnByIdentity({ pnCode: 'memory', snCode: '20261126' }), memory);
+  assert.equal(await findInboundSnByIdentity({ pnCode: 'service', snCode: '20261126' }), sold);
+  assert.equal(await findInboundSnByIdentity({ snCode: '20261126' }), null);
 });
 
-test('已销售SN即使历史商品档案不同也允许复用并重新绑定本次入库商品', () => {
-  const controller = fs.readFileSync(path.resolve(__dirname, '../src/modules/inventory/controller.js'), 'utf8');
-  const batch = fs.readFileSync(path.resolve(__dirname, '../src/modules/inventory/batchMaintenance.js'), 'utf8');
-
-  assert.match(controller, /String\(existingSn\.product_id[\s\S]+!REUSABLE_INBOUND_SN_STATUSES\.has/);
-  assert.match(batch, /String\(existing\.product_id[\s\S]+!isReusableInboundSnStatus\(existing\.status\)/);
+test('same PN duplicate data requires review and never chooses an arbitrary record', async t => {
+  t.mock.method(ProductSn, 'findAll', async () => [{ sn_id: 'A' }, { sn_id: 'B' }]);
+  await assert.rejects(findInboundSnByIdentity({ pnCode: 'P', snCode: 'S' }), { status: 409 });
 });
 
-test('数据库迁移启用SN全局唯一索引且不再主动删除该索引', () => {
-  const migration = fs.readFileSync(path.resolve(__dirname, '../src/utils/dbMigration.js'), 'utf8');
-  assert.match(migration, /uk_product_sn_code_global/);
-  assert.match(migration, /ADD UNIQUE KEY uk_product_sn_code_global \(SN_CODE\)/);
-  assert.doesNotMatch(migration, /DROP INDEX.*SN全局唯一索引/);
+test('return to stock after a sale creates a distinct inventory cycle', async t => {
+  const insert = t.mock.method(SnLog, 'create', async () => {});
+  const transaction = {};
+  await recordSnReentry({ sn_id: 'A', sn_code: 'S', product_id: 'P' }, 'sold', { transaction });
+  assert.equal(insert.mock.calls[0].arguments[0].action, 'stock_cycle_reentry');
+  assert.equal(insert.mock.calls[0].arguments[1].transaction, transaction);
 });
 
-test('SN修改申请使用全局唯一提示，不再限定同一PN', () => {
-  const source = fs.readFileSync(path.resolve(__dirname, '../src/modules/inventory/snChangeApplication.js'), 'utf8');
-  assert.match(source, /SN在全系统不允许重复/);
-  assert.doesNotMatch(source, /在同一PN下已被使用/);
+test('migration preserves PN/SN uniqueness and retires the legacy global index', () => {
+  const migration = fs.readFileSync(path.join(__dirname, '../src/utils/dbMigration.js'), 'utf8');
+  assert.match(migration, /ADD UNIQUE KEY uk_product_sn_pn_sn \(PN_CODE, SN_CODE\)/);
+  assert.match(migration, /removeIndex\('T_PRODUCT_SN', 'uk_product_sn_code_global'\)/);
+  assert.doesNotMatch(migration, /ADD UNIQUE KEY uk_product_sn_code_global/);
 });

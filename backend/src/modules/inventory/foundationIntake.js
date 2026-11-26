@@ -3,7 +3,7 @@
 let ready=false;
 const enable=()=>{ready=true;};
 async function captureSn(value,options={}){
-  if(!ready)return;
+  if (!ready || options.deferFoundationToReentry) return;
   const M=require('../../models'),F=require('./foundation'),V=require('../sales/purchaseVat'),sn=value.toJSON?value.toJSON():value;
   if(!['in_stock','reserved','occupied'].includes(sn.status)||Number(sn.is_deleted))return;
   const previous=options.previousSn||(value.isNewRecord===false?value._previousDataValues:null);

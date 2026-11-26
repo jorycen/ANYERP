@@ -150,14 +150,14 @@ async function createProductSettlementOrder({ orderId, transaction = null, creat
   ]);
   const productMap = new Map(products.map(product => [String(product.product_id), product]));
   const priceMap = new Map(prices.map(price => [String(price.product_id), price]));
-  const snMap = new Map(sns.map(sn => [String(sn.sn_code), sn]));
+  const snMap = new Map(sns.map(sn => [`${sn.product_id}:${sn.sn_code}`, sn]));
   const pricingMap = normalizePricingDetails(snapshot);
   const settlementItems = items.map(item => buildProductSettlementItem({
     item,
     product: productMap.get(String(item.product_id || '')),
     productPrice: priceMap.get(String(item.product_id || '')),
     productPricingDetail: pricingMap.get(String(item.item_id)) || null,
-    sn: snMap.get(String(item.sn_code || '')) || null
+    sn: snMap.get(`${item.product_id}:${item.sn_code || ''}`) || null
   }));
   const summary = summarizeProductSettlementItems(settlementItems);
   const settlementId = generateUUID();

@@ -2304,17 +2304,27 @@ function normalizeOrderItemInput(item = {}) {
   };
 }
 
+function orderSnIdentity(item) {
+  const snId = String(item?.sn_id || '').trim();
+  const snCode = String(item?.sn_code || '').trim().toUpperCase();
+  const pn = String(item?.pn_code || '').trim().toUpperCase();
+  if (snCode) return JSON.stringify([item.product_id || '', pn, snCode]);
+  return snId ? `id:${snId}` : '';
+}
+
 function assertUniqueOrderSnItems(items = [], actionText = '订单') {
   const seen = new Set();
+  const seenIds = new Set();
   for (const item of items || []) {
     const snCode = String(item?.sn_code || '').trim().toUpperCase();
     const snId = String(item?.sn_id || '').trim();
-    const key = snCode ? `code:${snCode}` : (snId ? `id:${snId}` : '');
+    const key = orderSnIdentity(item);
     if (!key) continue;
-    if (seen.has(key)) {
-      throw archiveError(`${actionText}包含重复SN码 [${snCode || snId}]，同一SN只能对应一个商品`);
+    if (seen.has(key) || (snId && seenIds.has(snId))) {
+      throw archiveError(`${actionText}包含重复SN码 [${snCode || snId}]，同一商品的 SN 只能使用一次`);
     }
     seen.add(key);
+    if (snId) seenIds.add(snId);
   }
 }
 
@@ -3084,7 +3094,8 @@ async function detail(ctx) {
     const categoryByProductId = new Map(snProducts.map(product => [String(product.product_id), product.category]));
     const summaryMap = await summariesForSns(snRows);
     result.OrderItems = items.map(item => {
-      const sn = snMap.get(`${item.pn_code || ''}|${item.sn_code}`) || snRows.find(row => row.sn_code === item.sn_code);
+      const sn = snRows.find(row => item.sn_id && String(row.sn_id) === String(item.sn_id) && String(row.product_id) === String(item.product_id))
+        || (!item.sn_id && snMap.get(`${item.pn_code || ''}|${item.sn_code}`));
       const category = item.category || item.Product?.category || categoryByProductId.get(String(sn?.product_id || '')) || '';
       return {
         ...item,
@@ -4590,9 +4601,7 @@ async function requestSalesReturn(ctx) {
     }).filter(row => row.quantity > 0);
     const selectedSnKeys = new Set();
     const uniqueSelectedItems = selectedItems.filter(row => {
-      const snCode = String(row.sourceItem.sn_code || '').trim().toUpperCase();
-      const snId = String(row.sourceItem.sn_id || '').trim();
-      const key = snCode ? `code:${snCode}` : (snId ? `id:${snId}` : '');
+      const key = orderSnIdentity(row.sourceItem);
       if (!key) return true;
       if (selectedSnKeys.has(key)) return false;
       selectedSnKeys.add(key);
@@ -4745,9 +4754,7 @@ async function createSalesReturnInbound({ request, user, transaction, ctx }) {
     const unitPrice = money(orderItem?.original_inventory_cost || item.unit_price || 0);
     let snId = null;
     const snCode = String(item.sn_code || '').trim();
-    const physicalSnKey = snCode
-      ? `code:${snCode.toUpperCase()}`
-      : (String(item.sn_id || '').trim() ? `id:${String(item.sn_id).trim()}` : '');
+    const physicalSnKey = orderSnIdentity(orderItem || item);
     if (physicalSnKey && seenPhysicalSns.has(physicalSnKey)) {
       continue;
     }
@@ -4757,6 +4764,8 @@ async function createSalesReturnInbound({ request, user, transaction, ctx }) {
     if (!snCode || quantity !== 1) ctx.throw(400, `SN退货明细无效：${item.product_name || product.name}`);
       const sn = await ProductSn.findOne({
         where: {
+          ...((orderItem?.sn_id || item.sn_id) ? { sn_id: orderItem?.sn_id || item.sn_id } : {}),
+          ...((orderItem?.pn_code || item.pn_code) ? { pn_code: orderItem?.pn_code || item.pn_code } : {}),
           product_id: item.product_id,
           store_id: request.store_id,
           sn_code: snCode,
@@ -5681,7 +5690,7 @@ async function calculateSalesSettlementCosts(order, transaction = null, options 
 
   for (const item of items) {
     const snRecord = item.sn_code
-      ? await ProductSn.findOne({ where: { sn_code: item.sn_code, product_id: item.product_id }, transaction })
+      ? await ProductSn.findOne({ where: { sn_code: item.sn_code, product_id: item.product_id, ...(item.sn_id ? { sn_id: item.sn_id } : {}), ...(item.pn_code ? { pn_code: item.pn_code } : {}) }, transaction })
       : null;
     const productPrice = priceMap.get(item.product_id);
     const originalInventoryCost = Number(productPrice?.cost_price_locked || 0) === 1
@@ -6196,6 +6205,8 @@ async function validateAndDeductInventoryForArchive(order, transaction = null, {
 
       const snWhere = {
         sn_code: snCode,
+        pn_code: pnCode,
+        ...(item.sn_id ? { sn_id: item.sn_id } : {}),
         product_id: item.product_id,
         store_id: order.store_id,
         status: { [Op.in]: ['reserved', 'in_stock'] },
@@ -6227,6 +6238,8 @@ async function validateAndDeductInventoryForArchive(order, transaction = null, {
         const optionalSn = await ProductSn.findOne({
           where: {
             sn_code: snCode,
+            pn_code: pnCode,
+            ...(item.sn_id ? { sn_id: item.sn_id } : {}),
             product_id: item.product_id,
             store_id: order.store_id,
             status: { [Op.in]: ['reserved', 'in_stock'] },

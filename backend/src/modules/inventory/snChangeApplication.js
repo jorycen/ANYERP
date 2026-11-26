@@ -82,7 +82,8 @@ async function loadAndValidateItems(items, user, transaction) {
       throw applicationError(400, `SN ${row.sn_code} 未发生变化`);
     }
 
-    const pairKey = normalizeSnCode(item.newSnCode);
+    const normalizedCode = normalizeSnCode(item.newSnCode).toUpperCase();
+    const pairKey = JSON.stringify([String(row.pn_code || '').trim().toUpperCase(), normalizedCode]);
     if (newCodePairs.has(pairKey)) {
       throw applicationError(400, `同一申请中存在重复的新SN：${item.newSnCode}`);
     }
@@ -93,15 +94,15 @@ async function loadAndValidateItems(items, user, transaction) {
         [Op.and]: [
           sequelize.where(
             sequelize.fn('UPPER', sequelize.fn('TRIM', sequelize.col('sn_code'))),
-            pairKey
+            normalizedCode
           ),
-          { sn_id: { [Op.ne]: row.sn_id } }
+          { pn_code: row.pn_code, sn_id: { [Op.ne]: row.sn_id } }
         ]
       },
       transaction
     });
     if (exists) {
-      throw applicationError(409, `SN码[${item.newSnCode}]已被使用，SN在全系统不允许重复`);
+      throw applicationError(409, `SN码[${item.newSnCode}]已被使用，同一 PN 下不允许重复`);
     }
 
     validated.push({
