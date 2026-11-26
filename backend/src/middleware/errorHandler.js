@@ -52,13 +52,20 @@ async function errorHandler(ctx, next) {
 
     message = localizeErrorMessage(message);
 
+    const databaseErrorCode = err.parent?.code || err.original?.code;
+    if (/^(ER_[A-Z0-9_]+|E(?:CONNRESET|CONNREFUSED|TIMEDOUT|PIPE)|PROTOCOL_[A-Z0-9_]+)$/.test(databaseErrorCode || '')) {
+      ctx.state.databaseErrorCode = databaseErrorCode;
+    } else if (err.name === 'SequelizeConnectionAcquireTimeoutError') {
+      ctx.state.databaseErrorCode = 'POOL_ACQUIRE_TIMEOUT';
+    }
     console.error('Error:', {
       status,
       message,
       originalError: err.message,
       stack: err.stack,
       path: ctx.path,
-      method: ctx.method
+      method: ctx.method,
+      requestId: ctx.response.get('X-Request-Id') || undefined
     });
 
     ctx.status = status;

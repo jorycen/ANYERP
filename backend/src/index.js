@@ -5,6 +5,7 @@ const cors = require('koa-cors');
 const static = require('koa-static');
 const path = require('path');
 const fs = require('fs');
+const { randomUUID } = require('node:crypto');
 
 const authRouter = require('./modules/auth/routes');
 const salesRouter = require('./modules/sales/routes');
@@ -40,6 +41,8 @@ let schemaInitializationReady = false;
 const inventoryModes = new Set(['demo', 'focus', 'special', 'hot7', 'highMargin7']);
 app.use(async (ctx, next) => {
   if (!ctx.path.startsWith('/api/') || ctx.method === 'OPTIONS') return next();
+  const requestId = randomUUID();
+  ctx.set('X-Request-Id', requestId);
   const isDashboard = ctx.path === '/api/v1/report/dashboard/overview';
   const companyWideRank = ctx.query.companyWideRank === '1' || ctx.query.company_wide_rank === '1';
   const leaderboard = isDashboard
@@ -48,7 +51,9 @@ app.use(async (ctx, next) => {
   return recordDatabaseTiming('api', 0, next, () => ({
     label: ctx._matchedRoute || 'unmatched-api',
     method: ctx.method,
+    requestId,
     status: ctx.status,
+    ...(ctx.state.databaseErrorCode && { databaseErrorCode: ctx.state.databaseErrorCode }),
     ...(ctx.path === '/api/v1/inventory/list' && {
       mode: inventoryModes.has(ctx.query.modelFilter) ? ctx.query.modelFilter : 'default'
     }),

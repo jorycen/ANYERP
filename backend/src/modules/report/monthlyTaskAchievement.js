@@ -119,7 +119,7 @@ async function loadActuals(storeIds, startAt, endAt, archiveScope = 'archived', 
     voidedStatuses: require('./dashboardDataSource').VOIDED_STATUSES,
     internalTransferSource: `${INTERNAL_TRANSFER_SOURCE}%`
   };
-  const orderRows = await sequelize.query(`
+  const orderRows = await recordDatabaseStage('taskSalesOrders', () => sequelize.query(`
     SELECT o.ORDER_ID AS orderId,
            o.ORDER_NO AS orderNo,
            o.STORE_ID AS storeId,
@@ -147,7 +147,7 @@ async function loadActuals(storeIds, startAt, endAt, archiveScope = 'archived', 
        AND o.STORE_ID IN (:storeIds)
        AND o.CREATE_TIME >= :startAt
        AND o.CREATE_TIME < :endAt
-     ORDER BY o.CREATE_TIME ASC, o.ORDER_ID ASC, oi.ITEM_ID ASC`, { replacements, type: QueryTypes.SELECT });
+     ORDER BY o.CREATE_TIME ASC, o.ORDER_ID ASC, oi.ITEM_ID ASC`, { replacements, type: QueryTypes.SELECT }));
 
   const storeActuals = new Map();
   const employeeActuals = new Map();
@@ -160,13 +160,13 @@ async function loadActuals(storeIds, startAt, endAt, archiveScope = 'archived', 
     if(!abilityScope)return;
     const orderIds=[...new Set(rows.map(r=>String(r.orderId)).filter(id=>!orderScopeCache.has(id)))];
     if(!orderIds.length)return;
-    const originals=await sequelize.query(`SELECT o.ORDER_ID AS orderId, o.CUSTOMER_SOURCE AS customerSource,
+    const originals=await recordDatabaseStage('taskReturnOriginalOrders', () => sequelize.query(`SELECT o.ORDER_ID AS orderId, o.CUSTOMER_SOURCE AS customerSource,
       oi.ITEM_ID AS itemId,oi.SN_CODE AS snCode,gp.PRODUCT_PRICING_DETAILS AS pricingDetails,
       TIMESTAMPDIFF(DAY,COALESCE(ps.ORIGINAL_INBOUND_TIME,ps.INBOUND_TIME),o.CREATE_TIME) AS saleAgeDays
       FROM T_ORDER o JOIN T_ORDER_ITEM oi ON oi.ORDER_ID=o.ORDER_ID
       LEFT JOIN T_PRODUCT_SN ps ON ps.SN_ID=oi.SN_ID
       LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID=o.ORDER_ID
-      WHERE o.ORDER_ID IN (:orderIds)`,{replacements:{orderIds},type:QueryTypes.SELECT});
+      WHERE o.ORDER_ID IN (:orderIds)`,{replacements:{orderIds},type:QueryTypes.SELECT}));
     remember(originals);
   };
   for (const row of orderRows) {
@@ -193,7 +193,7 @@ async function loadActuals(storeIds, startAt, endAt, archiveScope = 'archived', 
     });
   }
 
-  const adjustmentRows = await sequelize.query(`
+  const adjustmentRows = await recordDatabaseStage('taskAdjustments', () => sequelize.query(`
     SELECT pa.ORDER_ID AS orderId, SUM(pa.SIGNED_AMOUNT) AS signedAmount, o.STORE_ID AS storeId, o.CREATE_STAFF_ID AS createStaffId, o.CREATE_USER AS createUser, o.AUXILIARY_SALES_LIST AS auxiliarySalesList
       FROM T_PERFORMANCE_PROFIT_ADJUSTMENT pa
       INNER JOIN T_ORDER o ON o.ORDER_ID = pa.ORDER_ID
@@ -204,7 +204,7 @@ async function loadActuals(storeIds, startAt, endAt, archiveScope = 'archived', 
        AND o.STORE_ID IN (:storeIds)
        AND (CASE WHEN pa.ADJUSTMENT_NO LIKE 'AUTO-CARE-RET-%' OR pa.ADJUSTMENT_NO LIKE 'EDUR-%' OR pa.ADJUSTMENT_NO LIKE 'INVOICE-PERIOD-%' THEN pa.CREATE_TIME ELSE o.CREATE_TIME END) >= :startAt
        AND (CASE WHEN pa.ADJUSTMENT_NO LIKE 'AUTO-CARE-RET-%' OR pa.ADJUSTMENT_NO LIKE 'EDUR-%' OR pa.ADJUSTMENT_NO LIKE 'INVOICE-PERIOD-%' THEN pa.CREATE_TIME ELSE o.CREATE_TIME END) < :endAt
-     GROUP BY pa.ORDER_ID, o.STORE_ID, o.CREATE_STAFF_ID, o.CREATE_USER, o.AUXILIARY_SALES_LIST`, { replacements, type: QueryTypes.SELECT });
+     GROUP BY pa.ORDER_ID, o.STORE_ID, o.CREATE_STAFF_ID, o.CREATE_USER, o.AUXILIARY_SALES_LIST`, { replacements, type: QueryTypes.SELECT }));
   await primeOrderScopes(adjustmentRows);
   for (const row of adjustmentRows) {
     if(abilityScope&&orderScopeCache.get(String(row.orderId))===false)continue;
@@ -224,7 +224,7 @@ async function loadActuals(storeIds, startAt, endAt, archiveScope = 'archived', 
     });
   }
 
-  const returnItems = await sequelize.query(`
+  const returnItems = await recordDatabaseStage('taskReturnItems', () => sequelize.query(`
     SELECT srs.ORDER_ID AS orderId,
            srs.STORE_ID AS storeId,
            o.CREATE_STAFF_ID AS createStaffId,
@@ -246,7 +246,7 @@ async function loadActuals(storeIds, startAt, endAt, archiveScope = 'archived', 
      WHERE srs.STORE_ID IN (:storeIds)
        AND COALESCE(TRIM(o.CUSTOMER_SOURCE), '') NOT LIKE :internalTransferSource
        AND srs.CREATE_TIME >= :startAt
-       AND srs.CREATE_TIME < :endAt`, { replacements, type: QueryTypes.SELECT });
+       AND srs.CREATE_TIME < :endAt`, { replacements, type: QueryTypes.SELECT }));
   for (const row of returnItems) {
     if(abilityScope&&matches(row)===false)continue;
     const storeActual = storeActuals.get(String(row.storeId)) || createActual();
@@ -278,7 +278,7 @@ async function loadActuals(storeIds, startAt, endAt, archiveScope = 'archived', 
     });
   }
 
-  const returnLedgerRows = await sequelize.query(`
+  const returnLedgerRows = await recordDatabaseStage('taskReturnLedger', () => sequelize.query(`
     SELECT return_gp.ORDER_ID AS orderId, return_gp.STORE_ID AS storeId,
            return_gp.STAFF_ID AS staffId,
            return_gp.EMPLOYEE_NAME AS employeeName,
@@ -289,7 +289,7 @@ async function loadActuals(storeIds, startAt, endAt, archiveScope = 'archived', 
      WHERE return_gp.STORE_ID IN (:storeIds)
        AND COALESCE(TRIM(o.CUSTOMER_SOURCE), '') NOT LIKE :internalTransferSource
        AND return_gp.CREATE_TIME >= :startAt
-       AND return_gp.CREATE_TIME < :endAt`, { replacements, type: QueryTypes.SELECT });
+       AND return_gp.CREATE_TIME < :endAt`, { replacements, type: QueryTypes.SELECT }));
   await primeOrderScopes(returnLedgerRows);
   for (const row of returnLedgerRows) {
     if(abilityScope&&orderScopeCache.get(String(row.orderId))===false)continue;
