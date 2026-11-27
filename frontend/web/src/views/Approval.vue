@@ -853,7 +853,7 @@ const detailArrayColumnLabels = {
   companyPrice: '公司定价', recoveryUnitCost: '确认回收单价', orderItemId: '原商品行', inboundItemId: '入库明细',
   gross_profit_cost_mode: '毛利计价方式',
   product_name: '商品名称', product_code: '商品编码', pn_code: 'PN', sn_code: 'SN', quantity: '数量',
-  current_quantity: '当前数量', unit_price: '单价', amount: '金额', amount_delta: '金额变化',
+  current_quantity: '当前数量', unit_price: '单价', invoice_type: '采购票种', amount: '金额', amount_delta: '金额变化',
   store_name: '门店', storeName: '门店', reason: '原因', original_name: '附件名称', mime_type: '文件类型', file_size: '文件大小'
 }
 Object.assign(detailArrayColumnLabels, { target_type: '\u5f52\u5c5e\u7c7b\u578b', target_name: '\u5f52\u5c5e\u5bf9\u8c61', url: '\u9644\u4ef6' })
@@ -938,7 +938,9 @@ function detailArraySections(data = {}) {
       if (!objectRows.length) return null
       const keys = [...new Set(objectRows.flatMap(row => Object.keys(row)))]
         .filter(columnKey => !hiddenDetailKeys.has(columnKey) && objectRows.some(row => row[columnKey] !== undefined && row[columnKey] !== null && row[columnKey] !== '' && typeof row[columnKey] !== 'object'))
-      const preferred = key === 'expense_items' ? ['expenseType','amount','remark'] : key === 'attribution_details' ? ['target_type', 'target_name', 'amount', 'reason'] : ['product_name', 'gross_profit_cost_mode', 'product_code', 'pn_code', 'sn_code', 'quantity', 'current_quantity', 'unit_price', 'amount', 'amount_delta', 'original_name', 'url', 'mime_type', 'file_size']
+      const preferred = key === 'items' && data.application_id && data.operation_type === 'INBOUND'
+        ? ['row_no', 'product_name', 'pn_code', 'sn_code', 'quantity', 'unit_price', 'invoice_type', 'remark']
+        : key === 'expense_items' ? ['expenseType','amount','remark'] : key === 'attribution_details' ? ['target_type', 'target_name', 'amount', 'reason'] : ['product_name', 'gross_profit_cost_mode', 'product_code', 'pn_code', 'sn_code', 'quantity', 'current_quantity', 'unit_price', 'amount', 'amount_delta', 'original_name', 'url', 'mime_type', 'file_size']
       const orderedKeys = [...preferred.filter(columnKey => keys.includes(columnKey)), ...keys.filter(columnKey => !preferred.includes(columnKey))].slice(0, 8)
       return {
         key,

@@ -264,9 +264,11 @@ async function update(basisId, body, user, transaction) {
   const before = row.toJSON();
   const current = (await currentCatalog([before],transaction))[0];
   if (body.costMode !== current.costMode || money(body.companyPrice) !== current.companyPrice) fail('计价方式和当前公司定价请在商品价格管理中修改',400);
+  const sourceData = { ...json(row.source_data || {}), taxScope: null, costEstimated: false };
+  if (money(row.purchase_cost) !== money(body.purchaseCost) || row.invoice_type !== body.invoiceType) delete sourceData.costLayers;
   await row.update({ invoice_type: body.invoiceType, purchase_cost: body.purchaseCost,
     status: body.invoiceType ? 'confirmed' : 'pending', reason: body.reason,
-    source_data:{...json(row.source_data||{}),taxScope:null,costEstimated:false},
+    source_data: sourceData,
     revision: Number(row.revision)+1, updated_by: user.name, update_time: new Date() }, { transaction });
   await recordBusinessAction({ businessType:'inventory_foundation',businessId:basisId,action:'update_foundation',user,
     comment:body.reason,detail:{before,after:row.toJSON(),note:'归档金额不自动重写，需通过原有纠错流程预览审批'},transaction });

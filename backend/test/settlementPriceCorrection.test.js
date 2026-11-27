@@ -77,10 +77,10 @@ function fixture(t, extra = {}) {
   t.mock.method(M.OrderItem, 'findAll', async () => [original]);
   t.mock.method(M.sequelize, 'query', async () => extra.closed ? [{ MONTH_KEY: '2026-10' }] : []);
   t.mock.method(M.BusinessActionLog, 'create', async (value, options) => { assert.equal(options.transaction, tx); logs.push(value); return value; });
-  t.mock.method(M.sequelize, 'transaction', async fn => {
+  t.mock.method(M.sequelize, 'transaction', async (options, callback) => {
     const tracked = [order, snapshot, settlement, item, original, ...(extra.tracked || [])];
     const saved = tracked.map(value => value.toJSON());
-    try { return await fn(tx); } catch (error) {
+    try { return await (callback || options)(tx); } catch (error) {
       tracked.forEach((value, index) => { for (const key of Object.keys(value)) if (typeof value[key] !== 'function') delete value[key]; Object.assign(value, saved[index]); });
       logs.length = 0;
       throw error;
@@ -407,14 +407,14 @@ test('开票最终审批更新实际开票信息，原快照不变，差额单�
 
 test('开票提交与中间审批不改业务，同订单两类待审批纠错相互排斥', async t => {
   const f=invoiceFixture(t),ctx=context(),a=await invoiceAdjustment(ctx),saved=[];
-  t.mock.method(M.PerformanceProfitAdjustment,'findOne',async options=>{ assert.deepEqual(options.where.adjustment_type[Op.in],[C.TYPE,C.INVOICE_TYPE]);return null; });
+  t.mock.method(M.PerformanceProfitAdjustment,'findOne',async options=>{ assert.equal(options.where.adjustment_type, undefined);return null; });
   t.mock.method(M.PerformanceProfitAdjustment,'create',async value=>{saved.push(value);return row(value);});
   ctx.request.body={orderId:'O',adjustmentType:C.INVOICE_TYPE,invoiceAmount:6000,reason:'金额错误',evidence:'发票001',previewHash:a.correction_data.previewHash};
   await controller.createProfitAdjustment(ctx);
   assert.equal(saved[0].product_id,null);assert.equal(saved[0].signed_amount,0);assert.equal(saved[0].amount,65);
   assert.equal(f.order.invoice_amount,0);assert.equal(f.snapshot.gross_profit_amount,500);
-  t.mock.method(M.PerformanceProfitAdjustment,'findOne',async()=>({adjustment_type:C.TYPE}));
-  await assert.rejects(controller.createProfitAdjustment(ctx),/已有待审批业务纠错/);
+  t.mock.method(M.PerformanceProfitAdjustment,'findOne',async()=>({adjustment_type:C.TYPE,adjustment_no:'PPA-PRICE'}));
+  await assert.rejects(controller.createProfitAdjustment(ctx),/PPA-PRICE/);
   t.mock.method(M.PerformanceProfitAdjustment,'findByPk',async()=>a);t.mock.method(runtime,'advance',async()=>false);
   ctx.params.adjustmentId='IA';await controller.approveProfitAdjustment(ctx);
   assert.equal(f.order.invoice_amount,0);assert.equal(a.status,'pending_finance');
@@ -467,4 +467,58 @@ test('Web切换纠错类型或开票金额使旧预览失效，延迟响应不�
   changed();assert.equal(ctx.correctionPreview.value,null);
   requests[0]({data:{previewHash:'STALE'}});await pending;
   assert.equal(ctx.correctionPreview.value,null);
+});
+
+test('同一订单待财务或管理员审批时返回申请编号，其他订单和终态申请不阻塞', async t => {
+  const { assertNoPendingOrderAdjustment } = require('../src/modules/report/pendingOrderAdjustment');
+  const applications = [
+    { order_id: 'O1', status: 'pending_finance', adjustment_no: 'PPA1' },
+    { order_id: 'O2', status: 'pending_admin', adjustment_no: 'PPA2' },
+    { order_id: 'O3', status: 'approved' },
+    { order_id: 'O3', status: 'rejected' },
+    { order_id: 'O3', status: 'withdrawn' }
+  ];
+  t.mock.method(M.PerformanceProfitAdjustment, 'findOne', options => {
+    assert.equal(options.transaction, tx);
+    assert.equal(options.lock, undefined);
+    const { order_id, status } = options.where;
+    return applications.find(application => application.order_id === order_id && status[Op.in].includes(application.status));
+  });
+  const ctx = { throw(status, message) { throw Object.assign(new Error(message), { status }); } };
+  await assert.rejects(assertNoPendingOrderAdjustment(ctx, 'O1', tx), { status: 409, message: /PPA1/ });
+  await assert.rejects(assertNoPendingOrderAdjustment(ctx, 'O2', tx), { status: 409, message: /PPA2/ });
+  await assert.doesNotReject(assertNoPendingOrderAdjustment(ctx, 'O3', tx));
+});
+
+test('有待审批申请时，费用补录接口锁定订单后阻止清空补录', async t => {
+  const sales = require('../src/modules/sales/controller');
+  const order = { order_id: 'O', store_id: 'S', Store: { distributor_id: 'D' } };
+  const events = [];
+  t.mock.method(M.Order, 'findByPk', async (id, options) => {
+    assert.equal(id, 'O');
+    if (options) {
+      assert.equal(options.transaction, tx);
+      assert.equal(options.lock, tx.LOCK.UPDATE);
+      events.push('locked');
+    }
+    return order;
+  });
+  t.mock.method(M.sequelize, 'transaction', async (options, callback) => {
+    assert.equal(options.isolationLevel, 'READ COMMITTED');
+    return callback(tx);
+  });
+  t.mock.method(M.PerformanceProfitAdjustment, 'findOne', async options => {
+    assert.equal(options.where.order_id, 'O');
+    assert.equal(options.transaction, tx);
+    events.push('checked');
+    return { adjustment_no: 'PPA-PENDING' };
+  });
+  const write = t.mock.method(M.OrderSupplement, 'update', async () => {});
+  const ctx = context();
+  ctx.state.user = { ...ctx.state.user, roles: ['admin'], accessibleStoreIds: ['S'], accessibleDistributorIds: ['D'] };
+  ctx.params.orderId = 'O';
+  ctx.request.body = { supplements: [] };
+  await assert.rejects(sales.updateSupplements(ctx), { status: 409, message: /PPA-PENDING/ });
+  assert.deepEqual(events, ['locked', 'checked']);
+  assert.equal(write.mock.callCount(), 0);
 });

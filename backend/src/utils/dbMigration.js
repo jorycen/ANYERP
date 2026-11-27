@@ -4065,6 +4065,7 @@ async function runMigrations() {
         KEY idx_inventory_batch_item_sn (SN_CODE)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='库存批量维护申请明细'
     `);
+    await checkAndAddColumn('T_INVENTORY_BATCH_APPLICATION_ITEM', 'INVOICE_TYPE', 'VARCHAR(24) NULL COMMENT "批量入库采购票种"', 'UNIT_PRICE');
     await checkAndAddColumn('T_INVENTORY_BATCH_APPLICATION_ITEM', 'EXECUTE_STATUS', 'VARCHAR(32) DEFAULT "pending" COMMENT "执行状态"', 'ERROR_MESSAGE');
     await checkAndAddColumn('T_INVENTORY_BATCH_APPLICATION_ITEM', 'EXECUTE_ERROR', 'VARCHAR(1000) COMMENT "明细执行失败原因"', 'EXECUTE_STATUS');
     await checkAndAddColumn('T_INVENTORY_BATCH_APPLICATION_ITEM', 'EXECUTE_TIME', 'DATETIME COMMENT "明细执行时间"', 'EXECUTE_ERROR');

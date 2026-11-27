@@ -18,20 +18,22 @@ async function recordApproval(request, items, user, transaction) {
     businessNo: request.request_no, action: 'zero_cost_purchase_approved', user,
     comment: NOTICE, detail: { version: 1, items: notice.zeroCostItems }, transaction });
 }
-async function recordReceipt(inbound, item, sn, user, transaction) {
-  if (!inbound.purchase_request_id || Number(item.unit_price) !== 0 || !item.purchase_request_item_id) return;
+async function hasReceiptEvidence(inbound, item, transaction) {
+  if (!inbound.purchase_request_id || item.unit_price == null || Number(item.unit_price) !== 0 || !item.purchase_request_item_id) return false;
   const logs = await M.BusinessActionLog.findAll({ where: { business_type: 'purchase_request',
     business_id: inbound.purchase_request_id, action: 'zero_cost_purchase_approved' }, transaction });
-  const confirmed = logs.some(log => {
+  return logs.some(log => {
     let detail; try { detail = typeof log.detail_json === 'string' ? JSON.parse(log.detail_json) : log.detail_json; } catch (_) { return false; }
     return detail?.version === 1 && detail.items?.some(row => String(row.itemId) === String(item.purchase_request_item_id)
       && String(row.productId) === String(item.product_id) && row.unitPrice === 0);
   });
-  if (!confirmed) return;
+}
+async function recordReceipt(inbound, item, sn, user, transaction) {
+  if (!await hasReceiptEvidence(inbound, item, transaction)) return;
   await recordBusinessAction({ businessType: sn ? 'sn' : 'inbound_item', businessId: String(sn?.sn_id || item.item_id),
     businessNo: inbound.inbound_no, action: 'zero_cost_purchase_received', user,
     comment: '原采购审批已确认零成本，本次入库继承该依据',
     detail: { requestId: inbound.purchase_request_id, requestItemId: item.purchase_request_item_id,
       inboundId: inbound.inbound_id, inboundItemId: item.item_id, productId: item.product_id, after: { inbound_price: 0 } }, transaction });
 }
-module.exports = { zeroCostNotice, recordApproval, recordReceipt };
+module.exports = { zeroCostNotice, recordApproval, recordReceipt, hasReceiptEvidence };

@@ -8,8 +8,9 @@ const {
   PerformanceProfitAdjustmentAttachment,
   sequelize
 } = require('../../models');
-const { Op } = require('sequelize');
+const { Op, Transaction } = require('sequelize');
 const { generateUUID, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
+const { assertNoPendingOrderAdjustment } = require('./pendingOrderAdjustment');
 const correction = require('./settlementPriceCorrection');
 
 const UPLOAD_DIR = path.resolve(__dirname, '../../../uploads/performance-profit-adjustments');
@@ -102,12 +103,10 @@ async function createProfitAdjustment(ctx) {
       storedFiles.push({ file, storageName, filePath });
     }
 
-    await sequelize.transaction(async transaction => {
+    await sequelize.transaction({ isolationLevel: Transaction.ISOLATION_LEVELS.READ_COMMITTED }, async transaction => {
       const selected = await correction.select(ctx, order.order_id, input, transaction);
+      await assertNoPendingOrderAdjustment(ctx, order.order_id, transaction);
       if (selected.previewHash !== body.previewHash) ctx.throw(409, '订单或结算数据已变化，请重新预览');
-      const pending = await PerformanceProfitAdjustment.findOne({ where: { order_id: order.order_id,
-        adjustment_type: { [Op.in]: [correction.TYPE, correction.INVOICE_TYPE] }, status: { [Op.in]: ['pending_finance', 'pending_admin'] } }, transaction, lock: transaction.LOCK.UPDATE });
-      if (pending) ctx.throw(409, '本订单已有待审批业务纠错，请先处理原申请');
       await PerformanceProfitAdjustment.create({
         adjustment_id: adjustmentId,
         adjustment_no: createAdjustmentNo(),

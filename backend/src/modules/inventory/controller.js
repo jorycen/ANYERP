@@ -3694,7 +3694,7 @@ async function adjustProductLocation(ctx) {
     const source = await Inventory.findOne({ where: { product_id: productId, store_id: storeId, location_id: fromLocationId }, transaction: t, lock: t.LOCK.UPDATE });
     const available = Number(source?.[sourceField] || 0);
     if (available < quantity) ctx.throw(400, `原库位库存不足，当前可调整数量为 ${available}`);
-    const movementReceipt = await require('./foundationMovement').inventoryReceipt(productId, storeId, sourceField, fromLocationId, t);
+    const movementReceipt = await require('./foundationMovement').inventoryReceipt(productId, storeId, sourceField, fromLocationId, t, quantity);
     await updateInventory(productId, storeId, sourceField, -quantity, t, fromLocationId);
     await updateInventory(productId, storeId, normalizeInventoryQuantityField(toLocation.type), quantity, t, toLocationId, movementReceipt);
     await recordBusinessAction({ businessType: 'inventory', businessId: productId, businessNo: `PRODUCT-LOCATION-${generateUUID().slice(0, 12)}`, action: 'product_location_adjust', user: ctx.state.user || {}, comment: `非SN商品库位调整：${fromLocation.name} → ${toLocation.name}`, detail: { productId, storeId, fromLocationId, toLocationId, quantity }, transaction: t });
@@ -4096,7 +4096,8 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
       const purchaseFoundationReceipt = isPurchaseInbound && purchaseRequest ? {
         productId: item.productId, purchaseId: purchaseRequest.request_id,
         purchaseNo: purchaseRequest.request_no, receiptItemId: dbItem.item_id,
-        invoiceType: purchaseRequest.invoice_type, unitCost: Number(dbItem.unit_price),
+        invoiceType: purchaseRequest.invoice_type, unitCost: dbItem.unit_price,
+        zeroCostConfirmed: await require('../purchase/zeroCost').hasReceiptEvidence(inbound, dbItem, t),
         costMode: requestedCostMode
       } : null;
       if (isPurchaseInbound && receiptPurchaseItem && !requestedCostMode) {
@@ -5242,7 +5243,7 @@ async function confirmTransferOutPartial(ctx) {
       const availableQty = await getTransferableStock(product, requestItem.product_id, transfer.from_store_id, t);
       if (availableQty < selectedQuantity) ctx.throw(400, `商品 ${product.name} 库存不足`);
       await requestItem.update({ quantity: selectedQuantity, pn_code: selectedPn }, { transaction: t });
-      await require('./foundationMovement').saveInventory(`transfer_item:${requestItem.item_id}`, requestItem.product_id, transfer.from_store_id, 'normal_qty', '', t);
+      await require('./foundationMovement').saveInventory(`transfer_item:${requestItem.item_id}`, requestItem.product_id, transfer.from_store_id, 'normal_qty', '', t, selectedQuantity);
       await updateInventory(requestItem.product_id, transfer.from_store_id, 'normal_qty', -selectedQuantity, t);
       outboundQuantity += selectedQuantity;
     }
@@ -5497,7 +5498,7 @@ async function confirmTransferOut(ctx) {
 
       if (snId && Number(product?.need_sn) === 1) await syncSerializedInventoryBalance({ productId: item.product_id, storeId: transfer.from_store_id, transaction: t });
       else {
-        await require('./foundationMovement').saveInventory(`transfer_item:${item.item_id}`, item.product_id, transfer.from_store_id, 'normal_qty', '', t);
+        await require('./foundationMovement').saveInventory(`transfer_item:${item.item_id}`, item.product_id, transfer.from_store_id, 'normal_qty', '', t, quantity);
         await updateInventory(item.product_id, transfer.from_store_id, 'normal_qty', -quantity, t);
       }
     }
@@ -6332,6 +6333,8 @@ async function createConversion(ctx) {
     for (const row of targetRows) {
       let snId = null;
       const foundationReceipt = movement.consensus(row.product_id, conversionFacts, `conversion:${conversionId}`);
+      foundationReceipt.unitCost = row.unit_cost;
+      foundationReceipt.zeroCostConfirmed = Number(row.unit_cost) === 0;
       if (serviceCost > 0) { foundationReceipt.invoiceType = null; foundationReceipt.reason = '库存转换含服务成本，需确认服务采购票税'; }
       if (Number(row.product.need_sn) === 1) {
         const pnMaster = await ensurePn(row.product_id, row.pn_code, t);

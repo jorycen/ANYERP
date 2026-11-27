@@ -42,6 +42,44 @@ test('退货继承原销售明细档案，不读取当前商品票种',async t=>
  t.mock.method(M.SalesReturnRequestItem,'findAll',async()=>[{order_item_id:1,sn_code:'SN'}]);
  t.mock.method(M.OrderItem,'findByPk',async()=>({order_id:'O',product_id:'P'}));
  t.mock.method(M.InventoryFoundationRef,'findByPk',async key=>{a.equal(key,'order_item:1');return {basis_id:'ORIGINAL'};});
- t.mock.method(M.InventoryFoundation,'findByPk',async()=>({basis_id:'ORIGINAL',product_id:'P',status:'confirmed',invoice_type:'专票13%'}));
+ t.mock.method(M.InventoryFoundation,'findByPk',async()=>({basis_id:'ORIGINAL',product_id:'P',status:'confirmed',invoice_type:'专票13%',purchase_cost:15}));
  a.equal((await R.returnReceipt({source_no:'RET'},{product_id:'P',sn_code:'SN'},tx)).invoiceType,'专票13%');
+});
+
+test('mixed acquisition prices keep cost, then FIFO consumption leaves the latest layer', async t => {
+  I.enable();
+  const initial = {
+    basis_id: 'INITIAL', product_id: 'P', status: 'confirmed', invoice_type: '专票13%', purchase_cost: 110.69
+  };
+  const records = new Map([[initial.basis_id, initial]]);
+  const ref = { basis_id: 'INITIAL', async update(patch) { Object.assign(this, patch); } };
+  t.mock.method(M.Product, 'findByPk', async () => ({ name: '适配器', need_sn: 0 }));
+  t.mock.method(M.ProductPrice, 'findOne', async () => null);
+  t.mock.method(M.Location, 'findByPk', async () => ({ type: 'normal_qty' }));
+  t.mock.method(M.InventoryFoundationRef, 'findByPk', async () => ref);
+  t.mock.method(M.InventoryFoundation, 'findByPk', async id => records.get(id));
+  t.mock.method(M.InventoryFoundation, 'create', async row => { records.set(row.basis_id, row); return row; });
+  const inv = { inventory_id: 'INV', product_id: 'P', store_id: 'S', location_id: 'L', normal_qty: 6 };
+  await I.captureInventory(inv, { transaction: tx, previousInventory: { normal_qty: 1 },
+    foundationReceipt: { productId: 'P', unitCost: 90, invoiceType: '收据' } });
+  a.equal(records.get(ref.basis_id).purchase_cost, 93.45);
+  a.equal(records.get(ref.basis_id).invoice_type, null);
+  a.equal(records.get(ref.basis_id).source_data.costLayers.length, 2);
+  await I.captureInventory({ ...inv, normal_qty: 5 }, { transaction: tx, previousInventory: { normal_qty: 6 } });
+  a.equal(records.get(ref.basis_id).purchase_cost, 90);
+  a.equal(records.get(ref.basis_id).invoice_type, '收据');
+  a.equal(records.get('INITIAL').purchase_cost, 110.69);
+});
+
+test('return uses exact archived purchase cost when the order foundation cost is missing', async t => {
+  t.mock.method(M.SalesReturnRequest,'findOne',async()=>({return_id:'R',order_id:'O'}));
+  t.mock.method(M.SalesReturnRequestItem,'findAll',async()=>[{order_item_id:1,quantity:2}]);
+  t.mock.method(M.OrderItem,'findByPk',async()=>({order_id:'O',product_id:'P',original_inventory_cost:15}));
+  t.mock.method(M.InventoryFoundationRef,'findByPk',async()=>null);
+  t.mock.method(M.OrderGrossProfit,'findOne',async()=>({product_pricing_details:[
+    {itemId:1,productId:'P',purchasePrice:12,purchasePriceKnown:true,
+      purchaseTaxBasis:{status:'confirmed',invoiceType:'收据',purchaseId:'PR'}}
+  ]}));
+  const receipt = await R.returnReceipt({source_no:'RET'},{product_id:'P',quantity:2},tx);
+  a.deepEqual(receipt.costLayers,[{quantity:2,unitCost:12,invoiceType:'收据',estimated:false}]);
 });

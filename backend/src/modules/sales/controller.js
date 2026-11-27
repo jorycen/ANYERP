@@ -51,7 +51,7 @@ const {
 const fs = require('fs');
 const path = require('path');
 const { PassThrough } = require('stream');
-const { Op, literal, QueryTypes } = require('sequelize');
+const { Op, literal, QueryTypes, Transaction } = require('sequelize');
 const { generateOrderNo, generateInboundNo, generateUUID, paginate, formatPaginatedResult } = require('../../utils');
 const { normalizePnCode } = require('../../utils/productPn');
 const { summariesForSns, alignOrderSubsidyRights, isGovSubsidyEligibleCategory, lockSaleRights, finishSaleRights, releaseSaleRights, createPendingSettlement, triggerSaleResourceBenefits, createSaleResourceTasks } = require('../inventory/resourceRights');
@@ -101,6 +101,7 @@ const {
   calculateNationalSubsidyCustomerReceiptAmount
 } = require('./grossProfit');
 const { applyCostPreview, applyFrozenCostDisplay, readCostSnapshot, applyPendingCost } = require('./costPreview');
+const { assertNoPendingOrderAdjustment } = require('../report/pendingOrderAdjustment');
 const { createProductSettlementOrder } = require('../report/productSettlement');
 const {
   isSubsidyEligibleItem,
@@ -680,7 +681,7 @@ async function list(ctx) {
     .map(row => row.order_id));
   const rows = pageRows.map(row => row.record_type === 'sales_return'
     ? row
-    : { ...row, ...presentProfit(row.gross_profit_amount, profitAdjustments.get(row.order_id)) });
+    : { ...row, can_delete_draft: row.order_status === 'draft' && canEditSalesDraft(user, row), ...presentProfit(row.gross_profit_amount, profitAdjustments.get(row.order_id)) });
 
   ctx.body = formatPaginatedResult(rows, {
     page: normalizedPage,
@@ -2745,6 +2746,7 @@ async function createSalesRecord(ctx, creation) {
   }, { transaction });
   if (existingOrder) {
     await existingOrder.reload({ transaction, lock: transaction.LOCK.UPDATE });
+    if (Number(existingOrder.is_deleted) === 1) ctx.throw(404, '销售订单不存在');
     draftToken = await saveContract.begin(saveModels, existingOrder, requestBody, user, transaction);
     if (draftToken?.replay) { savedDraft = draftToken.replay; draftReplayed = true; return; }
     if (existingOrder.order_status !== 'draft') ctx.throw(409, '订单已变化，请刷新后重试');
@@ -2976,20 +2978,27 @@ async function submitSalesDraft(ctx) {
 async function deleteSalesDraft(ctx) {
   const { orderId } = ctx.params;
   const user = ctx.state.user;
-  const order = await Order.findOne({ where: { order_id: orderId, is_deleted: 0 } });
-  if (!order) ctx.throw(404, '销售订单不存在');
-  assertStoreVisible(order.store_id, user);
-  if (order.order_status !== 'draft' || order.submit_time) ctx.throw(400, '只有从未提交过的销售订单草稿可以删除');
-  if (!canEditSalesDraft(user, order)) ctx.throw(403, '只有草稿创建人、店长或管理员可以删除');
-  await order.update({ is_deleted: 1, update_time: new Date() });
-  await recordBusinessAction({
-    businessType: 'sales_order',
-    businessId: order.order_id,
-    businessNo: order.order_no,
-    action: 'deleted',
-    fromStatus: 'draft',
-    toStatus: 'deleted',
-    user
+  await sequelize.transaction(async transaction => {
+    const order = await Order.findOne({
+      where: { order_id: orderId, is_deleted: 0 },
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!order) ctx.throw(404, '销售订单不存在');
+    assertStoreVisible(order.store_id, user);
+    if (order.order_status !== 'draft') ctx.throw(400, '只有销售订单草稿可以删除');
+    if (!canEditSalesDraft(user, order)) ctx.throw(403, '只有草稿创建人、店长或管理员可以删除');
+    await order.update({ is_deleted: 1, update_time: new Date() }, { transaction });
+    await recordBusinessAction({
+      businessType: 'sales_order',
+      businessId: order.order_id,
+      businessNo: order.order_no,
+      action: 'deleted',
+      fromStatus: 'draft',
+      toStatus: 'deleted',
+      user,
+      transaction
+    });
   });
   ctx.body = { code: 0, message: '销售订单草稿已删除', orderId };
 }
@@ -3504,7 +3513,9 @@ async function update(ctx) {
   const nextStatus = data.order_status || data.status;
   const previousStatus = order.order_status;
   if (isCancelStatus(nextStatus) && !isCancelStatus(previousStatus) && !isVoidableSalesOrder(previousStatus)) {
-    ctx.throw(400, '只有未归档订单可以作废，已归档订单请使用退单流程');
+    if (String(previousStatus || '').trim() === 'draft') ctx.throw(400, '当前订单是草稿，请通过删除草稿处理');
+    if (isArchiveStatus(previousStatus)) ctx.throw(400, '已归档订单请使用退单流程');
+    ctx.throw(400, '当前订单状态不支持作废，请刷新后核对订单状态');
   }
   if (isArchiveStatus(nextStatus) && isSalesReturnInProgressStatus(previousStatus)) {
     ctx.throw(400, `订单当前处于${getSalesReturnStatusLabel(previousStatus)}，不能再次归档`);
@@ -3518,6 +3529,7 @@ async function update(ctx) {
   await sequelize.transaction(async (transaction) => {
     const hasItemsPayload = hasOrderItemsPayload(data);
     await order.reload({ transaction, lock: transaction.LOCK.UPDATE });
+    if (Number(order.is_deleted) === 1) ctx.throw(404, '销售订单不存在');
     saveToken = await saveContract.begin(saveModels, order, ctx.request.body || {}, ctx.state.user, transaction);
     if (saveToken?.replay) { savedResponse = saveToken.replay; replayed = true; return; }
     if (isSalesApprovalPendingStatus(order.order_status)) ctx.throw(400, '待审批订单不能直接修改，请先审批或拒绝');
@@ -3795,12 +3807,14 @@ async function updateSupplements(ctx) {
   }
 
   let snapshot;
-  await sequelize.transaction(async transaction => {
+  await sequelize.transaction({ isolationLevel: Transaction.ISOLATION_LEVELS.READ_COMMITTED }, async transaction => {
     // 锁住订单并校验客户端读取的补录版本，避免两个保存请求互相覆盖。
     const lockedOrder = await Order.findByPk(order.order_id, {
       transaction,
       lock: transaction.LOCK.UPDATE
     });
+    if (!lockedOrder) ctx.throw(404, '订单不存在');
+    await assertNoPendingOrderAdjustment(ctx, order.order_id, transaction);
     const currentSupplements = await OrderSupplement.findAll({
       where: { order_id: order.order_id, is_deleted: 0 },
       attributes: ['supplement_id'],
@@ -6505,7 +6519,7 @@ async function _moveInventoryToPending(productId, storeId, inventoryType, quanti
     }
   }
 
-  const foundationReceipt = await require('../inventory/foundationMovement').inventoryReceipt(productId, storeId, column, inv.location_id || '', transaction);
+  const foundationReceipt = await require('../inventory/foundationMovement').inventoryReceipt(productId, storeId, column, inv.location_id || '', transaction, qty);
   await inv.update(payload, { transaction, foundationReceipt });
 }
 
@@ -6530,7 +6544,7 @@ async function _releasePendingInventory(productId, storeId, inventoryType, quant
   if (!inv) return;
   const qty = Number(quantity) || 0;
   const releaseQty = Math.min(Number(inv.pending_qty || 0), qty);
-  const foundationReceipt = await require('../inventory/foundationMovement').inventoryReceipt(productId, storeId, 'pending_qty', inv.location_id || '', transaction);
+  const foundationReceipt = await require('../inventory/foundationMovement').inventoryReceipt(productId, storeId, 'pending_qty', inv.location_id || '', transaction, releaseQty);
   await inv.update({
     pending_qty: Math.max(0, Number(inv.pending_qty || 0) - releaseQty),
     [column]: Number(inv[column] || 0) + releaseQty

@@ -799,6 +799,7 @@ const InventoryBatchApplicationItem = sequelize.define('InventoryBatchApplicatio
   before_qty: { type: DataTypes.INTEGER, defaultValue: 0 },
   after_qty: { type: DataTypes.INTEGER, defaultValue: 0 },
   unit_price: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
+  invoice_type: { type: DataTypes.STRING(24) },
   original_pickup_price: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
   resource_types: { type: DataTypes.TEXT },
   trigger_resource_rights: { type: DataTypes.TINYINT(1), defaultValue: 0 },

@@ -104,6 +104,43 @@ function getCell(row, keys) {
   return '';
 }
 
+const batchInvoiceTypes = ['收据', '专票13%'];
+const invoiceHeaders = ['采购票种', '采购凭证', '发票类型', 'invoiceType', 'invoice_type'];
+const normalizeInvoiceType = value => require('../sales/purchaseVat').normalizeInvoiceType(normalizeText(value));
+
+function batchRowNumber(row, index) {
+  return Number.isInteger(row.__rowNum__) ? row.__rowNum__ + 1 : index + 2;
+}
+
+function batchInvoice(row, overrides, rowNo) {
+  return normalizeInvoiceType(overrides.has(rowNo) ? overrides.get(rowNo) : getCell(row, invoiceHeaders));
+}
+
+function parseInvoiceOverrides(raw, rows, fail) {
+  if (!raw) return new Map();
+  let entries;
+  try { entries = JSON.parse(raw); } catch (_) { return fail(); }
+  if (!Array.isArray(entries) || entries.length > rows.length) return fail();
+  const rowNumbers = new Set(rows.map(batchRowNumber));
+  const overrides = new Map();
+  for (const entry of entries) {
+    if (!entry || !rowNumbers.has(entry.rowNo) || overrides.has(entry.rowNo) ||
+        typeof entry.invoiceType !== 'string' || !batchInvoiceTypes.includes(entry.invoiceType)) return fail();
+    overrides.set(entry.rowNo, entry.invoiceType);
+  }
+  return overrides;
+}
+
+function batchFoundationReceipt(item, application) {
+  const invoiceType = normalizeInvoiceType(item.invoice_type);
+  return {
+    productId: item.product_id, invoiceType, unitCost: item.unit_price,
+    source: 'batch_inventory_inbound', applicationNo: application.application_no,
+    applicationItemId: item.item_id, rowNo: item.row_no,
+    reason: invoiceType ? '已审批的批量入库明细采购票种' : '历史批量入库单缺少采购票种'
+  };
+}
+
 function normalizeResourceTypes(value) {
   return unique(String(value || '')
     .split(/[,，;；\s]+/)
@@ -265,9 +302,9 @@ async function updateInventoryQty(productId, storeId, inventoryType, delta, tran
       { status: 409 }
     );
   }
-  await row.update({ [inventoryType]: next }, { transaction, foundationReceipt: delta > 0 ? {
+  await row.update({ [inventoryType]: next }, { transaction, foundationReceipt: delta > 0 ? context.foundationReceipt || {
     productId, invoiceType: null, source: 'batch_inventory_adjustment',
-    reason: '批量盘盈/补录没有采购凭证关联，请在库存基础资料确认本批票税'
+    reason: '批量库存调整未关联采购凭证，请确认本批票税'
   } : null });
   return { before: current, after: next };
 }
@@ -283,7 +320,9 @@ async function validateRows(ctx, rows, options, transaction) {
     triggerResourceRights,
     importMode = '',
     inventoryType: batchInventoryType = '',
-    resourceTypes: batchResourceTypes = []
+    resourceTypes: batchResourceTypes = [],
+    invoiceOverrides = new Map(),
+    previewOnly = false
   } = options;
   const validRows = [];
   const errors = [];
@@ -293,7 +332,7 @@ async function validateRows(ctx, rows, options, transaction) {
   const locationCache = new Map();
 
   for (const [index, row] of rows.entries()) {
-    const rowNo = index + 2;
+    const rowNo = batchRowNumber(row, index);
     const rowErrors = [];
     const productKey = ['商品ID', 'productId', 'product_id', '商品编码', 'productCode', 'product_code', '商品名称', 'productName', 'product_name', 'PN', 'pn', 'pnCode', 'pn_code']
       .map(key => normalizeText(row[key])).join('\u001f');
@@ -323,6 +362,8 @@ async function validateRows(ctx, rows, options, transaction) {
       : normalizeResourceTypes(getCell(row, ['资源权益', '资源类型', 'resourceTypes', 'resource_types']));
     const unitPrice = numberValue(getCell(row, ['提货价', '采购价', '入库单价', '单价', 'unitPrice', 'unit_price']), 0);
     const originalPickupPrice = numberValue(getCell(row, ['原始提货价', '提货价', '采购价', 'originalPickupPrice', 'original_pickup_price']), unitPrice);
+    const invoiceType = operationType === 'INBOUND' ? batchInvoice(row, invoiceOverrides, rowNo) : null;
+    if (operationType === 'INBOUND' && !invoiceType && !previewOnly) rowErrors.push('请选择采购票种（收据或专票13%）');
     const quantityRaw = getCell(row, ['数量', '调整数量', 'quantity', 'qty']);
     const quantity = product && Number(product.need_sn || 0) === 1 ? 1 : intValue(quantityRaw, operationType === 'ADJUST' ? 0 : 1);
 
@@ -379,7 +420,7 @@ async function validateRows(ctx, rows, options, transaction) {
 
       if (operationType === 'INBOUND') {
         if (snCode) {
-          const existing = await findInboundSnByIdentity({ pnCode, snCode, transaction });
+          const existing = await findInboundSnByIdentity({ pnCode, snCode, transaction, forUpdate: !previewOnly });
           if (existing
             && String(existing.product_id || '') !== String(product.product_id || '')) {
             rowErrors.push(`SN的 PN 已关联其他商品（原PN：${existing.pn_code || '-'}），不能按当前商品重复创建`);
@@ -417,6 +458,7 @@ async function validateRows(ctx, rows, options, transaction) {
       quantity,
       unitPrice,
       originalPickupPrice,
+      invoiceType,
       resourceTypes,
       triggerResourceRights,
       remark: normalizeText(getCell(row, ['备注', 'remark'])),
@@ -452,16 +494,47 @@ async function createBatchApplication(ctx) {
 
   const rows = parseWorkbook(ctx.file.buffer);
   if (rows.length === 0) ctx.throw(400, 'Excel没有可导入数据');
+  const previewOnly = String(ctx.request.body.previewOnly || '') === '1';
+  if (previewOnly && operationType !== 'INBOUND') ctx.throw(400, '仅批量入库支持采购票种预览');
+  const invoiceOverrides = operationType === 'INBOUND'
+    ? parseInvoiceOverrides(ctx.request.body.invoiceOverrides, rows, () => ctx.throw(400, '采购票种修改内容无效，请重新预览'))
+    : new Map();
+  const missingTax = operationType === 'INBOUND' ? rows.flatMap((row, index) => {
+    const rowNo = batchRowNumber(row, index);
+    return batchInvoice(row, invoiceOverrides, rowNo) ? [] : [{ rowNo, message: '请选择采购票种（收据或专票13%）', raw: row }];
+  }) : [];
+  if (!previewOnly && missingTax.length) {
+    ctx.status = 400;
+    ctx.body = { code: 400, message: '每行必须填写采购票种', data: { errors: missingTax, totalRows: rows.length } };
+    return;
+  }
 
-  const transaction = await sequelize.transaction();
+  const transaction = await sequelize.transaction({ readOnly: previewOnly });
   try {
     const { validRows, errors } = await validateRows(ctx, rows, {
       operationType,
       triggerResourceRights,
       importMode,
       inventoryType,
-      resourceTypes
+      resourceTypes, invoiceOverrides, previewOnly
     }, transaction);
+    if (previewOnly) {
+      const validByNo = new Map(validRows.map(row => [row.rowNo, row]));
+      const previewRows = rows.map((raw, index) => {
+        const rowNo = batchRowNumber(raw, index);
+        const valid = validByNo.get(rowNo);
+        return {
+          rowNo, invoiceType: batchInvoice(raw, invoiceOverrides, rowNo),
+          productName: valid?.product.name || normalizeText(getCell(raw, ['商品名称', '商品编码', 'PN'])),
+          storeName: valid?.store.name || normalizeText(getCell(raw, ['门店', '门店名称', '门店ID'])),
+          snCode: valid?.snCode || normalizeText(getCell(raw, ['SN', '机器号', '序列号'])),
+          quantity: valid?.quantity ?? null
+        };
+      });
+      await transaction.rollback();
+      ctx.body = { rows: previewRows, invoiceTypes: batchInvoiceTypes, errors };
+      return;
+    }
     if (validRows.length === 0) {
       await transaction.rollback();
       ctx.status = 400;
@@ -516,6 +589,7 @@ async function createBatchApplication(ctx) {
         before_qty: beforeQty,
         after_qty: afterQty,
         unit_price: row.unitPrice,
+        invoice_type: row.invoiceType || null,
         original_pickup_price: row.originalPickupPrice,
         resource_types: JSON.stringify(row.resourceTypes),
         trigger_resource_rights: row.triggerResourceRights ? 1 : 0,
@@ -619,6 +693,7 @@ async function createSnInbound(item, application, transaction) {
   const receiptProduct = await Product.findByPk(item.product_id, { transaction });
   const pricingMode = receiptProduct?.gross_profit_cost_mode === 'COMPANY_PRICE' ? 1 : 0;
   const previousSnStatus = existing?.status;
+  const foundationReceipt = item.invoice_type ? batchFoundationReceipt(item, application) : null;
   const sn = existing || await ProductSn.create({
     sn_id: generateUUID(),
     product_id: item.product_id,
@@ -638,7 +713,7 @@ async function createSnInbound(item, application, transaction) {
     batch_no: application.application_no,
     remark: `批量入库 ${application.application_no}`,
     is_deleted: 0
-  }, { transaction });
+  }, { transaction, foundationReceipt });
 
   if (existing) {
     await sn.update({
@@ -661,7 +736,7 @@ async function createSnInbound(item, application, transaction) {
     }, { transaction, deferFoundationToReentry: true });
   }
 
-  await recordSnReentry(sn,previousSnStatus,{transaction,actor:application.applicant_name || application.reviewer_name,document:application.application_no});
+  await recordSnReentry(sn,previousSnStatus,{transaction,actor:application.applicant_name || application.reviewer_name,document:application.application_no,foundationReceipt});
 
   const resourceTypes = parseJsonArray(item.resource_types);
   for (const resourceType of resourceTypes) {
@@ -842,7 +917,8 @@ async function executeApplicationItem(item, application, transaction) {
       delta,
       transaction,
       item.location_id || '',
-      { rowNo: item.row_no }
+      { rowNo: item.row_no, ...(item.operation_type === 'INBOUND'
+        ? { foundationReceipt: batchFoundationReceipt(item, application) } : {}) }
     );
     if (item.operation_type === 'INBOUND') {
       await createNonSnBatchRights(item, application, transaction);
@@ -1092,6 +1168,10 @@ module.exports = {
   _test: {
     executeApplicationItem,
     parseWorkbook,
+    parseInvoiceOverrides,
+    batchInvoice,
+    batchRowNumber,
+    batchFoundationReceipt,
     normalizeResourceTypes,
     normalizeOperationResources,
     getCell,

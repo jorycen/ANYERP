@@ -67,21 +67,39 @@ async function captureInventory(value,options={}){
   for(const field of require('../../utils/inventoryQuantities').FIELDS){if(!(Number(quantities[field])>0))continue;
     const referenceKey='inventory:'+inv.inventory_id+':'+field;
     const ref=await M.InventoryFoundationRef.findByPk(referenceKey,{transaction,lock:transaction.LOCK.UPDATE});
-    const increased=!!ref&&!!oldQuantities&&Number(quantities[field])>Number(oldQuantities[field]);
-    // A new positive bucket must not reuse the pending placeholder created
-    // while Inventory.create initialized all quantities to zero.
-    if (oldQuantities && Number(quantities[field]) <= Number(oldQuantities[field]) && ref) continue;
-    const key='import_inventory:'+inv.inventory_id+':'+field+(increased?':event:'+require('node:crypto').randomUUID():''),basisId=increased?F.id(key):ref?.basis_id||F.id(key),existing=await M.InventoryFoundation.findByPk(basisId,{transaction,lock:transaction.LOCK.UPDATE});
-    const receipt=options.foundationReceipt;
-    const receiptTax=receipt?.productId===inv.product_id ? require('../sales/purchaseVat').normalizeInvoiceType(receipt.invoiceType) : null;
-    const oldBasis=increased?await M.InventoryFoundation.findByPk(ref.basis_id,{transaction,lock:transaction.LOCK.UPDATE}):null;
-    const oldView=oldBasis?F.view(oldBasis.toJSON?oldBasis.toJSON():oldBasis):null;
-    const priorQuantity=Number(oldQuantities?.[field]||0);
-    const receiptConfirmed=!!receiptTax && (priorQuantity===0 || (oldView?.status==='confirmed' && oldView.invoiceType===receiptTax));
-    if(!existing)await M.InventoryFoundation.create({basis_id:basisId,identity_key:key,product_id:inv.product_id,product_name:product.name,entity_type:'import_inventory',batch_no:key,
-      purchase_cost:increased?null:Number(price?.cost_price)>0||Number(price?.cost_price_locked)===1?F.money(price?.cost_price):null,
-      cost_mode:increased?null:product.gross_profit_cost_mode||null,invoice_type:receiptConfirmed?receiptTax:null,status:receiptConfirmed?'confirmed':'pending',
-      reason:receiptConfirmed?'入库来源票税已传递，存量票种一致':receipt?.reason|| (increased?'非SN聚合库存增加，需核实存量和新增批次票税':'聚合非SN库存没有明确批次，需在统一基础资料确认'),source_data:{source:'inventory_intake',inventoryId:inv.inventory_id,previousBasisId:ref?.basis_id||null,purchaseReceipt:receipt||null},revision:1,updated_by:'system'}, {transaction});
+    const quantity = Number(quantities[field]);
+    const priorQuantity = Number(oldQuantities?.[field] || 0);
+    if (ref && oldQuantities && quantity === priorQuantity) continue;
+    const oldBasis = ref ? await M.InventoryFoundation.findByPk(ref.basis_id, { transaction, lock: transaction.LOCK.UPDATE }) : null;
+    const oldView = oldBasis && String(oldBasis.product_id) === String(inv.product_id)
+      ? F.view(oldBasis.toJSON ? oldBasis.toJSON() : oldBasis) : null;
+    const trackedDecrease = quantity < priorQuantity && Array.isArray(oldView?.source?.costLayers);
+    if (ref && oldQuantities && quantity < priorQuantity && !trackedDecrease) continue;
+    const increasing = quantity > priorQuantity && !!oldQuantities;
+    const event = Boolean(ref && (increasing || trackedDecrease));
+    const key = 'import_inventory:' + inv.inventory_id + ':' + field + (event ? ':event:' + require('node:crypto').randomUUID() : '');
+    const basisId = event ? F.id(key) : ref?.basis_id || F.id(key);
+    const existing = await M.InventoryFoundation.findByPk(basisId, { transaction, lock: transaction.LOCK.UPDATE });
+    const receipt = String(options.foundationReceipt?.productId) === String(inv.product_id) ? options.foundationReceipt : null;
+    const receiptTax = require('../sales/purchaseVat').normalizeInvoiceType(receipt?.invoiceType);
+    const { changeLayers, combineUnitCost } = require('./foundationCostLayers');
+    const trackCost = increasing || trackedDecrease || !!receipt;
+    const layers = trackCost ? changeLayers(oldView, priorQuantity, quantity, receipt && { ...receipt, invoiceType: receiptTax }) : null;
+    const invoiceType = layers?.[0]?.invoiceType && layers.every(layer => layer.invoiceType === layers[0].invoiceType)
+      ? layers[0].invoiceType : null;
+    const importedCost = Number(price?.cost_price) > 0 || Number(price?.cost_price_locked) === 1 ? F.money(price?.cost_price) : null;
+    const purchaseCost = layers ? combineUnitCost(layers) : importedCost;
+    const costEstimated = layers ? layers.some(layer => layer.estimated) : importedCost !== null;
+    if (!existing) await M.InventoryFoundation.create({
+      basis_id: basisId, identity_key: key, product_id: inv.product_id, product_name: product.name,
+      entity_type: 'import_inventory', batch_no: key, purchase_cost: purchaseCost,
+      cost_mode: receipt?.costMode || oldView?.costMode || product.gross_profit_cost_mode || null,
+      invoice_type: invoiceType, status: invoiceType ? 'confirmed' : 'pending',
+      reason: invoiceType ? '入库来源票税已传递，存量票种一致' : receipt?.reason || '库存来源的采购票种待确认',
+      source_data: { source: 'inventory_intake', inventoryId: inv.inventory_id, previousBasisId: ref?.basis_id || null,
+        purchaseReceipt: receipt, costEstimated, ...(layers ? { costLayers: layers, priorQuantity, quantity } : {}) },
+      revision: 1, updated_by: 'system'
+    }, { transaction });
     if(ref&&ref.basis_id!==basisId)await ref.update({basis_id:basisId,store_id:inv.store_id},{transaction});
     else await F.bind(referenceKey,basisId,inv.store_id,transaction);
   }

@@ -1916,7 +1916,7 @@
         <el-button type="primary" size="small" @click="downloadBatchTemplate">下载当前模板</el-button>
       </div>
       <div class="upload-area">
-        <el-upload :auto-upload="false" :show-file-list="false" accept=".xlsx,.xls" :on-change="handleBatchFileChange" drag>
+        <el-upload :auto-upload="false" :show-file-list="false" :disabled="batchImportLoading" accept=".xlsx,.xls" :on-change="handleBatchFileChange" drag>
           <el-icon class="el-icon--upload"><Upload /></el-icon>
           <div class="el-upload__text">将文件拖到此处，或 <em>点击上传</em></div>
         </el-upload>
@@ -1924,6 +1924,29 @@
           <el-tag closable @close="clearBatchImportFile">{{ batchImportFile.name }}</el-tag>
         </div>
       </div>
+
+      <section v-if="batchPreviewRows.length" class="batch-invoice-preview">
+        <div class="batch-invoice-toolbar">
+          <span>采购票种 · {{ batchPreviewRows.length }} 行<span v-if="missingBatchInvoiceCount">，{{ missingBatchInvoiceCount }} 行待选</span></span>
+          <el-select v-model="batchBulkInvoice" placeholder="选择要批量设置的票种" style="width: 175px" :disabled="batchImportLoading">
+            <el-option v-for="type in batchInvoiceTypes" :key="type" :value="type" :label="batchInvoiceLabel(type)" />
+          </el-select>
+          <el-button :disabled="!batchBulkInvoice || batchImportLoading" @click="fillMissingBatchInvoices">填充未选行</el-button>
+        </div>
+        <el-table :data="batchPreviewRows" row-key="rowNo" size="small" max-height="280">
+          <el-table-column prop="rowNo" label="Excel 行号" width="82" />
+          <el-table-column prop="productName" label="商品" min-width="145" show-overflow-tooltip />
+          <el-table-column prop="snCode" label="SN" min-width="105" show-overflow-tooltip />
+          <el-table-column prop="storeName" label="门店" min-width="100" show-overflow-tooltip />
+          <el-table-column label="采购票种" width="150">
+            <template #default="{ row }">
+              <el-select v-model="row.invoiceType" size="small" placeholder="请选择" :disabled="batchImportLoading" :aria-label="`第 ${row.rowNo} 行采购票种`">
+                <el-option v-for="type in batchInvoiceTypes" :key="type" :value="type" :label="batchInvoiceLabel(type)" />
+              </el-select>
+            </template>
+          </el-table-column>
+        </el-table>
+      </section>
 
       <el-alert
         v-if="batchImportResult.visible"
@@ -1958,9 +1981,9 @@
           v-else
           type="primary"
           :loading="batchImportLoading"
-          :disabled="!batchImportFile"
+          :disabled="!batchImportFile || (batchForm.operationType === 'INBOUND' && batchPreviewRows.length > 0 && (missingBatchInvoiceCount > 0 || !batchPreviewHasValidRows))"
           @click="submitBatchImport"
-        >立即导入</el-button>
+        >{{ batchForm.operationType === 'INBOUND' ? (batchPreviewRows.length ? '提交审批' : '预览并选择票种') : '立即导入' }}</el-button>
       </template>
     </el-dialog>
 
@@ -1990,6 +2013,9 @@
           <el-table-column prop="store_id" label="门店ID" width="110" />
           <el-table-column prop="location_id" label="库位ID" width="110" />
           <el-table-column prop="quantity" label="数量" width="80" />
+          <el-table-column v-if="currentBatchApplication.operation_type === 'INBOUND'" label="采购票种" width="130">
+            <template #default="{ row }">{{ row.invoice_type ? batchInvoiceLabel(row.invoice_type) : '待核实' }}</template>
+          </el-table-column>
           <el-table-column prop="before_qty" label="调整前" width="80" />
           <el-table-column prop="after_qty" label="调整后" width="80" />
           <el-table-column label="执行结果" width="100">
@@ -2176,6 +2202,26 @@ const batchImportLoading = ref(false)
 const batchImportDialogVisible = ref(false)
 const batchImportFile = ref(null)
 const batchImportErrors = ref([])
+const batchPreviewRows = ref([])
+const batchInvoiceTypes = ref([])
+const batchBulkInvoice = ref('')
+const batchPreviewHasValidRows = ref(false)
+const missingBatchInvoiceCount = computed(() => batchPreviewRows.value.filter(row => !row.invoiceType).length)
+let batchPreviewSequence = 0
+
+const resetBatchPreview = () => {
+  batchPreviewSequence += 1
+  batchPreviewRows.value = []
+  batchInvoiceTypes.value = []
+  batchBulkInvoice.value = ''
+  batchPreviewHasValidRows.value = false
+}
+
+const batchInvoiceLabel = type => type === '收据' ? '收据（未税）' : type === '专票13%' ? '增值税专票 13%' : type
+
+const fillMissingBatchInvoices = () => {
+  for (const row of batchPreviewRows.value) if (!row.invoiceType) row.invoiceType = batchBulkInvoice.value
+}
 const batchImportResult = reactive({ visible: false, success: 0, failed: 0 })
 const batchDetailVisible = ref(false)
 const currentBatchApplication = ref(null)
@@ -3034,6 +3080,7 @@ const loadBatchApplications = async () => {
 }
 
 const openBatchImportDialog = async () => {
+  resetBatchPreview()
   batchImportDialogVisible.value = true
   batchImportFile.value = null
   batchImportErrors.value = []
@@ -3044,6 +3091,13 @@ const openBatchImportDialog = async () => {
     await loadSnInventoryResourceOptions()
   }
 }
+
+watch([() => batchForm.operationType, () => batchForm.importMode, () => batchForm.inventoryType, () => batchForm.resourceTypes.join(',')], () => {
+  if (batchPreviewRows.value.length || batchImportLoading.value) {
+    resetBatchPreview()
+    batchImportErrors.value = []
+  }
+}, { flush: 'sync' })
 
 const downloadBatchTemplate = () => {
   if (batchForm.operationType === 'COST_MODE') {
@@ -3071,19 +3125,31 @@ const downloadBatchTemplate = () => {
     提货价: batchForm.operationType === 'INBOUND' ? 0 : '',
     备注: ''
   }
+  if (batchForm.operationType === 'INBOUND') {
+    baseHeaders.splice(-1, 0, '采购票种')
+    example.采购票种 = ''
+  }
   const ws = XLSX.utils.json_to_sheet([example], { header: baseHeaders })
   const wb = XLSX.utils.book_new()
   XLSX.utils.book_append_sheet(wb, ws, '批量维护')
+  if (batchForm.operationType === 'INBOUND') {
+    const types = XLSX.utils.aoa_to_sheet([['采购票种可填值'], ['收据'], ['专票13%']])
+    XLSX.utils.book_append_sheet(wb, types, '采购票种说明')
+  }
   XLSX.writeFile(wb, `${batchOperationText(batchForm.operationType)}_${isSn ? 'SN商品' : '非SN商品'}模板.xlsx`)
 }
 
 const handleBatchFileChange = async (uploadFile) => {
+  if (batchImportLoading.value) return
+  resetBatchPreview()
   batchImportFile.value = uploadFile.raw || null
   batchImportErrors.value = []
   batchImportResult.visible = false
 }
 
 const clearBatchImportFile = () => {
+  if (batchImportLoading.value) return
+  resetBatchPreview()
   batchImportFile.value = null
   batchImportErrors.value = []
   batchImportResult.visible = false
@@ -3106,6 +3172,10 @@ const submitBatchImport = async () => {
     ElMessage.warning(message)
     return
   }
+  const inbound = batchForm.operationType === 'INBOUND'
+  const previewOnly = inbound && batchPreviewRows.value.length === 0
+  if (inbound && !previewOnly && (missingBatchInvoiceCount.value || !batchPreviewHasValidRows.value)) return
+  const sequence = batchPreviewSequence
   batchImportLoading.value = true
   try {
     const res = await api.importInventoryBatchApplication(batchImportFile.value, {
@@ -3114,11 +3184,23 @@ const submitBatchImport = async () => {
       inventoryType: batchForm.operationType === 'COST_MODE' ? '' : batchForm.inventoryType,
       resourceTypes: batchForm.operationType === 'INBOUND' ? batchForm.resourceTypes.join(',') : '',
       triggerResourceRights: 0,
-      remark: batchForm.remark || ''
+      remark: batchForm.remark || '',
+      ...(previewOnly ? { previewOnly: '1' } : inbound ? {
+        invoiceOverrides: JSON.stringify(batchPreviewRows.value.map(({ rowNo, invoiceType }) => ({ rowNo, invoiceType })))
+      } : {})
     })
     if (res.code === 0) {
       const data = res.data || {}
+      if (previewOnly) {
+        if (sequence !== batchPreviewSequence) return
+        batchPreviewRows.value = data.rows || []
+        batchInvoiceTypes.value = data.invoiceTypes || []
+        batchImportErrors.value = data.errors || []
+        batchPreviewHasValidRows.value = batchPreviewRows.value.length > batchImportErrors.value.length
+        return
+      }
       batchImportErrors.value = data.errors || []
+      resetBatchPreview()
       batchImportResult.visible = true
       batchImportResult.success = data.validRows || 0
       batchImportResult.failed = data.errorRows || 0
@@ -5579,4 +5661,7 @@ const getReturnStatusText = (status) => {
   font-size: 16px;
   font-weight: 700;
 }
+.batch-invoice-preview { margin-top: 16px; }
+.batch-invoice-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.batch-invoice-toolbar > span { margin-inline-end: auto; }
 </style>

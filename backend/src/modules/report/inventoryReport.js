@@ -112,9 +112,20 @@ async function load(query,user){
    const scopeReview=reviews.get('scope:'+p.product_id);
    const reason=scopeReview&&['服务','虚拟'].includes(scopeReview.scope)?'人工确认'+scopeReview.scope:scopeReview?.scope==='实物'?'':nonPhysicalReason(p);
    if(reason){excluded.push({productCode:p.product_code,productName:p.name,category,storeName:smap.get(storeId)?.name||storeId,quantity,reason});return;}
-   const costAmount=unitCost===null?null:round(unitCost*quantity),tax=taxEstimate(costAmount,invoice);
+   const layers = source.costLayers;
+   const coveredLayers = unitCost !== null && Array.isArray(layers) && layers.length > 0 &&
+    layers.every(layer => layer.unitCost !== null) && layers.reduce((sum, layer) => sum + layer.quantity, 0) === quantity;
+   const costAmount = unitCost === null ? null : coveredLayers
+    ? round(layers.reduce((sum, layer) => sum + layer.quantity * layer.unitCost, 0)) : round(unitCost * quantity);
+   const layeredTax = coveredLayers ? layers.map(layer => taxEstimate(round(layer.quantity * layer.unitCost), layer.invoiceType)) : [];
+   const canMeasureLayers = layeredTax.length > 0 && layeredTax.every(layer => layer.net !== null);
+   const tax = canMeasureLayers ? {
+    net: round(layeredTax.reduce((sum, layer) => sum + layer.net, 0)),
+    tax: round(layeredTax.reduce((sum, layer) => sum + layer.tax, 0))
+   } : taxEstimate(costAmount, invoice);
+   const displayInvoice = invoice || (canMeasureLayers && new Set(layers.map(layer => layer.invoiceType)).size > 1 ? '混合票种' : '待核实');
    details.push({productId:p.product_id,productCode:p.product_code||'',productName:p.name||'未命名商品',category:category||'未分类',storeId,storeName:smap.get(storeId)?.name||storeId,location:lmap.get(locationId)?.name||locationId||'未指定库位',type,typeName:TYPES[type]||type,
-    quantity,unitCost,costAmount,estimated,costSource,sn:sn?.sn_code||'',pn,inboundTime:time||null,ageBucket:bucket(time,at),netEstimate:tax.net,estimatedTax:tax.tax,invoiceType:invoice||'待核实',evidenceStatus:source.status||'unlinked',evidenceStatusLabel:({manual_confirmed:'人工确认（预计测算）',linked:'已关联',unlinked:'未关联',conflict:'来源冲突',owner_pending:'经销商归属待确认',invoice_pending:'票种税率待确认',invoice_conflict:'发票口径冲突',batch_pending:'采购批次待对应'})[source.status]||'未关联',evidenceReason:source.reason||'',purchaseRequestNo:source.requestNo||'',sourceInboundNo:source.inboundNo||'',invoiceNos:source.invoiceNos||'',basisId:source.basisId||null,basisRevision:source.basisRevision||null,costMode:source.costMode||null,companyPrice:source.companyPrice??null,invoiceSource:source.evidenceSource==='inventory_foundation'?'统一库存基础资料':source.evidenceSource==='manual_review'?'人工回填确认（非发票认证）':source.evidenceSource==='registered_invoice'?'已登记采购发票':source.evidenceSource==='purchase_request'?'采购申请约定':'待关联',sourceCandidateCount:source.candidateCount||0,sourceCandidates:source.candidates||[],scopeWarning:!scopeReview&&Number(p.need_sn)!==1&&p.category==='售后'?'售后非SN项目，实物属性待核对':''});
+    quantity,unitCost,costAmount,estimated,costSource,sn:sn?.sn_code||'',pn,inboundTime:time||null,ageBucket:bucket(time,at),netEstimate:tax.net,estimatedTax:tax.tax,invoiceType:displayInvoice,evidenceStatus:source.status||'unlinked',evidenceStatusLabel:({manual_confirmed:'人工确认（预计测算）',linked:'已关联',unlinked:'未关联',conflict:'来源冲突',owner_pending:'经销商归属待确认',invoice_pending:'票种税率待确认',invoice_conflict:'发票口径冲突',batch_pending:'采购批次待对应'})[source.status]||'未关联',evidenceReason:source.reason||'',purchaseRequestNo:source.requestNo||'',sourceInboundNo:source.inboundNo||'',invoiceNos:source.invoiceNos||'',basisId:source.basisId||null,basisRevision:source.basisRevision||null,costMode:source.costMode||null,companyPrice:source.companyPrice??null,invoiceSource:source.evidenceSource==='inventory_foundation'?'统一库存基础资料':source.evidenceSource==='manual_review'?'人工回填确认（非发票认证）':source.evidenceSource==='registered_invoice'?'已登记采购发票':source.evidenceSource==='purchase_request'?'采购申请约定':'待关联',sourceCandidateCount:source.candidateCount||0,sourceCandidates:source.candidates||[],scopeWarning:!scopeReview&&Number(p.need_sn)!==1&&p.category==='售后'?'售后非SN项目，实物属性待核对':''});
   };
   for(const sn of sns){
    const p=pmap.get(sn.product_id);if(!p||Number(p.need_sn)!==1)continue;
@@ -127,7 +138,7 @@ async function load(query,user){
    const p=pmap.get(inv.product_id);if(!p||Number(p.need_sn)===1)continue;
 
    const qty=getInventoryQuantitySnapshot(inv,lmap.get(inv.location_id)?.type);
-   for(const field of FIELDS){const basis=baseMap.get('inventory:'+inv.inventory_id+':'+field);const source=baseSource(basis?.productId===inv.product_id?basis:null);add(p,inv.store_id,inv.location_id,field,qty[field],source.purchaseCost,source.costEstimated,'统一库存基础档案',null,null,source.invoiceType,source);}
+   for(const field of FIELDS){const basis=baseMap.get('inventory:'+inv.inventory_id+':'+field);const matching=basis?.productId===inv.product_id?basis:null;const source={...baseSource(matching),costLayers:matching?.source?.costLayers};add(p,inv.store_id,inv.location_id,field,qty[field],source.purchaseCost,source.costEstimated,'统一库存基础档案',null,null,source.invoiceType,source);}
   }
   const summary=aggregate(details,[])[0]||aggregate([{quantity:0,type:'normal_qty',ageBucket:'unknown',costAmount:null,netEstimate:null}],[])[0];
   const rows=aggregate(details,dims);

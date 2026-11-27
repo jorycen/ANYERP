@@ -88,7 +88,7 @@
               <td class="operation-column">
               <el-button link type="primary" @click="handleEditDraft(row)" v-if="!queryOnly && !row.record_type && row.order_status === 'draft'">编辑</el-button>
               <el-button link type="success" @click="handleSubmitDraft(row)" v-if="!queryOnly && !row.record_type && row.order_status === 'draft'">提交</el-button>
-              <el-button link type="danger" @click="handleDeleteDraft(row)" v-if="!queryOnly && !row.record_type && row.order_status === 'draft' && !row.submit_time">删除</el-button>
+              <el-button link type="danger" @click="handleDeleteDraft(row)" v-if="!queryOnly && !row.record_type && row.can_delete_draft">删除</el-button>
               <el-button link type="success" @click="handleArchive(row)" v-if="!queryOnly && !row.record_type && row.order_status === '未归档'">归档</el-button>
               <el-button link type="danger" @click="handleVoid(row)" v-if="!queryOnly && !row.record_type && isUnarchivedOrder(row.order_status)">作废</el-button>
               <el-button link type="warning" @click="handleReturn(row)" v-if="!queryOnly && !row.record_type && isArchivedOrder(row.order_status)">退单</el-button>
