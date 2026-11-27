@@ -105,8 +105,8 @@
             <el-table-column label="不含税收入" width="135" align="right"><template #default="{ row }">¥{{ money(row.netRevenue) }}</template></el-table-column>
             <el-table-column label="销项税额" width="120" align="right"><template #default="{ row }">¥{{ money(row.outputVat) }}</template></el-table-column>
             <el-table-column label="含税成本" width="130" align="right"><template #default="{ row }">¥{{ money(row.grossCost) }}</template></el-table-column>
+            <el-table-column label="不含税成本" width="135" align="right"><template #default="{ row }">{{ row.bookCost == null ? (row.costState === 'pending' ? '待核算' : '不适用') : `¥${money(row.bookCost)}` }}</template></el-table-column>
             <el-table-column label="可抵扣进项税" width="135" align="right"><template #default="{ row }">¥{{ money(row.deductibleInputVat) }}</template></el-table-column>
-            <el-table-column label="不含税成本" width="135" align="right"><template #default="{ row }">¥{{ money(row.bookCost) }}</template></el-table-column>
             <el-table-column label="财务商品毛利" width="140" align="right"><template #default="{ row }">{{ money(row.grossProfit) }}</template></el-table-column>
             <el-table-column label="毛利率" width="105" align="right"><template #default="{ row }">{{ percent(row.grossMargin) }}</template></el-table-column>
             <el-table-column label="成本状态" width="140"><template #default="{ row }">{{ ({ confirmed_zero: '已确认零成本', known: '成本已知', pending: '待补成本', not_applicable: '不适用' })[row.costState] || '待核对' }}</template></el-table-column>

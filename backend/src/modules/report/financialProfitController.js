@@ -283,11 +283,11 @@ async function exportFinancialProfitOrders(ctx) {
   const append = (name, rows) => XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(rows), name);
   const value = amount => amount === null || amount === undefined ? '待核算' : amount;
   const costLabels = { known: '成本已知', confirmed_zero: '已确认零成本', pending: '待补成本', not_applicable: '不适用' };
-  const detailHeaders = ['业务日期','类型','单号','关联销售单','门店','销售端毛利','产品端毛利','运营毛利','公司经营毛利','含税成本','成本状态','财务商品毛利','毛利状态','待核算原因','成本来源'];
+  const detailHeaders = ['业务日期','类型','单号','关联销售单','门店','销售端毛利','产品端毛利','运营毛利','公司经营毛利','含税成本','不含税成本','成本状态','财务商品毛利','毛利状态','待核算原因','成本来源'];
   const profitSheet = XLSX.utils.json_to_sheet((result.profitDetails || []).map(item => ({
     业务日期: item.businessDate, 类型: item.entryTypeLabel, 单号: item.entryNo, 关联销售单: item.orderNo || '', 门店: item.storeName,
     销售端毛利: value(item.salesGrossProfit), 产品端毛利: value(item.productGrossProfit), 运营毛利: value(item.operationsGrossProfit),
-    公司经营毛利: value(item.companyGrossProfit), 含税成本: item.grossCost ?? (item.costState === 'pending' ? '待核算' : '不适用'), 成本状态: costLabels[item.costState] || '待核对',
+    公司经营毛利: value(item.companyGrossProfit), 含税成本: item.grossCost ?? (item.costState === 'pending' ? '待核算' : '不适用'), 不含税成本: item.bookCost ?? (item.costState === 'pending' ? '待核算' : '不适用'), 成本状态: costLabels[item.costState] || '待核对',
     财务商品毛利: item.grossProfit ?? (['sale','return','adjustment'].includes(item.entryType) ? '待核算' : '不适用'),
     毛利状态: item.profitStatus === 'pending' ? '待核算' : '已核算', 待核算原因: item.profitPendingReason || item.pendingCostReason || '',
     成本来源: (item.detailItems || []).map(row => `${row.productName || row.itemId}：${row.costSource || '待核对'}`).join('；')
