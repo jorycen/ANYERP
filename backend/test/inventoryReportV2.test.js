@@ -50,3 +50,23 @@ test('foreign store cannot be queried or exported through report parameters',asy
  const M=require('../src/models');t.mock.method(M.sequelize,'transaction',async(_,fn)=>fn({}));
  await assert.rejects(R.load({storeId:'B'},{roles:['finance'],accessibleStoreIds:['A']}),{status:403});
 });
+
+test('report uses adopted valuation for existing estimated layers and keeps missing units pending', () => {
+  const detail = { quantity: 5, type: 'normal_qty', ageBucket: 'unknown', estimated: true, unitCost: 100, invoiceType: '收据' };
+  const rows = R.actualCostDetails(detail, [
+    { quantity: 2, unitCost: 113, invoiceType: '专票13%', estimated: false },
+    { quantity: 1, unitCost: 0, invoiceType: null, estimated: false },
+    { quantity: 1, unitCost: 100, invoiceType: '收据', estimated: true },
+    { quantity: 1, unitCost: null, invoiceType: '收据', estimated: false }
+  ]);
+  const [total] = R.aggregate(rows, []);
+  assert.equal(total.totalCount, 5);
+  assert.equal(total.actualCostAmount, 326);
+  assert.equal(total.actualNetCostAmount, 300);
+  assert.equal(total.missingCostCount, 1);
+  assert.equal(total.taxPendingCount, 1);
+  assert.equal(total.confirmedZeroCount, 1);
+  const [unmatched] = R.aggregate(R.actualCostDetails(detail, [{ quantity: 1, unitCost: 113 }]), []);
+  assert.equal(unmatched.actualCostAmount, 500);
+  assert.equal(unmatched.missingCostCount, 0);
+});

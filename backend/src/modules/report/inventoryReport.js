@@ -63,13 +63,31 @@ function aggregate(details,dims){
   for(const k of ['knownCostAmount','estimatedCostAmount','netEstimateAmount','estimatedTaxAmount'])r[k]=round(r[k]);
   r.coveredCostAmount=round(r.knownCostAmount+r.estimatedCostAmount);r.totalCost=r.missingCostCount?null:r.coveredCostAmount;
   r.netAmount=r.taxPendingCount?null:r.netEstimateAmount;r.staleCount=r.d31_60+r.d61_90+r.d90_plus;r.staleRate=r.totalCount?round(r.staleCount/r.totalCount*100):0;
+  r.actualCostAmount=r.missingCostCount && r.missingCostCount===r.totalCount?null:r.knownCostAmount;
+  r.actualNetCostAmount=r.taxPendingCount && r.taxPendingCount===r.totalCount?null:r.netEstimateAmount;
   r.costStatus=r.missingCostCount?'待补成本':r.estimatedCostCount?'含估算成本':'已知成本';
   r.taxStatus=r.totalCount===r.confirmedZeroCount?'零成本':'按采购凭证测算，待税务核实';
   for(const k of Object.keys(r.ageAmounts))r.ageAmounts[k]=round(r.ageAmounts[k]);
   return r;
  }).sort((a,b)=>b.coveredCostAmount-a.coveredCostAmount||a.key.localeCompare(b.key));
 }
+function actualCostDetails(detail, layers) {
+ const matched = Array.isArray(layers) && layers.length > 0 &&
+  layers.every(layer => Number.isFinite(layer.quantity) && layer.quantity > 0) &&
+  layers.reduce((sum, layer) => sum + layer.quantity, 0) === detail.quantity;
+ const entries = matched ? layers : [detail];
+ return entries.map(layer => {
+  const unitCost = Number.isFinite(layer.unitCost) && layer.unitCost >= 0 ? layer.unitCost : null;
+  const costAmount = unitCost === null ? null : round(unitCost * layer.quantity);
+  const tax = taxEstimate(costAmount, layer.invoiceType);
+  return { ...detail, quantity:layer.quantity, unitCost, costAmount, estimated:false,
+   invoiceType:layer.invoiceType || '待核实', netEstimate:tax.net, estimatedTax:tax.tax,
+   costSource:unitCost === null ? '实际采购成本待核实' : layer.estimated ? '已采用档案估价' : detail.costSource,
+   evidenceReason:detail.evidenceReason };
+ });
+}
 async function load(query,user){
+ const actual = query.costView === 'actual';
  const dims=dimensions(query.dimensions);
  return M.sequelize.transaction({readOnly:true},async transaction=>{
   const scope=await resolveReportStoreIds(user);
@@ -124,8 +142,10 @@ async function load(query,user){
     tax: round(layeredTax.reduce((sum, layer) => sum + layer.tax, 0))
    } : taxEstimate(costAmount, invoice);
    const displayInvoice = invoice || (canMeasureLayers && new Set(layers.map(layer => layer.invoiceType)).size > 1 ? '混合票种' : '待核实');
-   details.push({productId:p.product_id,productCode:p.product_code||'',productName:p.name||'未命名商品',category:category||'未分类',storeId,storeName:smap.get(storeId)?.name||storeId,location:lmap.get(locationId)?.name||locationId||'未指定库位',type,typeName:TYPES[type]||type,
-    quantity,unitCost,costAmount,estimated,costSource,sn:sn?.sn_code||'',pn,inboundTime:time||null,ageBucket:bucket(time,at),netEstimate:tax.net,estimatedTax:tax.tax,invoiceType:displayInvoice,evidenceStatus:source.status||'unlinked',evidenceStatusLabel:({manual_confirmed:'人工确认（预计测算）',linked:'已关联',unlinked:'未关联',conflict:'来源冲突',owner_pending:'经销商归属待确认',invoice_pending:'票种税率待确认',invoice_conflict:'发票口径冲突',batch_pending:'采购批次待对应'})[source.status]||'未关联',evidenceReason:source.reason||'',purchaseRequestNo:source.requestNo||'',sourceInboundNo:source.inboundNo||'',invoiceNos:source.invoiceNos||'',basisId:source.basisId||null,basisRevision:source.basisRevision||null,costMode:source.costMode||null,companyPrice:source.companyPrice??null,invoiceSource:source.evidenceSource==='inventory_foundation'?'统一库存基础资料':source.evidenceSource==='manual_review'?'人工回填确认（非发票认证）':source.evidenceSource==='registered_invoice'?'已登记采购发票':source.evidenceSource==='purchase_request'?'采购申请约定':'待关联',sourceCandidateCount:source.candidateCount||0,sourceCandidates:source.candidates||[],scopeWarning:!scopeReview&&Number(p.need_sn)!==1&&p.category==='售后'?'售后非SN项目，实物属性待核对':''});
+   const detail = {productId:p.product_id,productCode:p.product_code||'',productName:p.name||'未命名商品',category:category||'未分类',storeId,storeName:smap.get(storeId)?.name||storeId,location:lmap.get(locationId)?.name||locationId||'未指定库位',type,typeName:TYPES[type]||type,
+    quantity,unitCost,costAmount,estimated,costSource,sn:sn?.sn_code||'',pn,inboundTime:time||null,ageBucket:bucket(time,at),netEstimate:tax.net,estimatedTax:tax.tax,invoiceType:displayInvoice,evidenceStatus:source.status||'unlinked',evidenceStatusLabel:({manual_confirmed:'人工确认（预计测算）',linked:'已关联',unlinked:'未关联',conflict:'来源冲突',owner_pending:'经销商归属待确认',invoice_pending:'票种税率待确认',invoice_conflict:'发票口径冲突',batch_pending:'采购批次待对应'})[source.status]||'未关联',evidenceReason:source.reason||'',purchaseRequestNo:source.requestNo||'',sourceInboundNo:source.inboundNo||'',invoiceNos:source.invoiceNos||'',basisId:source.basisId||null,basisRevision:source.basisRevision||null,costMode:source.costMode||null,companyPrice:source.companyPrice??null,invoiceSource:source.evidenceSource==='inventory_foundation'?'统一库存基础资料':source.evidenceSource==='manual_review'?'人工回填确认（非发票认证）':source.evidenceSource==='registered_invoice'?'已登记采购发票':source.evidenceSource==='purchase_request'?'采购申请约定':'待关联',sourceCandidateCount:source.candidateCount||0,sourceCandidates:source.candidates||[],scopeWarning:!scopeReview&&Number(p.need_sn)!==1&&p.category==='售后'?'售后非SN项目，实物属性待核对':''};
+   if (actual) details.push(...actualCostDetails(detail, layers));
+   else details.push(detail);
   };
   for(const sn of sns){
    const p=pmap.get(sn.product_id);if(!p||Number(p.need_sn)!==1)continue;
@@ -148,26 +168,26 @@ async function load(query,user){
    evidenceCandidateQuantity:details.filter(r=>r.evidenceStatus==='batch_pending').reduce((n,r)=>n+r.quantity,0),
    categoryOptions:[...categories.order.keys()],
    excludedQuantity:excluded.reduce((sum,row)=>sum+row.quantity,0),scopePendingQuantity:details.filter(row=>row.scopeWarning).reduce((sum,row)=>sum+row.quantity,0),
-   costBasis:'SN按实际入库成本；非SN按成本档案估值并标记估算；缺失成本不按零替代。',
-   taxBasis:'扣税后金额及税额按关联采购凭证测算，并非已核实抵扣或正式账面价值；SN优先关联完整覆盖且口径一致的已登记发票，其次采购申请约定票种；非SN采购候选不作为批次证明。人工回填确认单列为预计测算依据，不等同发票认证；库存变化后自动失效。无依据显示待核实。',
+   costBasis:actual?'库存报表优先使用实际采购或入库成本；已采用档案估价的库存以档案金额计入最终成本，缺成本时仅汇总有成本依据的库存。':'SN按实际入库成本；非SN按成本档案估值并标记估算；缺失成本不按零替代。',
+   taxBasis:actual?'扣税后采购成本按已确认成本及可用采购票税依据计算，票税依据不足时仅汇总可计算的库存。该金额用于库存报表，不代表已实际抵扣。':'扣税后金额及税额按关联采购凭证测算，并非已核实抵扣或正式账面价值；SN优先关联完整覆盖且口径一致的已登记发票，其次采购申请约定票种；非SN采购候选不作为批次证明。人工回填确认单列为预计测算依据，不等同发票认证；库存变化后自动失效。无依据显示待核实。',
    quantityBasis:'SN与非SN分别取数不叠加；明确服务/虚拟项目单列排除；疑似售后实物属性待核对的项目仍保留；在途及待入库不计入。',
    agingBasis:'SN按首次采购入库时间；非SN无法逐件追溯库龄时列未知，不以最后调拨时间代替。'}};
  });
 }
 async function exportReport(ctx){
- const report=await load(ctx.query,ctx.state.user),XLSX=require('xlsx');
+ const report=await load({...ctx.query,costView:'actual'},ctx.state.user),XLSX=require('xlsx');
  const amount=v=>v===null?'待补/待核实':v;
  const group=r=>({分类:r.category,门店:r.storeName,商品编码:r.productCode,商品:r.productName,PN:r.pn||'',数量:r.totalCount,
   可售:r.normal_qty,占用:r.pending_qty,展示:r.display_qty,样机:r.demo_qty,租赁样机:r.rental_demo_qty,残次:r.unsellable_qty,
-  采购估值:amount(r.totalCost),已知成本:r.knownCostAmount,估算成本:r.estimatedCostAmount,成本待补数量:r.missingCostCount,确认零成本数量:r.confirmedZeroCount,
-  预计扣税后金额:amount(r.netAmount),已覆盖扣税后测算金额:r.netEstimateAmount,预计税额:r.estimatedTaxAmount,税务依据待补数量:r.taxPendingCount,
+  实际采购成本:amount(r.actualCostAmount),确认零成本件数:r.confirmedZeroCount,
+  扣税后采购成本:amount(r.actualNetCostAmount),
   '0至30天':r.d0_30,'31至60天':r.d31_60,'61至90天':r.d61_90,'90天以上':r.d90_plus,库龄未知:r.unknown,
-  '0至30天已覆盖金额':r.ageAmounts.d0_30,'31至60天已覆盖金额':r.ageAmounts.d31_60,'61至90天已覆盖金额':r.ageAmounts.d61_90,'90天以上已覆盖金额':r.ageAmounts.d90_plus,库龄未知已覆盖金额:r.ageAmounts.unknown,
+  '0至30天实际采购成本':r.ageAmounts.d0_30,'31至60天实际采购成本':r.ageAmounts.d31_60,'61至90天实际采购成本':r.ageAmounts.d61_90,'90天以上实际采购成本':r.ageAmounts.d90_plus,库龄未知实际采购成本:r.ageAmounts.unknown,
   成本状态:r.costStatus,税务状态:r.taxStatus});
  const rows=report.rows.map(group);rows.push({...group(report.summary),分类:'合计'});
  const detail=report.details.map(d=>({门店:d.storeName,库位:d.location,分类:d.category,商品编码:d.productCode,商品:d.productName,PN:d.pn,SN:d.sn,库存状态:d.typeName,
-  数量:d.quantity,采购单价:amount(d.unitCost),采购金额:amount(d.costAmount),成本来源:d.costSource,是否估算:d.estimated?'是':'否',首次入库时间:d.inboundTime,实物范围提示:d.scopeWarning,
-  库龄分段:d.ageBucket,采购凭证:d.invoiceType,采购单号:d.purchaseRequestNo,入库单号:d.sourceInboundNo,发票号码:d.invoiceNos,票据依据来源:d.invoiceSource,关联状态:d.evidenceStatusLabel,待核实原因:d.evidenceReason,采购候选数量:d.sourceCandidateCount,采购候选单号:d.sourceCandidates.map(r=>r.requestNo).join('、'),预计扣税后金额:amount(d.netEstimate),预计税额:amount(d.estimatedTax)}));
+  数量:d.quantity,采购单价:amount(d.unitCost),实际采购成本:amount(d.costAmount),成本来源:d.costSource,首次入库时间:d.inboundTime,实物范围提示:d.scopeWarning,
+  库龄分段:d.ageBucket,采购凭证:d.invoiceType,采购单号:d.purchaseRequestNo,入库单号:d.sourceInboundNo,发票号码:d.invoiceNos,票据依据来源:d.invoiceSource,关联状态:d.evidenceStatusLabel,待核实原因:d.evidenceReason,采购候选数量:d.sourceCandidateCount,采购候选单号:d.sourceCandidates.map(r=>r.requestNo).join('、'),扣税后采购成本:amount(d.netEstimate)}));
  const productRows=aggregate(report.details,['store','product']).map(group);
  const wb=XLSX.utils.book_new();
  for(const [name,data]of [['当前维度汇总',rows],['门店产品明细',productRows],['库存来源明细',detail],['服务虚拟项单列',report.excluded.map(r=>({商品编码:r.productCode,商品:r.productName,分类:r.category,门店:r.storeName,数量:r.quantity,原因:r.reason}))],['统计口径',Object.entries(report.meta).map(([key,value])=>({项目:key,内容:Array.isArray(value)?value.join('、'):String(value)}))]]){
@@ -177,4 +197,4 @@ async function exportReport(ctx){
  ctx.set('Content-Disposition',`attachment; filename*=UTF-8''${encodeURIComponent('库存资金与库龄报表.xlsx')}`);
  ctx.body=XLSX.write(wb,{type:'buffer',bookType:'xlsx'});
 }
-module.exports={load,aggregate,dimensions,taxEstimate,bucket,TYPES,exportReport,nonPhysicalReason,categoryPaths};
+module.exports={load,aggregate,actualCostDetails,dimensions,taxEstimate,bucket,TYPES,exportReport,nonPhysicalReason,categoryPaths};
