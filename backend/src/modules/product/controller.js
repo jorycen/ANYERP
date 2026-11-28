@@ -1900,15 +1900,24 @@ async function applyPendingProductPriceChanges() {
   return applied;
 }
 
-async function buildPriceProductWhere(keyword, scope = []) {
- return {is_deleted:0, [Op.and]:[sequelize.literal(productSearch.expressions(sequelize,keyword,'Product',scope).where)]};
+async function buildPriceProductWhere(query, scope = []) {
+  const filters = [sequelize.literal(productSearch.expressions(sequelize, query.keyword, 'Product', scope).where)];
+  const fields = productSearch.fieldExpressions(sequelize, { productName: query.productName, manufacturerConfig: query.manufacturerConfig });
+  if (fields) filters.push(sequelize.literal(fields));
+  for (const code of productSearch.tokens(query.manufacturerCode)) {
+    const pn = productSearch.fieldExpressions(sequelize, { manufacturerCode: code });
+    const pattern = sequelize.escape('%' + code.replace(/[!%_]/g, '!$&') + '%');
+    const barcode = "EXISTS (SELECT 1 FROM T_PRODUCT_BARCODE price_barcode WHERE price_barcode.PRODUCT_ID=Product.PRODUCT_ID AND price_barcode.STATUS=1 AND price_barcode.BARCODE_TYPE='manufacturer' AND price_barcode.BARCODE_CODE LIKE " + pattern + " ESCAPE '!')";
+    filters.push(sequelize.literal('(' + pn + ' OR ' + barcode + ')'));
+  }
+  return { is_deleted: 0, [Op.and]: filters };
 }
 
 async function getPriceList(ctx) {
   await applyPendingProductPriceChanges();
 
-  const { keyword, page = 1, pageSize = 20 } = ctx.query;
-  const productWhere = await buildPriceProductWhere(keyword, ctx.state.user?.accessibleStoreIds || []);
+  const { page = 1, pageSize = 20 } = ctx.query;
+  const productWhere = await buildPriceProductWhere(ctx.query, ctx.state.user?.accessibleStoreIds || []);
 
   const { count, rows } = await Product.findAndCountAll({
     where: productWhere,
@@ -1971,7 +1980,7 @@ async function getPriceList(ctx) {
 async function exportCostPrices(ctx) {
   await applyPendingProductPriceChanges();
 
-  const productWhere = await buildPriceProductWhere(ctx.query.keyword, ctx.state.user?.accessibleStoreIds || []);
+  const productWhere = await buildPriceProductWhere(ctx.query, ctx.state.user?.accessibleStoreIds || []);
   const products = await Product.findAll({
     where: productWhere,
     attributes: ['product_id', 'product_code', 'manufacturer_code', 'name', 'unit', 'category'],

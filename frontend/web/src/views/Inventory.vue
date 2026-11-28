@@ -2096,7 +2096,7 @@ const inventoryModelFilterOptions = [
   { label: '热卖机型（近7天）', value: 'hot7' },
   { label: '高毛利机型（近7天）', value: 'highMargin7' }
 ]
-const inventorySearchFields = [{key:'productName',label:'商品名称'},{key:'manufacturerCode',label:'厂商编码'},{key:'manufacturerConfig',label:'厂商配置信息'}]
+const inventorySearchFields = [{key:'manufacturerCode',label:'厂商编码'},{key:'productName',label:'商品名称'},{key:'manufacturerConfig',label:'厂商配置信息'}]
 const summaryQuery = reactive({
   page: 1,
   pageSize: 20,

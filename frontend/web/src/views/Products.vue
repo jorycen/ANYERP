@@ -311,8 +311,10 @@
             style="margin-bottom: 12px"
           />
           <div class="filter-bar">
-            <el-input v-model="priceParams.keyword" placeholder="商品名称/商品编码/厂商编码" clearable style="width: 240px" @keyup.enter="loadPriceData" />
-            <el-button type="primary" @click="loadPriceData">搜索</el-button>
+            <el-input v-model="priceParams.manufacturerCode" placeholder="厂商编码" aria-label="厂商编码" clearable style="width: 170px" @keyup.enter="searchPriceData" />
+            <el-input v-model="priceParams.productName" placeholder="商品名称" aria-label="商品名称" clearable style="width: 200px" @keyup.enter="searchPriceData" />
+            <el-input v-model="priceParams.manufacturerConfig" placeholder="厂商配置信息" aria-label="厂商配置信息" clearable style="width: 200px" @keyup.enter="searchPriceData" />
+            <el-button type="primary" @click="searchPriceData">搜索</el-button>
             <el-button type="success" @click="handleBatchRefreshCost" :loading="batchRefreshLoading" :disabled="selectedPriceRows.length === 0">
               批量刷新成本 ({{ selectedPriceRows.length }})
             </el-button>
@@ -1684,7 +1686,7 @@ const handleMoveCategory = async (row, siblings, index, direction) => {
 
 // ========== 价格管理 ==========
 const priceLoading = ref(false); const priceTableData = ref([]); const priceTotal = ref(0)
-const priceParams = reactive({ page: 1, pageSize: 20, keyword: '' })
+const priceParams = reactive({ page: 1, pageSize: 20, manufacturerCode: '', productName: '', manufacturerConfig: '' })
 let priceLoadSequence = 0
 const priceTableRef = ref(null); const selectedPriceRows = ref([])
 const batchRefreshLoading = ref(false)
@@ -1744,6 +1746,10 @@ const loadPriceData = async () => {
     }
   } catch (err) { ElMessage.error(err?.response?.data?.message || '加载失败') }
   finally { if (sequence === priceLoadSequence) priceLoading.value = false }
+}
+const searchPriceData = () => {
+  if (priceParams.page !== 1) priceParams.page = 1
+  else loadPriceData()
 }
 const startEditPrice = (row) => {
   row._editing = true
@@ -1933,7 +1939,7 @@ const handleCostImport = () => {
 const handleCostExport = async () => {
   costExportLoading.value = true
   try {
-    await api.exportCostPrices({ keyword: priceParams.keyword })
+    await api.exportCostPrices({ manufacturerCode: priceParams.manufacturerCode, productName: priceParams.productName, manufacturerConfig: priceParams.manufacturerConfig })
     ElMessage.success('成本导出成功')
   } catch (err) {
     ElMessage.error(err?.response?.data?.message || err?.message || '成本导出失败')
