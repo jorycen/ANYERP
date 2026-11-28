@@ -2,15 +2,35 @@
  * 采购管理路由
  */
 const Router = require('koa-router');
-const { getRequestList, createRequest, approveRequest, getSupplierList, createSupplier, updateSupplier } = require('./controller');
+const { getRequestList, exportRequestList, getRequestDetail, updateRequestRemark, createRequest, saveRequestDraft, updateRequestDraft, submitRequestDraft, deleteRequestDraft, approveRequest, revokeRequest, getAdjustmentPreview, createPurchaseAdjustment, getSupplierList, getAllSuppliers, createSupplier, updateSupplier, deleteSupplier, sortSuppliers } = require('./controller');
+const { requireRole } = require('../../middleware/permission');
 
 const router = new Router();
+const requirePurchaser = requireRole('purchaser');
 
-router.get('/requests', getRequestList);
-router.post('/requests', createRequest);
-router.post('/requests/:requestId/approve', approveRequest);
-router.get('/suppliers', getSupplierList);
-router.post('/suppliers', createSupplier);
-router.put('/suppliers/:id', updateSupplier);
+// 采购申请和供应商基础资料允许全员读取；所有已登录且具备门店范围的用户均可提交申请。
+router.post('/zero-cost-notice', ctx => { ctx.body = { code: 0, data: require('./zeroCost').zeroCostNotice(ctx.request.body?.items || []) }; });
+router.get('/supplier-list', getSupplierList);
+router.get('/supplier-all', getAllSuppliers);
+router.get('/request-list', getRequestList);
+router.get('/request-list/export', exportRequestList);
+router.get('/request-detail/:requestId', getRequestDetail);
+router.put('/request/:requestId/remark', updateRequestRemark);
+router.post('/create-request', createRequest);
+router.post('/request-draft', saveRequestDraft);
+router.put('/request-draft/:requestId', updateRequestDraft);
+router.post('/request-draft/:requestId/submit', submitRequestDraft);
+router.delete('/request-draft/:requestId', deleteRequestDraft);
+
+// 审批、撤销和供应商维护仍属于采购管理职责。
+router.post('/approve-request/:requestId', approveRequest);
+router.post('/revoke-request/:requestId', revokeRequest);
+// 采购退单/数量调整的采购角色及所属门店本人校验在控制器中按单据执行。
+router.get('/adjustment-preview/:requestId', getAdjustmentPreview);
+router.post('/create-adjustment', createPurchaseAdjustment);
+router.post('/supplier/sort', requirePurchaser, sortSuppliers);
+router.post('/supplier', requirePurchaser, createSupplier);
+router.put('/supplier/:id', requirePurchaser, updateSupplier);
+router.delete('/supplier/:id', requirePurchaser, deleteSupplier);
 
 module.exports = router;

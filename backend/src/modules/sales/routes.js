@@ -2,14 +2,165 @@
  * 销售管理路由
  */
 const Router = require('koa-router');
-const { list, create, detail, update, stats } = require('./controller');
+const multer = require('@koa/multer');
+const {
+  list,
+  listProductOrders,
+  exportOrders,
+  listSalesReturnRequests,
+  requestSalesReturn,
+  reviewSalesReturn,
+  confirmSalesReturnRefund,
+  create,
+  saveSalesDraft,
+  updateSalesDraft,
+  submitSalesDraft,
+  deleteSalesDraft,
+  detail,
+  update,
+  updateOrderItems,
+  stats,
+  approve,
+  reject,
+  auxiliaryStaff,
+  paymentMethods,
+  listDeposits,
+  createDeposit,
+  archiveDeposit,
+  refundDeposit,
+  listDepositRefunds,
+  reviewDepositRefund,
+  availableDeposits,
+  getProductPns,
+  getProductSns,
+  reportToMall,
+  recalculateSettlementCost,
+  getGrossProfit,
+  updateSupplements,
+  listSubsidyPhotos,
+  replaceSubsidyPhotos,
+  downloadSubsidyPhoto,
+  downloadSubsidyPhotosArchive,
+  downloadAllSubsidyPhotosArchive,
+  createSubsidyPhotosDownloadTicket
+} = require('./controller');
+const { enforceStoreOwnership, enforceOrderStoreOwnership, requireRole } = require('../../middleware/permission');
+const staffCareCredit = require('./staffCareCredit');
+const {
+  getMonthlyTaskOptions,
+  listMonthlyTasks,
+  saveMonthlyTask,
+  disableMonthlyTask
+} = require('./monthlyTaskController');
 
 const router = new Router();
+router.post('/coupon-preview', require('./controller').previewCouponPayments);
+router.post('/coupon-return-preview', require('./controller').previewCouponReturn);
+const subsidyPhotoUpload = multer({
+  limits: { files: 20, fileSize: 10 * 1024 * 1024 }
+});
+const subsidyPhotoRoles = requireRole('finance', 'manager', 'store_manager', 'store_admin');
 
-router.get('/orders', list);
-router.post('/orders', create);
-router.get('/orders/:orderId', detail);
-router.put('/orders/:orderId', update);
+function normalizeDepositId(ctx, next) {
+  ctx.params.depositId = ctx.params.depositId
+    || ctx.request.body?.depositId
+    || ctx.request.body?.deposit_id
+    || ctx.query?.depositId
+    || ctx.query?.deposit_id;
+  return next();
+}
+
+router.post('/invoice-defaults', require('./invoiceDefaults').invoiceDefaults);
+router.get('/list', list);
+router.get('/product-orders/:productId', listProductOrders);
+router.get('/export', exportOrders);
+router.get('/subsidy-photos', subsidyPhotoRoles, listSubsidyPhotos);
+router.get('/subsidy-photos/batch-download-ticket', subsidyPhotoRoles, createSubsidyPhotosDownloadTicket);
+router.get('/subsidy-photos/batch-download', subsidyPhotoRoles, downloadAllSubsidyPhotosArchive);
+router.get('/subsidy-photos/:orderId/download', subsidyPhotoRoles, downloadSubsidyPhotosArchive);
+router.get('/subsidy-photos/:orderId/files/:photoId', subsidyPhotoRoles, downloadSubsidyPhoto);
+router.post('/subsidy-photos/:orderId', subsidyPhotoRoles, subsidyPhotoUpload.array('files', 20), replaceSubsidyPhotos);
+router.get('/return-requests', listSalesReturnRequests);
+router.post('/return-requests', enforceStoreOwnership, requestSalesReturn);
+router.post('/return-requests/:returnId/review', reviewSalesReturn);
+router.post('/return-requests/:returnId/refund-confirm', requireRole('finance'), confirmSalesReturnRefund);
 router.get('/stats', stats);
+router.get('/care-credit/me', staffCareCredit.getMyCareCredit);
+router.get('/care-credit/staff', requireRole('admin', 'boss'), staffCareCredit.listStaffCareCredit);
+router.get('/care-credit/staff/:staffId', requireRole('admin', 'boss'), staffCareCredit.getStaffCareCredit);
+router.post('/care-credit/staff/:staffId/adjust', requireRole('admin', 'boss'), staffCareCredit.adjustStaffCareCredit);
+router.post('/care-credit/staff/:staffId/set-balance', requireRole('admin', 'boss'), staffCareCredit.setStaffCareCreditBalance);
+router.get('/orders/:orderId/care-credit', staffCareCredit.getOrderCareCredit);
+router.post('/orders/:orderId/care-credit', staffCareCredit.reserveOrderCareCredit);
+router.post('/orders/:orderId/care-credit/cancel', staffCareCredit.cancelOrderCareCredit);
+router.get('/auxiliary-staff', auxiliaryStaff);
+const indicators = require('./monthlyIndicators');
+const indicatorUpload = require('@koa/multer')({ limits: { files: 1, fileSize: 5 * 1024 * 1024 } });
+router.get('/monthly-indicators', indicators.setup);
+router.post('/monthly-indicators', indicators.create);
+router.post('/monthly-indicator-definitions', indicators.saveDefinition);
+router.put('/monthly-indicator-definitions/:definitionId', indicators.saveDefinition);
+router.put('/monthly-indicators/:indicatorId', indicators.update);
+router.post('/monthly-indicator-assignments/:assignmentId/evidence', indicatorUpload.single('file'), indicators.submit);
+router.get('/monthly-indicator-evidence/:evidenceId', indicators.download);
+
+router.get('/monthly-tasks/options', getMonthlyTaskOptions);
+router.get('/monthly-tasks', listMonthlyTasks);
+router.post('/monthly-tasks', requireRole('admin', 'boss', 'manager', 'store_manager', 'store_admin'), saveMonthlyTask);
+router.put('/monthly-tasks/:taskId', requireRole('admin', 'boss', 'manager', 'store_manager', 'store_admin'), saveMonthlyTask);
+router.post('/monthly-tasks/:taskId/disable', requireRole('admin', 'boss', 'manager', 'store_manager', 'store_admin'), disableMonthlyTask);
+router.get('/payment-methods', paymentMethods);
+router.get('/deposits', listDeposits);
+router.post('/deposits', enforceStoreOwnership, createDeposit);
+router.get('/deposits/available', availableDeposits);
+router.post('/deposits/:depositId/archive', enforceStoreOwnership, archiveDeposit);
+router.post('/deposits/:depositId/refund', enforceStoreOwnership, refundDeposit);
+router.get('/deposit-refunds', listDepositRefunds);
+router.post('/deposit-refunds/:refundId/review', reviewDepositRefund);
+router.get('/deposit-list', listDeposits);
+router.get('/deposits/list', listDeposits);
+router.post('/deposit', enforceStoreOwnership, createDeposit);
+router.post('/deposit-create', enforceStoreOwnership, createDeposit);
+router.post('/deposits/create', enforceStoreOwnership, createDeposit);
+router.get('/deposit-available', availableDeposits);
+router.get('/available-deposits', availableDeposits);
+router.get('/deposits/available-list', availableDeposits);
+router.post('/deposit/:depositId/archive', enforceStoreOwnership, archiveDeposit);
+router.post('/deposit/:depositId/refund', enforceStoreOwnership, refundDeposit);
+router.post('/archive-deposit', normalizeDepositId, enforceStoreOwnership, archiveDeposit);
+router.post('/refund-deposit', normalizeDepositId, enforceStoreOwnership, refundDeposit);
+router.post('/deposits/archive', normalizeDepositId, enforceStoreOwnership, archiveDeposit);
+router.post('/deposits/refund', normalizeDepositId, enforceStoreOwnership, refundDeposit);
+router.get('/product-pns/:storeId/:productId', getProductPns);
+router.get('/product-sns/:storeId/:productId', getProductSns);
+router.post('/create', enforceOrderStoreOwnership, create);
+router.post('/draft', enforceOrderStoreOwnership, saveSalesDraft);
+router.put('/draft/:orderId', enforceOrderStoreOwnership, updateSalesDraft);
+router.post('/draft/:orderId/submit', enforceOrderStoreOwnership, submitSalesDraft);
+router.delete('/draft/:orderId', enforceOrderStoreOwnership, deleteSalesDraft);
+router.put('/order-items', enforceStoreOwnership, updateOrderItems);
+router.post('/order-items', enforceStoreOwnership, updateOrderItems);
+router.get('/:orderId/gross-profit', getGrossProfit);
+router.put('/:orderId/supplements', enforceStoreOwnership, updateSupplements);
+router.get('/:orderId', detail);
+router.post('/:orderId/report-to-mall', reportToMall);
+router.put('/:orderId', enforceOrderStoreOwnership, update);
+router.post('/:orderId/approve', approve);
+router.post('/:orderId/reject', reject);
+router.post('/:orderId/return-request', enforceStoreOwnership, requestSalesReturn);
+router.post('/:orderId/recalculate-settlement-cost', recalculateSettlementCost);
+
+// 按实际路由处理器白名单保护查询角色，避免 /stats、/deposits 等
+// 单段静态路径被通用中间件误认为订单 ID。
+const { isMallReportViewer } = require('../../utils/storePermissions');
+for (const layer of router.stack) {
+  if (layer.stack.includes(list) || layer.stack.includes(detail)) continue;
+  layer.stack.unshift(async (ctx, next) => {
+    if (isMallReportViewer(ctx.state.user?.roles || ctx.state.user?.roleCode)) {
+      ctx.throw(403, '当前账号仅支持查询');
+    }
+    return next();
+  });
+}
 
 module.exports = router;

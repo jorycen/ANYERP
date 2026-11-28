@@ -1,0 +1,359 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { _test } = require('../src/modules/inventory/controller');
+const salesController = require('../src/modules/sales/controller');
+
+test('SN库存清单状态筛选将两种占用状态合并为已占用', () => {
+  assert.deepEqual(_test.getSnInventoryStatusFilter('in_stock'), ['in_stock']);
+  assert.deepEqual(_test.getSnInventoryStatusFilter('occupied'), ['reserved', 'occupied']);
+  assert.deepEqual(_test.getSnInventoryStatusFilter('sold'), ['sold']);
+  assert.deepEqual(_test.getSnInventoryStatusFilter('unknown'), []);
+});
+
+test('SN销售仓明细保留非销售仓数量，不重复计入销售余额', () => {
+  const fields = ['display_qty', 'demo_qty', 'unsellable_qty', 'pending_qty', 'rental_demo_qty'];
+  const inventory = [
+    { store_id: 'A', location_id: 'sale', normal_qty: 99 },
+    ...fields.map(field => ({ store_id: 'A', location_id: field, [field]: 1, normal_qty: 0 }))
+  ];
+  const rows = _test.mergeSnSalesStockBreakdown(inventory,
+    [{ store_id: 'A', location_id: 'sale', normal_qty: 24, full_resource_qty: 24 }]);
+  assert.equal(rows.reduce((sum, row) => sum + Number(row.normal_qty || 0), 0), 24);
+  for (const field of fields) {
+    assert.equal(rows.reduce((sum, row) => sum + Number(row[field] || 0), 0), 1);
+  }
+  assert.equal(inventory[0].normal_qty, 99);
+});
+
+test('没有销售SN时保留样品明细并清除陈旧销售明细', () => {
+  const rows = _test.mergeSnSalesStockBreakdown([
+    { store_id: 'A', location_id: '', normal_qty: 9, full_resource_qty: 9, demo_qty: 1 },
+    { store_id: 'A', location_id: 'sale', normal_qty: 10 }
+  ], []);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].demo_qty, 1);
+  assert.equal(rows[0].normal_qty, 0);
+  assert.equal(rows[0].full_resource_qty, 0);
+});
+
+test('销售退单库存控制器可以调用正式定金释放函数', () => {
+  assert.equal(typeof salesController.releaseDepositRedemptionForOrder, 'function');
+});
+
+test('销售退单只有整单完成退货后才恢复定金核销', async () => {
+  const calls = [];
+  const release = async (...args) => calls.push(args);
+
+  assert.equal(await _test.restoreDepositForCompletedSalesReturn(
+    { order_id: 'ORDER-1' },
+    false,
+    { id: 'TX-1' },
+    release
+  ), false);
+  assert.equal(calls.length, 0);
+
+  assert.equal(await _test.restoreDepositForCompletedSalesReturn(
+    { order_id: 'ORDER-1' },
+    true,
+    { id: 'TX-2' },
+    release
+  ), true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0].order_id, 'ORDER-1');
+  assert.equal(calls[0][1].id, 'TX-2');
+  assert.equal(calls[0][2], '销售退单整单退货，恢复定金');
+});
+
+test('inventory summary maps legacy normal quantity to the bound non-sale location', () => {
+  const snapshot = _test.getInventoryQuantitySnapshot({
+    normal_qty: 2,
+    regular_qty: 0,
+    subsidy_qty: 0,
+    second_qty: 0,
+    display_qty: 0,
+    demo_qty: 0,
+    unsellable_qty: 0,
+    pending_qty: 0
+  }, 'unsellable_qty');
+
+  assert.equal(snapshot.normal_qty, 0);
+  assert.equal(snapshot.unsellable_qty, 2);
+});
+
+test('inventory summary keeps standard quantities in their matching location fields', () => {
+  const snapshot = _test.getInventoryQuantitySnapshot({
+    normal_qty: 0,
+    regular_qty: 0,
+    subsidy_qty: 0,
+    second_qty: 0,
+    display_qty: 0,
+    demo_qty: 3,
+    unsellable_qty: 0,
+    pending_qty: 0
+  }, 'demo_qty');
+
+  assert.equal(snapshot.normal_qty, 0);
+  assert.equal(snapshot.demo_qty, 3);
+});
+
+test('inventory summary keeps rental demo stock separate and non-sale', () => {
+  const snapshot = _test.getInventoryQuantitySnapshot({
+    normal_qty: 0,
+    regular_qty: 0,
+    subsidy_qty: 0,
+    second_qty: 0,
+    display_qty: 0,
+    demo_qty: 2,
+    unsellable_qty: 0,
+    pending_qty: 0,
+    rental_demo_qty: 4
+  }, 'rental_demo_qty');
+
+  assert.equal(snapshot.demo_qty, 0);
+  assert.equal(snapshot.rental_demo_qty, 4);
+  assert.equal(snapshot.normal_qty, 0);
+});
+
+test('inventory summary only treats the sales warehouse as store stock', () => {
+  assert.equal(_test.isSalesWarehouseLocation('normal_qty'), true);
+  assert.equal(_test.isSalesWarehouseLocation('display_qty'), false);
+  assert.equal(_test.isSalesWarehouseLocation(''), false);
+
+  assert.equal(_test.getSalesWarehouseInventoryQty({ normal_qty: 3 }, 'normal_qty'), 3);
+  assert.equal(_test.getSalesWarehouseInventoryQty({ normal_qty: 3 }, 'display_qty'), 0);
+  assert.equal(_test.getSalesWarehouseInventoryQty({ normal_qty: 3 }, ''), 0);
+});
+
+test('inventory summary only counts in-stock SN in the sales warehouse', () => {
+  assert.equal(_test.isInStockSalesWarehouseSn(
+    { status: 'in_stock' },
+    { type: 'normal_qty' }
+  ), true);
+  assert.equal(_test.isInStockSalesWarehouseSn(
+    { status: 'reserved' },
+    { type: 'normal_qty' }
+  ), false);
+  assert.equal(_test.isInStockSalesWarehouseSn(
+    { status: 'in_stock' },
+    { type: 'display_qty' }
+  ), false);
+  assert.equal(_test.isInStockSalesWarehouseSn(
+    { status: 'in_stock' },
+    null
+  ), false);
+});
+
+test('inventory summary splits sales stock by resource type', () => {
+  const snapshot = _test.getSalesResourceQuantitySnapshot({
+    normal_qty: 7,
+    regular_qty: 4,
+    subsidy_qty: 2,
+    second_qty: 1,
+    display_qty: 0,
+    demo_qty: 0,
+    unsellable_qty: 0,
+    pending_qty: 0
+  }, 'normal_qty');
+
+  assert.deepEqual(snapshot, {
+    full_resource_qty: 4,
+    subsidy_only_qty: 2,
+    no_subsidy_qty: 1
+  });
+});
+
+test('inventory summary treats legacy unsplit sales stock as full-resource stock', () => {
+  const snapshot = _test.getSalesResourceQuantitySnapshot({
+    normal_qty: 3,
+    regular_qty: 0,
+    subsidy_qty: 0,
+    second_qty: 0
+  }, 'normal_qty');
+
+  assert.deepEqual(snapshot, {
+    full_resource_qty: 3,
+    subsidy_only_qty: 0,
+    no_subsidy_qty: 0
+  });
+});
+
+test('inventory summary search includes the real product of an in-stock SN historical PN', () => {
+  const conditions = _test.buildInventoryProductKeywordConditions('83NN006LCD', ['PRODUCT_WITH_HISTORICAL_PN']);
+  assert.equal(conditions.some(condition => condition.product_id?.[require('sequelize').Op.in]?.includes('PRODUCT_WITH_HISTORICAL_PN')), true);
+});
+
+test('inventory summary search matches space-separated model and color keywords', () => {
+  const { Op } = require('sequelize');
+  const conditions = _test.buildInventoryProductKeywordConditions('Y70 白');
+  const tokenGroups = conditions[0][Op.and];
+
+  assert.equal(tokenGroups.length, 2);
+  assert.equal(tokenGroups[0][Op.or].some(condition => condition.model?.[Op.like] === '%Y70%'), true);
+  assert.equal(tokenGroups[1][Op.or].some(condition => condition.color?.[Op.like] === '%白%'), true);
+});
+
+test('inventory model quick filters classify the three product types and special prices', () => {
+  assert.equal(_test.getInventoryProductType('电脑/笔记本', '', '', ''), 'computer');
+  assert.equal(_test.getInventoryProductType('台机', '来酷Lecoo', '', ''), 'desktop');
+  assert.equal(_test.getInventoryProductType('手机', '', '', ''), 'phone');
+  assert.equal(_test.getInventoryProductType('平板', '', '', ''), 'tablet');
+  assert.equal(_test.getInventoryProductType('电脑配件', '硬盘', '', ''), 'accessory');
+  assert.equal(_test.getInventoryProductType('选件', '鼠标', '', ''), 'option');
+  assert.equal(_test.getInventoryProductType('二手', '笔记本', '', ''), 'used');
+  assert.equal(_test.isSpecialPriceProduct({
+    ProductPrice: { standard_price: 5000, retail_price: 4500 }
+  }), true);
+  assert.equal(_test.isSpecialPriceProduct({
+    ProductPrice: { standard_price: 5000, retail_price: 5000 }
+  }), false);
+  assert.equal(_test.matchesInventoryModelFilter({}, { special_sn_count: 2 }, 'special'), true);
+  assert.equal(_test.matchesInventoryModelFilter({
+    ProductPrice: { standard_price: 5000, retail_price: 4500 }
+  }, { special_sn_count: 0 }, 'special'), false);
+});
+
+test('inventory model quick filters sort hot and high-margin models by the latest seven days', () => {
+  const rows = [
+    { sales_7_qty: 2, gross_margin_7: 0.3, gross_profit_7: 300, avg_gross_profit_7: 300 },
+    { sales_7_qty: 5, gross_margin_7: 0.2, gross_profit_7: 400, avg_gross_profit_7: 200 }
+  ];
+  assert.equal(_test.compareInventoryModelRows(rows[1], rows[0], 'hot7') < 0, true);
+  assert.equal(_test.compareInventoryModelRows(rows[0], rows[1], 'highMargin7') < 0, true);
+  assert.equal(_test.matchesInventoryModelFilter({ is_focus_product: 1 }, {}, 'focus'), true);
+  assert.equal(_test.matchesInventoryModelFilter({}, { sales_7_qty: 0 }, 'hot7'), false);
+  assert.equal(_test.matchesInventoryModelFilter({}, { avg_gross_profit_7: 0 }, 'highMargin7'), false);
+});
+
+test('inventory export expands one product into store rows and keeps store-specific quantities', () => {
+  const rows = _test.buildStoreInventoryExportRows([{
+    product_name: '测试商品',
+    total_stock_qty: 5,
+    store_stock_info: [
+      { store_id: 'S2', store_name: '重庆门店', normal_qty: 2, display_qty: 1 },
+      { store_id: 'S1', store_name: '成都门店', normal_qty: 3, display_qty: 0 }
+    ]
+  }]);
+
+  assert.deepEqual(rows.map(row => [row.store_name, row.normal_qty, row.total_stock_qty]), [
+    ['成都门店', 3, 6],
+    ['重庆门店', 2, 6]
+  ]);
+});
+
+test('inventory summary export keeps the category-management order supplied by inventory query', () => {
+  const rows = _test.buildInventorySummaryExportRows([
+    { product_id: 'notebook', category: '电子产品/笔记本', product_name: '笔记本', standard_price: 10, normal_qty: 5 },
+    { product_id: 'tablet', category: '平板', product_name: '平板', standard_price: 20, normal_qty: 1 },
+    { product_id: 'supplier', category: '手机', product_name: '服务商有货手机', standard_price: 60, normal_qty: 0, changhong_inventory: '少量', tianjin_inventory: '8' },
+    { product_id: 'phone', category: '手机', product_name: '手机', standard_price: 30, normal_qty: 2 },
+    { product_id: 'desktop', category: '台式机', product_name: '台机', standard_price: 40, normal_qty: 3 },
+    { product_id: 'accessory', category: '配件', product_name: '配件', standard_price: 50, normal_qty: 4 },
+    { product_id: 'empty', category: '手机', product_name: '无库存手机', standard_price: 60, normal_qty: 0, changhong_inventory: '-', tianjin_inventory: '0' },
+    { product_id: 'other', category: '其他', product_name: '其他商品', standard_price: 70, normal_qty: 6 }
+  ], new Map([
+    ['accessory', 'PN-A'],
+    ['desktop', 'PN-D'],
+    ['phone', 'PN-P'],
+    ['tablet', 'PN-T'],
+    ['notebook', 'PN-N'],
+    ['supplier', 'PN-S'],
+    ['empty', 'PN-E'],
+    ['other', 'PN-O']
+  ]));
+
+  assert.deepEqual(rows, [
+    { 产品类型: '电子产品/笔记本', 产品名称: '笔记本', PN: 'PN-N', 定价: 10, 库存: 5, 艾诺云总库存: 0, 艾诺志兴总库存: 0, 佳华库存: '-', 汇一库存: '-', 近7天销量: 0, 近30天销量: 0 },
+    { 产品类型: '平板', 产品名称: '平板', PN: 'PN-T', 定价: 20, 库存: 1, 艾诺云总库存: 0, 艾诺志兴总库存: 0, 佳华库存: '-', 汇一库存: '-', 近7天销量: 0, 近30天销量: 0 },
+    { 产品类型: '手机', 产品名称: '服务商有货手机', PN: 'PN-S', 定价: 60, 库存: 0, 艾诺云总库存: 0, 艾诺志兴总库存: 0, 佳华库存: '少量', 汇一库存: '8', 近7天销量: 0, 近30天销量: 0 },
+    { 产品类型: '手机', 产品名称: '手机', PN: 'PN-P', 定价: 30, 库存: 2, 艾诺云总库存: 0, 艾诺志兴总库存: 0, 佳华库存: '-', 汇一库存: '-', 近7天销量: 0, 近30天销量: 0 },
+    { 产品类型: '台式机', 产品名称: '台机', PN: 'PN-D', 定价: 40, 库存: 3, 艾诺云总库存: 0, 艾诺志兴总库存: 0, 佳华库存: '-', 汇一库存: '-', 近7天销量: 0, 近30天销量: 0 },
+    { 产品类型: '配件', 产品名称: '配件', PN: 'PN-A', 定价: 50, 库存: 4, 艾诺云总库存: 0, 艾诺志兴总库存: 0, 佳华库存: '-', 汇一库存: '-', 近7天销量: 0, 近30天销量: 0 }
+  ]);
+});
+
+test('库存简表将厂商编码作为唯一 PN 字段兜底', () => {
+  const [row] = _test.buildInventorySummaryExportRows([
+    { product_id: 'sp', category: '配件', product_name: '内存条', manufacturer_code: '888046957', normal_qty: 1 }
+  ]);
+  assert.equal(row.PN, '888046957');
+  assert.equal(row.产品类型, '配件');
+  assert.equal(Object.hasOwn(row, '商品编码'), false);
+  assert.equal(Object.hasOwn(row, '厂商编码'), false);
+});
+
+test('库存分类排序按分类管理一级到四级顺序精确排列', () => {
+  const orderMap = _test.buildProductCategoryOrderMap([
+    { category_id: 'root-b', parent_id: null, name: '配件', level: 1, sort_order: 2, status: 1 },
+    { category_id: 'root-a', parent_id: null, name: '电脑', level: 1, sort_order: 1, status: 1 },
+    { category_id: 'brand-b', parent_id: 'root-a', name: '品牌B', level: 2, sort_order: 2, status: 1 },
+    { category_id: 'brand-a', parent_id: 'root-a', name: '品牌A', level: 2, sort_order: 1, status: 1 },
+    { category_id: 'series-b', parent_id: 'brand-a', name: '系列B', level: 3, sort_order: 2, status: 1 },
+    { category_id: 'series-a', parent_id: 'brand-a', name: '系列A', level: 3, sort_order: 1, status: 1 },
+    { category_id: 'model-b', parent_id: 'series-a', name: '型号B', level: 4, sort_order: 2, status: 1 },
+    { category_id: 'model-a', parent_id: 'series-a', name: '型号A', level: 4, sort_order: 1, status: 1 }
+  ]);
+  const products = [
+    { product_id: 'accessory', category_id: 'root-b' },
+    { product_id: 'brand-b', category_id: 'brand-b' },
+    { product_id: 'series-b', category_id: 'series-b' },
+    { product_id: 'model-b', category_id: 'model-b' },
+    { product_id: 'model-a', category_path_legacy: '电脑/品牌A/系列A/型号A' },
+    { product_id: 'unknown', category: '历史未配置分类' }
+  ].sort((a, b) => _test.getProductCategoryOrder(a, orderMap) - _test.getProductCategoryOrder(b, orderMap));
+  assert.deepEqual(products.map(product => product.product_id), [
+    'model-a', 'model-b', 'series-b', 'brand-b', 'accessory', 'unknown'
+  ]);
+});
+
+test('库存简表导出近7天和近30天销量', () => {
+  const [row] = _test.buildInventorySummaryExportRows([
+    { product_id: 'sales', category: '手机', product_name: '测试手机', normal_qty: 5, aino_yun_inventory_qty_total: 6, aino_zhixing_inventory_qty_total: 2, sales_7_qty: 3, sales_30_qty: 17, store_sales: [{ store_id: 'S1', store_name: '一店', sales_7_qty: 3, sales_30_qty: 12 }, { store_id: 'S2', store_name: '二店', sales_7_qty: 0, sales_30_qty: 5 }] }
+  ]);
+  assert.equal(row.近7天销量, 3);
+  assert.equal(row.近30天销量, 17);
+  assert.equal(row.艾诺云总库存, 6);
+  assert.equal(row.艾诺志兴总库存, 2);
+});
+
+test('导出门店及总库存合计六类仓库，不重复累加资源分类数量', () => {
+  const rows = _test.buildStoreInventoryExportRows([{
+    total_stock_qty: 10,
+    store_stock_info: [
+      { store_id: 'A', normal_qty: '2', full_resource_qty: 2, demo_qty: 100 },
+      { store_id: 'A', normal_qty: 3, subsidy_only_qty: 3, display_qty: '4' },
+      { store_id: 'A', unsellable_qty: 5, pending_qty: 6, rental_demo_qty: 7 },
+      { store_id: 'B', normal_qty: 5 },
+      { store_id: 'C', demo_qty: 9 }
+    ]
+  }]);
+  assert.equal(rows.find(row => row.store_id === 'A').current_store_stock_qty, 127);
+  assert.equal(rows.find(row => row.store_id === 'A').normal_qty, 5);
+  assert.equal(rows.find(row => row.store_id === 'A').demo_qty, 100);
+  assert.equal(rows.find(row => row.store_id === 'B').current_store_stock_qty, 5);
+  assert.equal(rows.find(row => row.store_id === 'C').current_store_stock_qty, 9);
+  for (const row of rows) {
+    assert.equal(row.total_stock_qty, 141);
+    assert.equal(row.current_store_stock_qty + row.other_store_stock_qty, row.total_stock_qty);
+  }
+});
+
+test('83VX0025CD鹏瑞利销售2台样品1台，单店筛选合计3台', () => {
+  const [row] = _test.buildStoreInventoryExportRows([{
+    manufacturer_code: '83VX0025CD', total_stock_qty: 2,
+    store_stock_info: [
+      { store_id: 'D0218262', store_name: '青羊鹏瑞利', normal_qty: 2, full_resource_qty: 2 },
+      { store_id: 'D0218262', store_name: '青羊鹏瑞利', demo_qty: 1 }
+    ]
+  }]);
+  assert.equal(row.normal_qty, 2);
+  assert.equal(row.demo_qty, 1);
+  assert.equal(row.current_store_stock_qty, 3);
+  assert.equal(row.total_stock_qty, 3);
+  assert.equal(row.other_store_stock_qty, 0);
+});
+
+test('inventory summary uses current sales-warehouse projection for SN and non-SN products', () => {
+  assert.equal(_test.getSummaryNormalQty({ need_sn: 1 }, { normal_qty: 10 }, { total: 7 }), 7);
+  // Non-SN products must also use the actual warehouse projection, not the legacy aggregate.
+  assert.equal(_test.getSummaryNormalQty({ need_sn: 0 }, { normal_qty: 10 }, { total: 7 }), 7);
+});

@@ -1,0 +1,175 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const purchaseRouter = require('../src/modules/purchase/routes');
+const purchaseController = require('../src/modules/purchase/controller');
+const models = require('../src/models');
+
+const purchaseControllerSource = fs.readFileSync(
+  path.join(__dirname, '../src/modules/purchase/controller.js'),
+  'utf8'
+);
+
+test('采购申请草稿提供保存、编辑和提交接口', () => {
+  const saveRoute = purchaseRouter.stack.find(layer => layer.path === '/request-draft' && layer.methods.includes('POST'));
+  const updateRoute = purchaseRouter.stack.find(layer => layer.path === '/request-draft/:requestId' && layer.methods.includes('PUT'));
+  const submitRoute = purchaseRouter.stack.find(layer => layer.path === '/request-draft/:requestId/submit' && layer.methods.includes('POST'));
+  const deleteRoute = purchaseRouter.stack.find(layer => layer.path === '/request-draft/:requestId' && layer.methods.includes('DELETE'));
+
+  assert.deepEqual(saveRoute.stack.map(handler => handler.name), ['saveRequestDraft']);
+  assert.deepEqual(updateRoute.stack.map(handler => handler.name), ['updateRequestDraft']);
+  assert.deepEqual(submitRoute.stack.map(handler => handler.name), ['submitRequestDraft']);
+  assert.deepEqual(deleteRoute.stack.map(handler => handler.name), ['deleteRequestDraft']);
+});
+
+test('采购审批禁止没有明细的空采购申请', () => {
+  assert.match(
+    purchaseControllerSource,
+    /status === 'approved' && \(!request\.items \|\| request\.items\.length === 0\)/
+  );
+  assert.match(purchaseControllerSource, /缺少商品明细，无法审批通过/);
+  assert.match(purchaseControllerSource, /isUsablePnCode/);
+  assert.match(purchaseControllerSource, /勾选审批完成及入库时必须填写PN码/);
+  assert.match(
+    purchaseControllerSource,
+    /const items = request\.items\.map\(item => \(\{[\s\S]*?pnCode: item\.pn_code,[\s\S]*?assertUsedProductDirectInbound\(ctx, item\)/
+  );
+  assert.match(purchaseControllerSource, /await sequelize\.transaction\(async transaction =>/);
+  assert.match(purchaseControllerSource, /PurchaseRequestItem\.create\([\s\S]*?\{ transaction \}\)/);
+});
+
+test('采购申请备注使用正确的门店权限参数并保存到原因字段', async () => {
+  const originalFindByPk = models.PurchaseRequest.findByPk;
+  const updates = {};
+  const request = {
+    request_id: 'REQUEST_REMARK_1',
+    store_id: 'STORE_1',
+    update: async values => Object.assign(updates, values)
+  };
+  models.PurchaseRequest.findByPk = async () => request;
+  const ctx = {
+    params: { requestId: request.request_id },
+    request: { body: { remark: '  补充采购备注  ' } },
+    state: { user: { accessibleStoreIds: ['STORE_1'] } },
+    throw(status, message) { throw Object.assign(new Error(message), { status }); }
+  };
+
+  try {
+    await purchaseController.updateRequestRemark(ctx);
+    assert.equal(updates.reason, '补充采购备注');
+    assert.ok(updates.update_time instanceof Date);
+    assert.equal(ctx.body.code, 0);
+    assert.equal(ctx.body.data.remark, '补充采购备注');
+  } finally {
+    models.PurchaseRequest.findByPk = originalFindByPk;
+  }
+});
+
+test('采购审批通过使用行锁和已有入库单校验防止重复生成', () => {
+  assert.match(
+    purchaseControllerSource,
+    /PurchaseRequest\.findByPk\(requestId, \{[\s\S]*?transaction,[\s\S]*?lock: transaction\.LOCK\.UPDATE[\s\S]*?\}\)/
+  );
+  assert.match(purchaseControllerSource, /lockedRequest\.status === status/);
+  assert.match(purchaseControllerSource, /lockedRequest\.status !== 'pending'/);
+  assert.match(
+    purchaseControllerSource,
+    /Inbound\.findOne\(\{[\s\S]*?purchase_request_id: requestId[\s\S]*?lock: transaction\.LOCK\.UPDATE/
+  );
+  assert.match(purchaseControllerSource, /不能重复审批/);
+});
+
+test('采购申请门店库位分配可以展开为入库明细', () => {
+  const allocations = purchaseController._test.flattenPurchaseAllocations({
+    quantity: 5,
+    storeAllocations: [
+      {
+        storeId: 'STORE_A',
+        quantity: 3,
+        locationAllocations: [
+          { locationId: 'LOC_SALES', quantity: 2 },
+          { locationId: 'LOC_DISPLAY', quantity: 1 }
+        ]
+      },
+      {
+        storeId: 'STORE_B',
+        quantity: 2,
+        locationAllocations: [{ locationId: 'LOC_SALES_B', quantity: 2 }]
+      }
+    ]
+  }, 'STORE_DEFAULT');
+
+  assert.deepEqual(allocations, [
+    { storeId: 'STORE_A', locationId: 'LOC_SALES', quantity: 2 },
+    { storeId: 'STORE_A', locationId: 'LOC_DISPLAY', quantity: 1 },
+    { storeId: 'STORE_B', locationId: 'LOC_SALES_B', quantity: 2 }
+  ]);
+});
+
+test('采购退单后采购订单展示当前有效金额但保留原始金额', () => {
+  const request = {
+    total_amount: 1000,
+    rebate_deduction: 100,
+    actual_total: 900
+  };
+  purchaseController._test.attachCurrentPurchaseAmounts(request, [{
+    total_amount_delta: -180,
+    items: [{ quantity_delta: -2, unit_price: 100, amount_delta: -180 }]
+  }]);
+
+  assert.equal(request.original_total_amount, 1000);
+  assert.equal(request.current_total_amount, 800);
+  assert.equal(request.current_rebate_deduction, 80);
+  assert.equal(request.current_actual_total, 720);
+});
+
+test('采购申请审批通过后按支付结果展示待支付或已支付', () => {
+  const pendingRequest = { request_id: 'REQ_PENDING', status: 'approved' };
+  purchaseController._test.attachPurchasePaymentStatus(pendingRequest, new Set());
+  assert.equal(pendingRequest.display_status, 'pending_payment');
+  assert.equal(pendingRequest.payment_status, 'pending_payment');
+
+  const paidRequest = { request_id: 'REQ_PAID', status: 'approved' };
+  purchaseController._test.attachPurchasePaymentStatus(paidRequest, new Set(['REQ_PAID']));
+  assert.equal(paidRequest.display_status, 'paid');
+  assert.equal(paidRequest.payment_status, 'paid');
+
+  const pendingApproval = { request_id: 'REQ_REVIEW', status: 'pending' };
+  purchaseController._test.attachPurchasePaymentStatus(pendingApproval, new Set(['REQ_REVIEW']));
+  assert.equal(pendingApproval.display_status, 'pending');
+});
+
+test('采购申请生命周期状态可区分待入库、已撤销和已退单', () => {
+  const getLifecycleStatus = purchaseController._test.getPurchaseLifecycleStatus;
+
+  assert.equal(getLifecycleStatus('approved', [{ status: 'pending' }]), 'pending_inbound');
+  assert.equal(getLifecycleStatus('revoked', []), 'revoked');
+  assert.equal(
+    getLifecycleStatus('approved', [{ status: 'returned' }, { status: 'cancelled' }]),
+    'returned'
+  );
+  assert.equal(getLifecycleStatus('approved', [{ status: 'completed' }]), 'approved');
+  assert.equal(
+    getLifecycleStatus('approved', [{ status: 'completed' }, { status: 'returned' }]),
+    'partial_return'
+  );
+});
+
+test('采购申请人员筛选兼容提交人字段和历史经手人姓名快照', () => {
+  const { Op } = require('sequelize');
+  const { buildPurchaseSubmitterCondition, buildPurchaseOperatorCondition } = purchaseController._test;
+  const submitterCondition = buildPurchaseSubmitterCondition('张三', [101]);
+  const submitterOr = submitterCondition[Op.or];
+  const submitterFields = submitterOr.flatMap(item => Object.keys(item));
+  assert.deepEqual(submitterFields, ['apply_user', 'submit_user', 'create_user', 'applicant_staff_id']);
+
+  const operatorCondition = buildPurchaseOperatorCondition('101', '张三');
+  const operatorOr = operatorCondition[Op.or];
+  assert.deepEqual(operatorOr, [
+    { operator_staff_id: '101' },
+    { operator_name: '张三' },
+    { applicant_staff_id: '101' },
+    { create_staff_id: '101' }
+  ]);
+});

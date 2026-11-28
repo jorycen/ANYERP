@@ -1,0 +1,2907 @@
+/**
+ * 应付管理控制器
+ */
+const {
+  Payable,
+  Settlement,
+  SettlementItem,
+  SettlementPaymentBatch,
+  SettlementPaymentRecord,
+  ApprovalFlowDefinition,
+  ApprovalFlowInstance,
+  ApprovalTask,
+  ApprovalActionLog,
+  Staff,
+  Expense,
+  Supplier,
+  SupplierPaymentAccount,
+  SettlementAccount,
+  SettlementAccountTransaction,
+  Distributor,
+  Store,
+  PurchaseRequest,
+  PurchaseRequestItem,
+  PurchaseAdjustment,
+  sequelize
+} = require('../../models');
+const { Op, col, where } = require('sequelize');
+const { generateUUID, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
+const moment = require('moment');
+const XLSX = require('xlsx');
+const {
+  actualUnitPrice,
+  getSettlementItemAvailableAmount,
+  getAllocationSummary,
+  getPayableRemaining,
+  refreshPayableState,
+  refreshExpenseState
+} = require('./settlementAllocation');
+const { recordBusinessAction } = require('../../utils/businessActionLog');
+const { sendExcel } = require('../../utils/excelExport');
+const { accessibleDistributorIds, canAccessDistributor, distributorWhere } = require('../../utils/distributorScope');
+const { getUserRoles } = require('../../middleware/permission');
+const { startInstance } = require('../approval/service');
+const { recordRebateDeduction, reverseSettlementRebateDeduction, _getRebateBalance } = require('./rebateController');
+
+const PAYABLE_SETTLEMENT_APPROVAL_FLOW_CODE = 'payable_settlement';
+const SHARED_FUND_ACCOUNT_ROLES = new Set(['admin', 'boss', 'finance']);
+
+function canAccessSharedFundAccounts(user) {
+  return getUserRoles(user).some(role => SHARED_FUND_ACCOUNT_ROLES.has(role));
+}
+
+function canAccessPaymentAccount(user, account) {
+  if (!account || String(account.account_type || '').toUpperCase() !== 'FUND') return false;
+  const distributorId = String(account.distributor_id || '').trim();
+  return distributorId
+    ? canAccessDistributor(user, distributorId)
+    : canAccessSharedFundAccounts(user);
+}
+
+function canUsePaymentAccountForSettlement(user, account, settlement) {
+  if (!account || !settlement || String(account.account_type || '').toUpperCase() !== 'FUND') return false;
+  if (!canAccessDistributor(user, settlement.distributor_id)) return false;
+
+  const accountDistributorId = String(account.distributor_id || '').trim();
+  if (!accountDistributorId) return canAccessSharedFundAccounts(user);
+
+  return accountDistributorId === String(settlement.distributor_id || '').trim()
+    && canAccessDistributor(user, accountDistributorId);
+}
+
+const PAYABLE_SETTLEMENT_APPROVER_PHONES = [
+  '15308182113',
+  '18980060806'
+];
+
+function assertDistributorOperation(ctx, distributorId, message = '无权操作该经销商数据') {
+  if (!canAccessDistributor(ctx.state.user, distributorId)) ctx.throw(403, message);
+}
+
+function normalizeSettlementRemark(value) {
+  return String(value || '').trim().slice(0, 512) || null;
+}
+
+function buildPayableSettlementResidual(payable, allocatedAmount, remaining, productName = '整单剩余金额') {
+  return {
+    payable_id: payable.payable_id,
+    request_id: payable.request_id,
+    request_no: payable.request_no,
+    supplier_id: payable.supplier_id,
+    supplier_name: payable.supplier_name,
+    distributor_id: payable.distributor_id,
+    distributor_name: payable.distributor_name,
+    source_type: payable.source_type,
+    total_amount: payable.total_amount,
+    settled_amount: allocatedAmount,
+    remaining_amount: remaining,
+    product_name: productName,
+    available_quantity: null,
+    available_amount: remaining,
+    unit_price: null,
+    create_time: payable.create_time
+  };
+}
+
+function parseSettlementRebateAllocation(value) {
+  if (!value) return [];
+  try {
+    const parsed = typeof value === 'string' ? JSON.parse(value) : value;
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+async function reverseSettlementRebate(settlement, user, transaction) {
+  const amount = roundAmount(settlement.rebate_deduction || 0);
+  if (amount <= 0) return;
+  await reverseSettlementRebateDeduction(
+    settlement.supplier_id,
+    settlement.supplier_name,
+    amount,
+    settlement.settlement_id,
+    `结算单 ${settlement.settlement_no} 作废，退回返利抵扣`,
+    user?.name || user?.phone || '',
+    transaction
+  );
+  for (const allocation of parseSettlementRebateAllocation(settlement.rebate_allocation_json)) {
+    const payable = await Payable.findByPk(allocation.payableId, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!payable) continue;
+    await payable.update({
+      offset_amount: Math.max(0, roundAmount(Number(payable.offset_amount || 0) - Number(allocation.amount || 0)))
+    }, { transaction });
+    await refreshPayableState(payable.payable_id, transaction);
+  }
+}
+
+async function resolvePayableSettlementFixedApprovers(transaction) {
+  const approvers = [];
+  for (const phone of PAYABLE_SETTLEMENT_APPROVER_PHONES) {
+    const staff = await Staff.findOne({
+      where: { phone, status: 1, is_deleted: 0 },
+      transaction
+    });
+    if (!staff) {
+      const error = new Error(`应付结算审批账号未找到或已停用：${phone}`);
+      error.status = 400;
+      throw error;
+    }
+    approvers.push(staff);
+  }
+  return approvers;
+}
+
+async function ensurePayableSettlementApprovalFlow(transaction) {
+  const existing = await ApprovalFlowDefinition.findOne({
+    where: { flow_code: PAYABLE_SETTLEMENT_APPROVAL_FLOW_CODE, status: 'published' },
+    order: [['version', 'DESC']], transaction
+  });
+  if (!existing) throw new Error('应付结算审批流程未发布或已停用，请在审批中心配置并发布');
+  return existing;
+}
+
+function applyDistributorFilter(whereObject, user) {
+  const ids = accessibleDistributorIds(user);
+  if (!ids.includes('*')) {
+    const existing = whereObject[Op.and];
+    whereObject[Op.and] = [
+      ...(Array.isArray(existing) ? existing : (existing ? [existing] : [])),
+      distributorWhere(user)
+    ];
+  }
+  return whereObject;
+}
+
+function parsePayableInvoice(invoiceType) {
+  const raw = String(invoiceType || '').trim();
+  const value = raw.toLowerCase();
+  const rateMatch = raw.match(/(\d+(?:\.\d+)?)\s*%/);
+  const taxRate = rateMatch ? Number(rateMatch[1]) : null;
+  if (!value || value === 'none') return { raw, documentType: '待补充', taxStatus: 'UNKNOWN', taxRate: null };
+  if (value.includes('未税') || value.includes('untaxed') || value === '收据' || value.includes('普票')) {
+    return {
+      raw,
+      documentType: value.includes('收据') && value.includes('普票') ? '收据或普通发票' : value.includes('收据') ? '收据' : '普通发票',
+      taxStatus: 'UNTAXED',
+      taxRate: null
+    };
+  }
+  if (value.includes('含税') || value.includes('增专票') || value.includes('专票') || value === 'special' || value.includes('tax_included')) {
+    return { raw, documentType: '增值税专用发票', taxStatus: 'TAX_INCLUDED', taxRate };
+  }
+  return { raw, documentType: raw, taxStatus: 'UNKNOWN', taxRate: null };
+}
+
+const PAYABLE_SOURCE_TYPE_LABELS = {
+  purchase: '采购',
+  purchase_adjustment: '采购调整',
+  purchase_return: '采购退库',
+  expense: '费用',
+  reimbursement: '报销'
+};
+
+const PAYABLE_STATUS_LABELS = {
+  unpaid: '待付款',
+  partial_settled: '部分结算',
+  settling: '结算中',
+  credit: '供应商待抵扣',
+  offset: '已抵扣',
+  paid: '已付款',
+  cancelled: '已取消'
+};
+
+function getPayableSourceTypeLabel(sourceType) {
+  return PAYABLE_SOURCE_TYPE_LABELS[String(sourceType || '').trim()] || '其他';
+}
+
+function getPayableStatusLabel(status) {
+  return PAYABLE_STATUS_LABELS[String(status || '').trim()] || '未知状态';
+}
+
+function getPayableTaxStatus(invoiceType) {
+  return parsePayableInvoice(invoiceType).taxStatus;
+}
+
+function combineTaxStatuses(statuses) {
+  const values = [...new Set((statuses || []).map(value => String(value || '').toUpperCase()).filter(value => ['TAX_INCLUDED', 'UNTAXED'].includes(value)))];
+  if (values.includes('TAX_INCLUDED') && values.includes('UNTAXED')) return 'MIXED';
+  return values[0] || 'UNKNOWN';
+}
+
+function setDataValue(row, key, value) {
+  if (row?.setDataValue) row.setDataValue(key, value);
+  else if (row) row[key] = value;
+}
+
+async function enrichPayableDistributorNames(rows) {
+  const list = (rows || []).filter(Boolean);
+  const distributorIds = [...new Set(list.map(row => row.distributor_id).filter(Boolean).map(String))];
+  if (!distributorIds.length) return;
+  const distributors = await Distributor.findAll({
+    where: { distributor_id: { [Op.in]: distributorIds } },
+    attributes: ['distributor_id', 'name']
+  });
+  const distributorMap = new Map(distributors.map(row => [String(row.distributor_id), row.name || row.distributor_id]));
+  list.forEach(row => {
+    setDataValue(row, 'distributor_name', distributorMap.get(String(row.distributor_id)) || row.distributor_id || '未知经销商');
+  });
+}
+
+async function enrichSettlementMetadata(rows, transaction = null) {
+  const list = (rows || []).filter(Boolean);
+  if (!list.length) return;
+
+  const payableIds = [...new Set(list.flatMap(row => (row.items || []).map(item => item.payable_id).filter(Boolean).map(String)))];
+  const payables = payableIds.length
+    ? await Payable.findAll({
+      where: { payable_id: { [Op.in]: payableIds } },
+        attributes: ['payable_id', 'request_id', 'request_no', 'source_type', 'source_id', 'source_no'],
+        transaction
+      })
+    : [];
+  const requestIds = [...new Set(payables.map(row => row.request_id).filter(Boolean).map(String))];
+  const expenseIds = [...new Set(payables.filter(row => ['expense', 'reimbursement'].includes(row.source_type) && row.source_id).map(row => String(row.source_id)))];
+  const [requests, expenses] = await Promise.all([
+    requestIds.length
+      ? PurchaseRequest.findAll({
+          where: { request_id: { [Op.in]: requestIds } },
+          attributes: ['request_id', 'request_no', 'status', 'total_amount', 'actual_total', 'reason', 'create_time', 'store_id', 'supplier_id', 'invoice_type'],
+          include: [
+            { model: PurchaseRequestItem, as: 'items' },
+            { model: Supplier, attributes: ['supplier_id', 'name'], required: false },
+            { model: Store, attributes: ['store_id', 'name'], required: false }
+          ],
+          transaction
+        })
+      : [],
+    expenseIds.length
+      ? Expense.findAll({
+          where: { expense_id: { [Op.in]: expenseIds } },
+          attributes: [
+            'expense_id', 'expense_no', 'expense_type', 'expense_party', 'amount', 'status', 'store_id',
+            'expense_date', 'payment_method', 'invoice_type', 'invoice_no', 'applicant_name',
+            'source_type', 'source_id', 'source_no', 'related_order_no', 'remark', 'create_time', 'attachment_urls'
+          ],
+          transaction
+        })
+      : []
+  ]);
+  const purchaseExpenseRequestIds = [...new Set(
+    expenses
+      .filter(row => row.source_type === 'purchase' && row.source_id)
+      .map(row => String(row.source_id))
+  )].filter(id => !requestIds.includes(id));
+  if (purchaseExpenseRequestIds.length) {
+    const linkedRequests = await PurchaseRequest.findAll({
+      where: { request_id: { [Op.in]: purchaseExpenseRequestIds } },
+      attributes: ['request_id', 'request_no', 'status', 'total_amount', 'actual_total', 'reason', 'create_time', 'store_id', 'supplier_id', 'invoice_type'],
+      include: [
+        { model: PurchaseRequestItem, as: 'items' },
+        { model: Supplier, attributes: ['supplier_id', 'name'], required: false },
+        { model: Store, attributes: ['store_id', 'name'], required: false }
+      ],
+      transaction
+    });
+    requests.push(...linkedRequests);
+  }
+  const requestMap = new Map(requests.map(row => [String(row.request_id), row]));
+  const expenseMap = new Map(expenses.map(row => [String(row.expense_id), row]));
+  const expenseStoreIds=[...new Set(expenses.map(row=>row.store_id).filter(Boolean))];
+  const expenseStores=expenseStoreIds.length?await Store.findAll({where:{store_id:{[Op.in]:expenseStoreIds}},attributes:['store_id','name'],transaction}):[];
+  const payableMap = new Map(payables.map(row => [String(row.payable_id), row]));
+  const distributorIds = [...new Set(list.map(row => row.distributor_id).filter(Boolean).map(String))];
+  const distributors = distributorIds.length
+    ? await Distributor.findAll({ where: { distributor_id: { [Op.in]: distributorIds } }, attributes: ['distributor_id', 'name'], transaction })
+    : [];
+  const distributorMap = new Map(distributors.map(row => [String(row.distributor_id), row.name || row.distributor_id]));
+
+  list.forEach(row => {
+    const rowTaxStatus = String(row.tax_status || '').toUpperCase();
+    if (!['TAX_INCLUDED', 'UNTAXED', 'MIXED'].includes(rowTaxStatus)) {
+      const taxStatuses = (row.items || []).map(item => payableMap.get(String(item.payable_id))).filter(Boolean).map(payable => {
+        if (['expense', 'reimbursement'].includes(payable.source_type)) return getPayableTaxStatus(expenseMap.get(String(payable.source_id))?.invoice_type);
+        return getPayableTaxStatus(requestMap.get(String(payable.request_id))?.invoice_type);
+      });
+      setDataValue(row, 'tax_status', combineTaxStatuses(taxStatuses));
+    }
+    setDataValue(row, 'distributor_name', distributorMap.get(String(row.distributor_id || '')) || row.distributor_id || '未知经销商');
+    const linkedExpenses=(row.items||[]).map(item=>payableMap.get(String(item.payable_id))).filter(p=>p&&['expense','reimbursement'].includes(p.source_type)).map(p=>expenseMap.get(String(p.source_id))).filter(Boolean);
+    setDataValue(row,'expense_types',[...new Set(linkedExpenses.map(e=>e.expense_type).filter(Boolean))].join('、'));
+    setDataValue(row,'store_names',[...new Set(linkedExpenses.map(e=>expenseStores.find(s=>String(s.store_id)===String(e.store_id))?.name).filter(Boolean))].join('、'));
+    setDataValue(row,'can_submit',row.status==='draft');
+    (row.items || []).forEach(item => {
+      const payable = payableMap.get(String(item.payable_id));
+      if (!payable) return;
+      setDataValue(item, 'source_type', payable.source_type || '');
+      setDataValue(item, 'source_id', payable.source_id || '');
+      setDataValue(item, 'source_no', payable.source_no || payable.request_no || '');
+      if (payable.request_id) {
+        const request = requestMap.get(String(payable.request_id));
+        setDataValue(item, 'purchase_request_id', String(payable.request_id));
+        setDataValue(item, 'purchase_request', request ? request.toJSON() : null);
+      }
+      if (['expense', 'reimbursement'].includes(payable.source_type)) {
+        const expense = expenseMap.get(String(payable.source_id));
+        setDataValue(item, 'expense_id', expense?.expense_id || payable.source_id || '');
+        setDataValue(item, 'expense', expense ? expense.toJSON() : null);
+        if (expense?.source_type === 'purchase' && expense.source_id) {
+          const request = requestMap.get(String(expense.source_id));
+          setDataValue(item, 'purchase_request_id', String(expense.source_id));
+          setDataValue(item, 'purchase_request', request ? request.toJSON() : null);
+        }
+      }
+    });
+  });
+}
+
+function getCurrentPayableTotal(payable) {
+  if (payable?.source_type !== 'purchase') return roundAmount(payable?.total_amount || 0);
+  return roundAmount(Number(payable.total_amount || 0) - Number(payable.offset_amount || 0));
+}
+
+async function getPurchaseAdjustmentQuantityDeltas(requestIds, transaction = null) {
+  const ids = [...new Set((requestIds || []).filter(Boolean).map(String))];
+  const result = new Map();
+  if (!ids.length) return result;
+  const adjustments = await PurchaseAdjustment.findAll({
+    where: { request_id: { [Op.in]: ids }, status: 'completed' },
+    attributes: ['request_id'],
+    include: [{
+      association: 'items',
+      attributes: ['request_item_id', 'quantity_delta']
+    }],
+    transaction
+  });
+  adjustments.forEach(adjustment => {
+    (adjustment.items || []).forEach(item => {
+      const key = String(item.request_item_id);
+      result.set(key, Number(result.get(key) || 0) + Number(item.quantity_delta || 0));
+    });
+  });
+  return result;
+}
+
+/**
+ * 应付款列表
+ */
+function buildPayableListWhere(query, user) {
+  const { supplierId, regionId, distributorId, sourceType, sourceNo, status, startDate, endDate } = query;
+  const where = {};
+
+  if (supplierId) where.supplier_id = supplierId;
+  if (regionId) where.region_id = regionId;
+  if (distributorId) where.distributor_id = distributorId;
+  if (sourceType) {
+    const sourceTypes = String(sourceType).split(',').map(item => item.trim()).filter(Boolean);
+    if (sourceTypes.length === 1) where.source_type = sourceTypes[0];
+    if (sourceTypes.length > 1) where.source_type = { [Op.in]: sourceTypes };
+  }
+  if (sourceNo) {
+    const keyword = String(sourceNo).trim();
+    if (keyword) {
+      where[Op.or] = [
+        { source_no: { [Op.like]: `%${keyword}%` } },
+        { request_no: { [Op.like]: `%${keyword}%` } }
+      ];
+    }
+  }
+  if (status) {
+    where.status = status === 'unpaid'
+      ? { [Op.in]: ['unpaid', 'partial_settled', 'settling', 'credit'] }
+      : status;
+  }
+  if (startDate || endDate) {
+    where.create_time = {};
+    if (startDate) where.create_time[Op.gte] = new Date(`${startDate}T00:00:00.000+08:00`);
+    if (endDate) where.create_time[Op.lte] = new Date(`${endDate}T23:59:59.999+08:00`);
+  }
+  applyDistributorFilter(where, user);
+  return where;
+}
+
+function isPayableListVisible(payable, allocationSummary) {
+  const allocated = allocationSummary.get(String(payable.payable_id))?.amount || 0;
+  const remaining = getPayableRemaining(payable.total_amount, allocated, payable.offset_amount);
+  return Math.abs(remaining) > 0.005;
+}
+
+async function getPayableList(ctx) {
+  const { page = 1, pageSize = 20 } = ctx.query;
+  if (ctx.query.distributorId) assertDistributorOperation(ctx, ctx.query.distributorId);
+  const where = buildPayableListWhere(ctx.query, ctx.state.user);
+
+  const candidateRows = await Payable.findAll({
+    where,
+    order: buildPendingFirstOrder(sequelize, {
+      statusColumn: 'Payable.status',
+      pendingStatuses: ['unpaid', 'partial_settled'],
+      dateColumns: ['Payable.create_time'],
+      idColumn: 'Payable.payable_id'
+    })
+  });
+  const allocationSummary = await getAllocationSummary(candidateRows.map(row => row.payable_id));
+  const openRows = candidateRows.filter(row => isPayableListVisible(row, allocationSummary));
+  const paging = paginate({}, { page, pageSize });
+  const rows = openRows.slice(paging.offset, paging.offset + paging.limit);
+  const count = openRows.length;
+
+  const requestIds = [...new Set(rows.map(row => row.request_id).filter(Boolean))];
+  const expenseIds = [...new Set(rows
+    .filter(row => ['expense', 'reimbursement'].includes(row.source_type) && row.source_id)
+    .map(row => row.source_id))];
+  const [requests, expenses] = await Promise.all([
+    requestIds.length
+      ? PurchaseRequest.findAll({
+        where: { request_id: { [Op.in]: requestIds } },
+        attributes: [
+          'request_id',
+          'invoice_type',
+          'total_amount',
+          'rebate_deduction',
+          'apply_user',
+          'submit_user',
+          'create_user'
+        ]
+      })
+      : [],
+    expenseIds.length
+      ? Expense.findAll({
+        where: { expense_id: { [Op.in]: expenseIds } },
+        attributes: ['expense_id', 'invoice_type']
+      })
+      : []
+  ]);
+  const requestSnapshots = new Map(requests.map(item => [String(item.request_id), item]));
+  const expenseInvoiceTypes = new Map(expenses.map(item => [String(item.expense_id), item.invoice_type]));
+  rows.forEach(row => {
+    const request = requestSnapshots.get(String(row.request_id));
+    const invoiceType = request?.invoice_type
+      || expenseInvoiceTypes.get(String(row.source_id))
+      || '';
+    const invoice = parsePayableInvoice(invoiceType);
+    row.setDataValue('invoice_type_raw', invoice.raw);
+    row.setDataValue('invoice_type', invoice.documentType);
+    row.setDataValue('invoice_tax_rate', invoice.taxRate);
+    row.setDataValue('tax_status', invoice.taxStatus);
+  });
+
+  const summary = openRows.reduce((result, row) => {
+    const allocated = allocationSummary.get(String(row.payable_id))?.amount || 0;
+    result.totalAmount += Math.max(0, getPayableRemaining(row.total_amount, allocated, row.offset_amount));
+    return result;
+  }, { totalCount: openRows.length, totalAmount: 0 });
+  rows.forEach(row => {
+    const allocated = allocationSummary.get(String(row.payable_id))?.amount || 0;
+    const request = requestSnapshots.get(String(row.request_id));
+    const isPurchaseRelated = ['purchase', 'purchase_adjustment', 'purchase_return'].includes(row.source_type);
+    row.setDataValue('settled_amount', roundAmount(allocated));
+    row.setDataValue('remaining_amount', getPayableRemaining(row.total_amount, allocated, row.offset_amount));
+    row.setDataValue('current_total_amount', getCurrentPayableTotal(row));
+    row.setDataValue('purchase_original_amount', isPurchaseRelated ? request?.total_amount ?? null : null);
+    row.setDataValue('purchase_rebate_deduction', isPurchaseRelated ? request?.rebate_deduction ?? null : null);
+    row.setDataValue(
+      'purchase_initiator',
+      isPurchaseRelated
+        ? request?.apply_user || request?.submit_user || request?.create_user || ''
+        : ''
+    );
+  });
+  await enrichPayableDistributorNames(rows);
+
+  const result = formatPaginatedResult(rows, { page, pageSize, count });
+  result.summary = {
+    totalCount: summary.totalCount,
+    totalAmount: roundAmount(summary.totalAmount)
+  };
+  ctx.body = result;
+}
+
+function buildPayableExportQuery(query = {}) {
+  return { ...query, status: query.status || 'unpaid' };
+}
+
+async function exportPayableList(ctx) {
+  if (ctx.query.distributorId) assertDistributorOperation(ctx, ctx.query.distributorId);
+  const where = buildPayableListWhere(buildPayableExportQuery(ctx.query), ctx.state.user);
+  const candidateRows = await Payable.findAll({
+    where,
+    order: buildPendingFirstOrder(sequelize, {
+      statusColumn: 'Payable.status',
+      pendingStatuses: ['unpaid', 'partial_settled', 'settling', 'credit'],
+      dateColumns: ['Payable.create_time'],
+      idColumn: 'Payable.payable_id'
+    })
+  });
+  const allocationSummary = await getAllocationSummary(candidateRows.map(row => row.payable_id));
+  const rows = candidateRows.filter(row => isPayableListVisible(row, allocationSummary));
+  await enrichPayableDistributorNames(rows);
+  const requestIds = [...new Set(rows
+    .filter(row => ['purchase', 'purchase_adjustment', 'purchase_return'].includes(row.source_type) && row.request_id)
+    .map(row => row.request_id))];
+  const requests = requestIds.length
+    ? await PurchaseRequest.findAll({
+      where: { request_id: { [Op.in]: requestIds } },
+      attributes: ['request_id', 'total_amount', 'rebate_deduction', 'apply_user', 'submit_user', 'create_user']
+    })
+    : [];
+  const requestSnapshots = new Map(requests.map(item => [String(item.request_id), item]));
+  const data = rows.map(row => {
+    const item = row.toJSON();
+    const allocated = allocationSummary.get(String(item.payable_id))?.amount || 0;
+    const request = item.source_type === 'purchase' ? requestSnapshots.get(String(item.request_id)) : null;
+    return {
+      来源单号: item.source_no || item.request_no || '',
+      来源类型: getPayableSourceTypeLabel(item.source_type),
+      收款方: item.payee_name || item.supplier_name || '',
+      经销商: item.distributor_name || item.distributor_id || '',
+      采购原价: request ? Number(request.total_amount || 0) : '',
+      返利抵扣: request ? Number(request.rebate_deduction || 0) : '',
+      应付金额: Number(item.total_amount || 0),
+      已结算金额: Number(allocated || 0),
+      剩余应付金额: getPayableRemaining(item.total_amount, allocated, item.offset_amount),
+      已付金额: Number(item.paid_amount || 0),
+      状态: getPayableStatusLabel(item.status),
+      采购发起人: ['purchase', 'purchase_adjustment', 'purchase_return'].includes(item.source_type)
+        ? request?.apply_user || request?.submit_user || request?.create_user || ''
+        : '',
+      创建时间: item.create_time || ''
+    };
+  });
+  sendExcel(ctx, data, [
+    '来源单号', '来源类型', '收款方', '经销商', '采购原价', '返利抵扣', '应付金额', '已结算金额', '剩余应付金额',
+    '已付金额', '状态', '采购发起人', '创建时间'
+  ], `应付管理_${new Date().toISOString().slice(0, 10)}.xlsx`, '应付管理');
+}
+
+/**
+ * 获取供应商未结算的应付款列表
+ */
+async function getUnpaidBySupplier(ctx) {
+  const { supplierId, distributorId } = ctx.query;
+
+  if (!supplierId) {
+    ctx.throw(400, '请选择供应商');
+  }
+
+  if (distributorId) assertDistributorOperation(ctx, distributorId);
+  const where = {
+    supplier_id: supplierId,
+    status: { [Op.in]: ['unpaid', 'partial_settled', 'settling'] }
+  };
+  if (distributorId) where.distributor_id = distributorId;
+  applyDistributorFilter(where, ctx.state.user);
+  const rows = await Payable.findAll({
+    where,
+    order: [['create_time', 'DESC']]
+  });
+
+  rows.forEach(row => row.setDataValue('current_total_amount', getCurrentPayableTotal(row)));
+
+  ctx.body = { code: 0, data: rows };
+}
+
+/**
+ * 创建结算单
+ */
+async function getPayableSettlementItems(ctx) {
+  const { supplierId, payableIds, distributorId } = ctx.query;
+  const ids = payableIds
+    ? String(payableIds).split(',').map(item => item.trim()).filter(Boolean)
+    : null;
+  const where = {
+    status: { [Op.in]: ['unpaid', 'partial_settled', 'settling'] },
+    source_type: { [Op.notIn]: ['expense', 'reimbursement'] }
+  };
+  if (supplierId) where.supplier_id = supplierId;
+  if (ids?.length) where.payable_id = { [Op.in]: ids };
+  if (distributorId) {
+    assertDistributorOperation(ctx, distributorId);
+    where.distributor_id = distributorId;
+  }
+  applyDistributorFilter(where, ctx.state.user);
+  const payables = await Payable.findAll({ where, order: [['create_time', 'DESC']] });
+  const creditWhere = {
+    status: 'credit',
+    total_amount: { [Op.lt]: 0 },
+    source_type: { [Op.in]: ['purchase_return', 'purchase_adjustment'] }
+  };
+  if (supplierId) creditWhere.supplier_id = supplierId;
+  // Keep explicit selections exact; don't add all supplier credits to the dialog.
+  if (ids?.length) creditWhere.payable_id = { [Op.in]: ids };
+  if (distributorId) creditWhere.distributor_id = distributorId;
+  if (!distributorId && ids?.length) {
+    const selectedDistributorIds = [...new Set(payables.map(row => row.distributor_id).filter(Boolean).map(String))];
+    if (selectedDistributorIds.length === 1) creditWhere.distributor_id = selectedDistributorIds[0];
+  }
+  applyDistributorFilter(creditWhere, ctx.state.user);
+  const creditRows = await Payable.findAll({ where: creditWhere, order: [['create_time', 'ASC']] });
+  const payableMap = new Map(payables.map(row => [String(row.payable_id), row]));
+  creditRows.forEach(row => payableMap.set(String(row.payable_id), row));
+  const allPayables = [...payableMap.values()];
+  await enrichPayableDistributorNames(allPayables);
+  const summary = await getAllocationSummary(allPayables.map(item => item.payable_id));
+  const requestIds = [...new Set(allPayables.map(item => item.request_id).filter(Boolean))];
+  const requestItems = requestIds.length
+    ? await PurchaseRequestItem.findAll({ where: { request_id: { [Op.in]: requestIds } } })
+    : [];
+  const adjustmentQuantityDeltas = await getPurchaseAdjustmentQuantityDeltas(requestIds);
+  const negativeSourceNos = creditRows.map(row => row.source_no).filter(Boolean);
+  const negativeAdjustments = negativeSourceNos.length
+    ? await PurchaseAdjustment.findAll({
+      where: { adjustment_no: { [Op.in]: negativeSourceNos }, status: 'completed' },
+      attributes: ['adjustment_no', 'total_quantity_delta', 'total_amount_delta']
+    })
+    : [];
+  const negativeAdjustmentMap = new Map(negativeAdjustments.map(row => [String(row.adjustment_no), row]));
+  const itemMap = new Map();
+  requestItems.forEach(item => {
+    const key = String(item.request_id);
+    if (!itemMap.has(key)) itemMap.set(key, []);
+    itemMap.get(key).push(item);
+  });
+  const rows = [];
+  allPayables.forEach(payable => {
+    const allocated = summary.get(String(payable.payable_id)) || {
+      amount: 0,
+      quantityByItem: new Map(),
+      amountByItem: new Map()
+    };
+    if (['purchase_return', 'purchase_adjustment'].includes(payable.source_type)
+      && Number(payable.total_amount || 0) < 0) {
+      const remaining = getPayableRemaining(payable.total_amount, allocated.amount, payable.offset_amount);
+      if (remaining < -0.005) {
+        const adjustment = negativeAdjustmentMap.get(String(payable.source_no || ''));
+        rows.push({
+          payable_id: payable.payable_id,
+          request_id: payable.request_id,
+          request_no: payable.request_no,
+          supplier_id: payable.supplier_id,
+          supplier_name: payable.supplier_name,
+          distributor_id: payable.distributor_id,
+          distributor_name: payable.distributor_name,
+          source_type: payable.source_type,
+          source_no: payable.source_no,
+          total_amount: payable.total_amount,
+          settled_amount: allocated.amount,
+          remaining_amount: remaining,
+          product_name: payable.source_type === 'purchase_return' ? '采购退货负订单' : '采购负向调整',
+          available_quantity: adjustment ? Number(adjustment.total_quantity_delta || 0) : null,
+          available_amount: remaining,
+          unit_price: adjustment && Number(adjustment.total_quantity_delta || 0) !== 0
+            ? Number(adjustment.total_amount_delta || 0) / Number(adjustment.total_quantity_delta || 0)
+            : null,
+          create_time: payable.create_time
+        });
+      }
+      return;
+    }
+
+    const items = payable.source_type === 'purchase' && (
+      Number(allocated.amount || 0) <= 0 ||
+      allocated.quantityByItem.size > 0 ||
+      allocated.amountByItem.size > 0
+    )
+      ? (itemMap.get(String(payable.request_id)) || [])
+      : [];
+    if (items.length) {
+      const payableRemaining = getPayableRemaining(payable.total_amount, allocated.amount, payable.offset_amount);
+      let itemRemaining = Math.max(0, payableRemaining);
+      items.forEach(item => {
+        const adjustedQuantity = Math.max(0, Number(item.quantity || 0) + Number(adjustmentQuantityDeltas.get(String(item.item_id)) || 0));
+        const unitPrice = actualUnitPrice(item);
+        const usedAmount = Number(allocated.amountByItem.get(String(item.item_id)) || 0);
+        const availableQuantity = Math.max(
+          0,
+          adjustedQuantity - Number(allocated.quantityByItem.get(String(item.item_id)) || 0)
+        );
+        const availableItemAmount = getSettlementItemAvailableAmount(
+          item,
+          usedAmount,
+          adjustmentQuantityDeltas.get(String(item.item_id))
+        );
+        if (availableItemAmount <= 0) return;
+        const availableAmount = Math.min(availableItemAmount, itemRemaining);
+        if (availableAmount <= 0) return;
+        rows.push({
+          payable_id: payable.payable_id,
+          request_id: payable.request_id,
+          request_no: payable.request_no,
+          supplier_id: payable.supplier_id,
+          supplier_name: payable.supplier_name,
+          distributor_id: payable.distributor_id,
+          distributor_name: payable.distributor_name,
+          source_type: payable.source_type,
+          total_amount: itemRemaining,
+          settled_amount: allocated.amount,
+          remaining_amount: itemRemaining,
+          request_item_id: item.item_id,
+          product_id: item.product_id,
+          product_name: item.product_name,
+          available_quantity: availableQuantity,
+          available_amount: availableAmount,
+          unit_price: unitPrice,
+          create_time: payable.create_time
+        });
+        itemRemaining = roundAmount(itemRemaining - availableAmount);
+      });
+      // Adjustments can reduce every purchase line to zero while the payable still
+      // has an accounting balance. Keep that balance available for settlement.
+      if (itemRemaining > 0.005) {
+        rows.push(buildPayableSettlementResidual(payable, allocated.amount, itemRemaining));
+      } else if (ids?.includes(String(payable.payable_id)) && Math.abs(payableRemaining) <= 0.005) {
+        rows.push(buildPayableSettlementResidual(payable, allocated.amount, 0));
+      }
+      return;
+    }
+    const remaining = getPayableRemaining(payable.total_amount, allocated.amount, payable.offset_amount);
+    if (remaining > 0) {
+      rows.push(buildPayableSettlementResidual(
+        payable,
+        allocated.amount,
+        remaining,
+        payable.source_type === 'purchase_adjustment' ? '采购调整' : '整单金额'
+      ));
+    } else if (ids?.includes(String(payable.payable_id)) && Math.abs(remaining) <= 0.005) {
+      rows.push(buildPayableSettlementResidual(payable, allocated.amount, 0));
+    }
+  });
+  ctx.body = { code: 0, data: rows };
+}
+
+async function createSettlement(ctx) {
+  const {
+    supplierId,
+    payableIds = [],
+    allocations = [],
+    supplierAccountId,
+    paymentAccountType = 'saved',
+    rebateDeduction = 0,
+    otherPaymentRemark,
+    otherPaymentImage,
+    remark,
+    distributorId
+  } = ctx.request.body;
+  const user = ctx.state.user;
+  if (!supplierId) ctx.throw(400, '请选择供应商');
+  const selectedIds = [...new Set([
+    ...payableIds,
+    ...allocations.map(item => item.payableId || item.payable_id)
+  ].filter(Boolean).map(String))];
+  if (!selectedIds.length) ctx.throw(400, '请先选择应付款项');
+  if (distributorId) assertDistributorOperation(ctx, distributorId);
+  const supplier = await Supplier.findByPk(supplierId);
+  if (!supplier) ctx.throw(404, '供应商不存在');
+
+  let supplierAccountSnapshot = null;
+  let finalSupplierAccountId = null;
+
+  let settlement;
+  await sequelize.transaction(async transaction => {
+    const payableWhere = {
+        payable_id: { [Op.in]: selectedIds },
+        supplier_id: supplierId,
+        source_type: { [Op.notIn]: ['expense', 'reimbursement'] },
+        status: { [Op.in]: ['unpaid', 'partial_settled', 'settling', 'credit'] }
+      };
+    if (distributorId) payableWhere.distributor_id = distributorId;
+    applyDistributorFilter(payableWhere, user);
+    const payables = await Payable.findAll({
+      where: payableWhere,
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (payables.length !== selectedIds.length) ctx.throw(400, '部分应付款项不可用，请刷新后重试');
+    const payableDistributorIds = [...new Set(payables.map(item => item.distributor_id).filter(Boolean).map(String))];
+    if (payableDistributorIds.length !== 1) ctx.throw(400, '结算单必须只包含一个经销商的应付款，不能合并结算');
+    if (distributorId && payableDistributorIds[0] !== String(distributorId)) ctx.throw(400, '结算经销商与应付款所属经销商不一致');
+    const payableMap = new Map(payables.map(item => [String(item.payable_id), item]));
+    const requestIdsForTax = [...new Set(payables.map(item => item.request_id).filter(Boolean).map(String))];
+    const requestsForTax = requestIdsForTax.length
+      ? await PurchaseRequest.findAll({
+          where: { request_id: { [Op.in]: requestIdsForTax } },
+          attributes: ['request_id', 'invoice_type'],
+          transaction
+        })
+      : [];
+    const requestTaxMap = new Map(requestsForTax.map(item => [String(item.request_id), getPayableTaxStatus(item.invoice_type)]));
+    const summary = await getAllocationSummary(selectedIds, transaction);
+    const requestItemIds = [...new Set(allocations.map(item => item.requestItemId || item.request_item_id).filter(Boolean).map(String))];
+    const requestItems = requestItemIds.length
+      ? await PurchaseRequestItem.findAll({ where: { item_id: { [Op.in]: requestItemIds } }, transaction, lock: transaction.LOCK.UPDATE })
+      : [];
+    const adjustmentQuantityDeltas = await getPurchaseAdjustmentQuantityDeltas(
+      payables.map(item => item.request_id),
+      transaction
+    );
+    const requestItemMap = new Map(requestItems.map(item => [String(item.item_id), item]));
+    const sourceAllocations = allocations.length ? allocations : [];
+    const rows = [];
+    if (sourceAllocations.length) {
+      for (const allocation of sourceAllocations) {
+        const payableId = String(allocation.payableId || allocation.payable_id || '');
+        const payable = payableMap.get(payableId);
+        if (!payable) ctx.throw(400, '应付款项不属于所选供应商');
+        const requestItemId = allocation.requestItemId || allocation.request_item_id;
+        const item = requestItemId ? requestItemMap.get(String(requestItemId)) : null;
+        let used = summary.get(payableId);
+        if (!used) {
+          used = { amount: 0, quantityByItem: new Map(), amountByItem: new Map() };
+          summary.set(payableId, used);
+        }
+        const isCreditPayable = Number(payable.total_amount || 0) < 0
+          && ['purchase_return', 'purchase_adjustment'].includes(payable.source_type);
+        if (isCreditPayable) {
+          if (item) ctx.throw(400, '负向采购退货只能按订单金额结算');
+          const remaining = getPayableRemaining(payable.total_amount, used.amount, payable.offset_amount);
+          const amountValue = allocation.amount ?? allocation.settleAmount ?? allocation.settle_amount;
+          const amount = amountValue === undefined || amountValue === null || amountValue === ''
+            ? remaining
+            : roundAmount(amountValue);
+          if (amount > 0 || amount < remaining - 0.005) {
+            ctx.throw(400, '负向采购退货结算金额超过可抵扣金额');
+          }
+          rows.push({ payable, requestItem: null, quantity: null, unitPrice: null, amount });
+          used.amount = Number(used.amount || 0) + amount;
+          continue;
+        }
+        if (item) {
+          if (String(item.request_id) !== String(payable.request_id)) ctx.throw(400, '采购明细不属于该应付款项');
+          const unitPrice = actualUnitPrice(item);
+          const amountValue = allocation.amount ?? allocation.settleAmount ?? allocation.settle_amount;
+          if (amountValue !== undefined && amountValue !== null && amountValue !== '') {
+            const amount = roundAmount(amountValue);
+            const usedAmount = Number(used.amountByItem.get(String(item.item_id)) || 0);
+            const itemRemaining = getSettlementItemAvailableAmount(
+              item,
+              usedAmount,
+              adjustmentQuantityDeltas.get(String(item.item_id))
+            );
+            const payableRemaining = getPayableRemaining(
+              payable.total_amount,
+              used.amount,
+              payable.offset_amount
+            );
+            if (amount < 0 || amount > itemRemaining + 0.005 || amount > payableRemaining + 0.005) {
+              ctx.throw(400, '结算金额超过剩余可结算金额');
+            }
+            rows.push({ payable, requestItem: item, quantity: null, unitPrice, amount });
+            used.amountByItem.set(String(item.item_id), usedAmount + amount);
+            used.amount = Number(used.amount || 0) + amount;
+          } else {
+            const quantity = Number(allocation.quantity || allocation.settleQuantity || allocation.settle_quantity || 0);
+            const usedQuantity = Number(used.quantityByItem.get(String(item.item_id)) || 0);
+            const adjustedQuantity = Math.max(0, Number(item.quantity || 0) + Number(adjustmentQuantityDeltas.get(String(item.item_id)) || 0));
+            const availableQuantity = adjustedQuantity - usedQuantity;
+            if (quantity <= 0 || quantity > availableQuantity + 0.00005) ctx.throw(400, '结算数量超过剩余可结算数量');
+            const amount = roundAmount(quantity * unitPrice);
+            rows.push({ payable, requestItem: item, quantity, unitPrice, amount });
+            used.quantityByItem.set(String(item.item_id), usedQuantity + quantity);
+            used.amountByItem.set(String(item.item_id), Number(used.amountByItem.get(String(item.item_id)) || 0) + amount);
+            used.amount = Number(used.amount || 0) + amount;
+          }
+        } else {
+          const remaining = getPayableRemaining(payable.total_amount, used.amount, payable.offset_amount);
+          const amountValue = allocation.amount ?? allocation.settleAmount ?? allocation.settle_amount;
+          const amount = roundAmount(amountValue);
+          if (amount < 0 || amount > remaining + 0.005) ctx.throw(400, '结算金额超过剩余可结算金额');
+          rows.push({ payable, requestItem: null, quantity: null, unitPrice: null, amount });
+          used.amount = Number(used.amount || 0) + amount;
+        }
+      }
+    } else {
+      for (const payable of payables) {
+        const used = summary.get(String(payable.payable_id)) || { amount: 0 };
+        const remaining = getPayableRemaining(payable.total_amount, used.amount, payable.offset_amount);
+        if (Math.abs(remaining) > 0.005) {
+          rows.push({ payable, requestItem: null, quantity: null, unitPrice: null, amount: remaining });
+        }
+      }
+    }
+    rows.forEach(row => { row.grossAmount = roundAmount(row.amount); });
+    const requestedRebate = paymentAccountType === 'rebate' ? roundAmount(rebateDeduction) : 0;
+    const grossTotalAmount = roundAmount(rows.reduce((sum, row) => sum + Number(row.grossAmount || 0), 0));
+    if (requestedRebate < 0 || (requestedRebate > 0 && requestedRebate > grossTotalAmount + 0.005)) {
+      ctx.throw(400, '返款金额不能超过本次结算金额');
+    }
+    if (requestedRebate > 0) {
+      const currentBalance = await _getRebateBalance(supplierId, transaction);
+      if (requestedRebate > currentBalance + 0.005) {
+        ctx.throw(400, `供应商返利余额不足，当前余额 ¥${currentBalance.toFixed(2)}`);
+      }
+    }
+    let rebateRemaining = requestedRebate;
+    const rebateAllocation = new Map();
+    rows.forEach(row => {
+      const applied = rebateRemaining > 0 && row.grossAmount > 0
+        ? roundAmount(Math.min(rebateRemaining, row.grossAmount))
+        : 0;
+      row.amount = roundAmount(row.grossAmount - applied);
+      rebateRemaining = roundAmount(rebateRemaining - applied);
+      if (applied > 0) {
+        const key = String(row.payable.payable_id);
+        rebateAllocation.set(key, roundAmount((rebateAllocation.get(key) || 0) + applied));
+      }
+    });
+    const finalRows = rows;
+    const totalAmount = roundAmount(finalRows.reduce((sum, row) => sum + row.amount, 0));
+    if (!finalRows.length) ctx.throw(400, '请选择有效的结算明细');
+    if (totalAmount !== 0) {
+      if (paymentAccountType === 'rebate') {
+        if (totalAmount < 0) ctx.throw(400, '负额结算不能使用返款抵扣，请选择收款账户');
+        if (requestedRebate <= 0) ctx.throw(400, '请输入返款金额');
+      } else if (paymentAccountType === 'other') {
+        if (!String(otherPaymentRemark || '').trim() || !otherPaymentImage) ctx.throw(400, '请填写其他付款说明并上传凭证');
+      } else {
+        if (!supplierAccountId) ctx.throw(400, '请选择供应商付款账户');
+        const supplierAccount = await SupplierPaymentAccount.findOne({
+          where: { account_id: supplierAccountId, supplier_id: supplierId, status: 1, is_deleted: 0 }, transaction
+        });
+        if (!supplierAccount) ctx.throw(404, '供应商付款账户不可用');
+        finalSupplierAccountId = supplierAccount.account_id;
+        supplierAccountSnapshot = JSON.stringify({
+          accountId: supplierAccount.account_id,
+          companyName: supplierAccount.company_name || '', taxNo: supplierAccount.tax_no || '',
+          bankName: supplierAccount.bank_name || '', accountNumber: supplierAccount.account_number || '',
+          remark: supplierAccount.remark || ''
+        });
+      }
+    }
+    const taxStatus = combineTaxStatuses(finalRows.map(row => requestTaxMap.get(String(row.payable.request_id)) || 'UNKNOWN'));
+    if (taxStatus === 'MIXED') ctx.throw(400, '含税与未税应付款不能在同一张结算单中同时发起');
+    const regionIds = [...new Set(finalRows.map(row => row.payable.region_id).filter(Boolean).map(String))];
+    settlement = await Settlement.create({
+      settlement_id: generateUUID(),
+      settlement_no: `S${moment().format('YYYYMMDDHHmmss')}${String(Math.floor(Math.random() * 1000)).padStart(3, '0')}`,
+      supplier_id: supplierId,
+      supplier_name: supplier.name,
+      supplier_account_id: finalSupplierAccountId,
+      supplier_account_snapshot: supplierAccountSnapshot,
+      other_payment_remark: totalAmount !== 0 && paymentAccountType === 'other' ? String(otherPaymentRemark).trim() : null,
+      other_payment_image: totalAmount !== 0 && paymentAccountType === 'other' ? otherPaymentImage : null,
+      rebate_deduction: requestedRebate,
+      rebate_allocation_json: requestedRebate > 0
+        ? JSON.stringify([...rebateAllocation.entries()].map(([payableId, amount]) => ({ payableId, amount })))
+        : null,
+      settlement_type: 'supplier',
+      region_id: regionIds.length === 1 ? regionIds[0] : null,
+      distributor_id: payableDistributorIds[0],
+      tax_status: taxStatus,
+      total_amount: totalAmount,
+      status: 'draft',
+      payment_status: totalAmount < 0 ? 'pending_refund' : totalAmount === 0 ? 'settled' : 'unpaid',
+      remark: normalizeSettlementRemark(remark),
+      create_user: user?.name || user?.phone || ''
+    }, { transaction });
+    for (const row of finalRows) {
+      await SettlementItem.create({
+        settlement_id: settlement.settlement_id,
+        payable_id: row.payable.payable_id,
+        request_item_id: row.requestItem?.item_id || null,
+        product_id: row.requestItem?.product_id || null,
+        product_name: row.requestItem?.product_name || null,
+        quantity: row.quantity,
+        unit_price: row.unitPrice,
+        request_no: row.payable.request_no,
+        amount: row.amount
+      }, { transaction });
+    }
+    if (requestedRebate > 0) {
+      await recordRebateDeduction(
+        supplierId,
+        supplier.name,
+        requestedRebate,
+        settlement.settlement_id,
+        `结算单 ${settlement.settlement_no} 使用返款`,
+        user?.name || user?.phone || '',
+        transaction
+      );
+      for (const [payableId, amount] of rebateAllocation.entries()) {
+        const payable = payableMap.get(String(payableId));
+        if (!payable) continue;
+        await payable.update({
+          offset_amount: roundAmount(Number(payable.offset_amount || 0) + amount),
+          offset_payable_id: null
+        }, { transaction });
+      }
+    }
+    for (const payableId of new Set(finalRows.map(row => row.payable.payable_id))) {
+      await refreshPayableState(payableId, transaction);
+    }
+  });
+  ctx.body = { code: 0, message: '结算单创建成功', data: settlement };
+}
+
+async function createSettlementLegacy(ctx) {
+  const {
+    supplierId,
+    payableIds,
+    supplierAccountId,
+    paymentAccountType = 'saved',
+    otherPaymentRemark,
+    otherPaymentImage
+  } = ctx.request.body;
+  const user = ctx.state.user;
+
+  if (!supplierId) {
+    ctx.throw(400, '请选择供应商');
+  }
+
+  if (!payableIds || payableIds.length === 0) {
+    ctx.throw(400, '请选择需要结算的应付款项');
+  }
+
+  const supplier = await Supplier.findByPk(supplierId);
+  if (!supplier) {
+    ctx.throw(404, '供应商不存在');
+  }
+
+  const payables = await Payable.findAll({
+    where: {
+      payable_id: { [Op.in]: payableIds },
+      supplier_id: supplierId,
+      status: 'unpaid'
+    }
+  });
+
+  if (payables.length === 0) {
+    ctx.throw(400, '没有可结算的应付款项');
+  }
+  const legacyDistributorIds = [...new Set(payables.map(item => item.distributor_id).filter(Boolean).map(String))];
+  if (legacyDistributorIds.length !== 1) ctx.throw(400, '结算单必须只包含一个经销商的应付款，不能合并结算');
+  assertDistributorOperation(ctx, legacyDistributorIds[0]);
+
+  const settlementTotal = roundAmount(payables.reduce((sum, payable) => sum + Number(payable.total_amount || 0), 0));
+  if (settlementTotal <= 0) {
+    ctx.throw(400, '结算总金额必须大于0；负向采购调整需与正向应付款一并抵扣');
+  }
+
+  let supplierAccountSnapshot = null;
+  let finalSupplierAccountId = null;
+  let finalOtherPaymentRemark = null;
+  let finalOtherPaymentImage = null;
+
+  if (paymentAccountType === 'other') {
+    if (!otherPaymentRemark || !String(otherPaymentRemark).trim()) {
+      ctx.throw(400, '请选择其他账户时必须填写说明');
+    }
+    if (!otherPaymentImage) {
+      ctx.throw(400, '请选择其他账户时必须上传凭证图片');
+    }
+    finalOtherPaymentRemark = String(otherPaymentRemark).trim();
+    finalOtherPaymentImage = otherPaymentImage;
+  } else {
+    if (!supplierAccountId) {
+      ctx.throw(400, '请选择供应商付款账户');
+    }
+
+    const supplierAccount = await SupplierPaymentAccount.findOne({
+      where: {
+        account_id: supplierAccountId,
+        supplier_id: supplierId,
+        status: 1,
+        is_deleted: 0
+      }
+    });
+
+    if (!supplierAccount) {
+      ctx.throw(404, '供应商付款账户不存在或已停用');
+    }
+
+    finalSupplierAccountId = supplierAccount.account_id;
+    supplierAccountSnapshot = JSON.stringify({
+      accountId: supplierAccount.account_id,
+      companyName: supplierAccount.company_name || '',
+      taxNo: supplierAccount.tax_no || '',
+      bankName: supplierAccount.bank_name || '',
+      accountNumber: supplierAccount.account_number || '',
+      remark: supplierAccount.remark || ''
+    });
+  }
+
+  const settlementId = generateUUID();
+  const dateStr = moment().format('YYYYMMDD');
+  const seq = `S${dateStr}${String(Math.floor(Math.random() * 1000)).padStart(3, '0')}`;
+  let totalAmount = 0;
+
+  const settlement = await sequelize.transaction(async (transaction) => {
+    const regionIds = [...new Set(payables.map(payable => payable.region_id).filter(Boolean).map(String))];
+    const created = await Settlement.create({
+      settlement_id: settlementId,
+      settlement_no: seq,
+      supplier_id: supplierId,
+      supplier_name: supplier.name,
+      supplier_account_id: finalSupplierAccountId,
+      supplier_account_snapshot: supplierAccountSnapshot,
+      other_payment_remark: finalOtherPaymentRemark,
+      other_payment_image: finalOtherPaymentImage,
+      region_id: regionIds.length === 1 ? regionIds[0] : null,
+      distributor_id: legacyDistributorIds[0],
+      total_amount: 0,
+      status: 'draft',
+      payment_status: 'unpaid',
+      create_user: user.name || user.phone
+    }, { transaction });
+
+    for (const payable of payables) {
+      totalAmount += parseFloat(payable.total_amount);
+
+      await SettlementItem.create({
+        settlement_id: settlementId,
+        payable_id: payable.payable_id,
+        request_no: payable.request_no,
+        amount: payable.total_amount
+      }, { transaction });
+
+      await payable.update({
+        status: 'settling',
+        paid_amount: 0
+      }, { transaction });
+    }
+
+    await created.update({ total_amount: totalAmount }, { transaction });
+    return created;
+  });
+
+  ctx.body = { code: 0, message: '结算单创建成功', data: settlement };
+}
+
+async function createExpenseSettlement(ctx) {
+  const { payableId, amount: requestedAmount, remark } = ctx.request.body;
+  const user = ctx.state.user;
+  if (!payableId) ctx.throw(400, '应付款ID不能为空');
+  let settlement;
+  await sequelize.transaction(async transaction => {
+    const payable = await Payable.findByPk(payableId, {
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!payable || !['expense', 'reimbursement'].includes(payable.source_type)) ctx.throw(404, '费用应付款不存在');
+    assertDistributorOperation(ctx, payable.distributor_id);
+    if (!['unpaid', 'partial_settled', 'settling'].includes(payable.status)) ctx.throw(400, '费用应付款当前不可结算');
+    const allocation = (await getAllocationSummary([payableId], transaction)).get(String(payableId));
+    const remaining = roundAmount(Number(payable.total_amount || 0) - Number(allocation?.amount || 0));
+    const amount = requestedAmount === undefined || requestedAmount === null || requestedAmount === ''
+      ? remaining
+      : roundAmount(requestedAmount);
+    if (amount <= 0 || amount > remaining + 0.005) ctx.throw(400, '报销金额超过剩余可结算金额');
+    const expense = payable.source_id
+      ? await Expense.findByPk(payable.source_id, { attributes: ['invoice_type','payment_method'], transaction })
+      : null;
+    if (expense?.payment_method === 'PROFIT_DEDUCTION') ctx.throw(400,'抵扣毛利费用不产生应付结算');
+    settlement = await Settlement.create({
+      settlement_id: generateUUID(),
+      settlement_no: `EXS${moment().format('YYYYMMDDHHmmss')}${String(Math.floor(Math.random() * 1000)).padStart(3, '0')}`,
+      supplier_id: null,
+      supplier_name: payable.payee_name || payable.supplier_name || '员工',
+      settlement_type: payable.source_type === 'reimbursement' ? 'reimbursement' : 'expense',
+      payee_type: payable.payee_type || 'counterparty',
+      payee_id: payable.payee_id || '',
+      payee_name: payable.payee_name || payable.supplier_name || '',
+      source_type: payable.source_type,
+      source_id: payable.source_id,
+      source_no: payable.source_no || payable.request_no,
+      region_id: payable.region_id || null,
+      distributor_id: payable.distributor_id,
+      tax_status: getPayableTaxStatus(expense?.invoice_type),
+      other_payment_remark: payable.source_type === 'reimbursement' ? '私人垫付报销' : '费用结算',
+      total_amount: amount,
+      paid_amount: 0,
+      status: 'draft',
+      payment_status: 'unpaid',
+      remark: normalizeSettlementRemark(remark),
+      create_user: user?.name || user?.phone || ''
+    }, { transaction });
+    await SettlementItem.create({
+      settlement_id: settlement.settlement_id,
+      payable_id: payable.payable_id,
+      request_no: payable.source_no || payable.request_no,
+      amount
+    }, { transaction });
+    if (payable.source_id) {
+      await Expense.update({ payable_id: payable.payable_id, settlement_id: settlement.settlement_id, update_time: new Date() }, {
+        where: { expense_id: payable.source_id },
+        transaction
+      });
+    }
+    await refreshPayableState(payableId, transaction);
+    if (payable.source_id) await refreshExpenseState(payable.source_id, transaction);
+  });
+  ctx.body = { code: 0, message: '费用结算单创建成功', data: settlement };
+}
+
+async function createExpenseSettlementLegacy(ctx) {
+  const { payableId } = ctx.request.body;
+  const user = ctx.state.user;
+  if (!payableId) ctx.throw(400, '应付款ID不能为空');
+
+  let settlement;
+  await sequelize.transaction(async transaction => {
+    const payable = await Payable.findByPk(payableId, {
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!payable || payable.source_type !== 'expense') ctx.throw(404, '费用应付款不存在');
+    if (payable.status !== 'unpaid') ctx.throw(400, '当前费用应付款已生成结算单');
+
+    settlement = await Settlement.create({
+      settlement_id: generateUUID(),
+      settlement_no: `EXS${moment().format('YYYYMMDDHHmmss')}${String(Math.floor(Math.random() * 1000)).padStart(3, '0')}`,
+      supplier_id: null,
+      supplier_name: payable.payee_name || payable.supplier_name || '费用发生方',
+      settlement_type: 'expense',
+      payee_type: payable.payee_type || 'counterparty',
+      payee_id: payable.payee_id || '',
+      payee_name: payable.payee_name || payable.supplier_name || '',
+      source_type: 'expense',
+      source_id: payable.source_id,
+      source_no: payable.source_no || payable.request_no,
+      region_id: payable.region_id || null,
+      other_payment_remark: '财务对公费用',
+      total_amount: payable.total_amount,
+      paid_amount: 0,
+      status: 'draft',
+      payment_status: 'unpaid',
+      create_user: user.name || user.phone || ''
+    }, { transaction });
+    await SettlementItem.create({
+      settlement_id: settlement.settlement_id,
+      payable_id: payable.payable_id,
+      request_no: payable.source_no || payable.request_no,
+      amount: payable.total_amount
+    }, { transaction });
+    await payable.update({ status: 'settling', paid_amount: 0 }, { transaction });
+    if (payable.source_id) {
+      await Expense.update({
+        settlement_id: settlement.settlement_id,
+        update_time: new Date()
+      }, {
+        where: { expense_id: payable.source_id },
+        transaction
+      });
+    }
+  });
+  ctx.body = { code: 0, message: '费用结算单已生成', data: settlement };
+}
+
+function parseJsonText(value, fallback = null) {
+  if (!value) return fallback;
+  try {
+    return JSON.parse(value);
+  } catch (err) {
+    return fallback;
+  }
+}
+
+function buildCounterpartyPaymentInfo(row) {
+  const data = row?.toJSON ? row.toJSON() : (row || {});
+  const snapshot = parseJsonText(data.supplier_account_snapshot, {}) || {};
+  const payeeName = data.payee_name || data.supplier_name || '';
+  const info = {
+    payeeName,
+    companyName: snapshot.companyName || '',
+    taxNo: snapshot.taxNo || '',
+    bankName: snapshot.bankName || '',
+    accountNumber: snapshot.accountNumber || '',
+    remark: snapshot.remark || data.other_payment_remark || '',
+    image: data.other_payment_image || ''
+  };
+  info.available = Boolean(
+    info.companyName || info.taxNo || info.bankName || info.accountNumber || info.remark || info.image
+  );
+  return info;
+}
+
+function normalizeSettlement(row) {
+  const data = row.toJSON ? row.toJSON() : row;
+  const supplierAccountSnapshot = parseJsonText(data.supplier_account_snapshot);
+  const lifecycleStatus = data.status === 'confirmed'
+    ? (data.payment_status === 'paid' ? 'paid' : data.payment_status === 'partial_paid' ? 'partial_paid'
+      : data.payment_status === 'settled' ? 'settled' : data.payment_status === 'refunded' ? 'refunded'
+        : data.payment_status === 'pending_refund' ? 'pending_refund' : 'pending_payment')
+    : data.status;
+  return {
+    ...data,
+    lifecycle_status: lifecycleStatus,
+    supplier_account_snapshot_parsed: supplierAccountSnapshot,
+    counterparty_payment_info: buildCounterpartyPaymentInfo(data),
+    application_attachments: require('./settlementAttachments').collectSettlementAttachments(data)
+  };
+}
+
+function normalizeSettlements(rows) {
+  return rows.map(normalizeSettlement);
+}
+
+async function enrichSettlementApprovalProgress(rows) {
+  const pendingRows = (rows || []).filter(row => String(row.status || row.dataValues?.status || '') === 'pending_approval');
+  const businessIds = pendingRows.map(row => String(row.settlement_id || row.dataValues?.settlement_id || '')).filter(Boolean);
+  if (!businessIds.length) return rows;
+
+  const instances = await ApprovalFlowInstance.findAll({
+    where: { business_type: 'payable_settlement', business_id: { [Op.in]: businessIds }, status: 'pending' },
+    attributes: ['instance_id', 'business_id', 'current_node_index', 'resubmit_count'],
+    order: [['create_time', 'DESC']]
+  });
+  const latestByBusinessId = new Map();
+  for (const instance of instances) {
+    const businessId = String(instance.business_id || '');
+    if (!latestByBusinessId.has(businessId)) latestByBusinessId.set(businessId, instance);
+  }
+  const activeInstances = [...latestByBusinessId.values()];
+  const instanceIds = activeInstances.map(item => item.instance_id);
+  const tasks = instanceIds.length
+    ? await ApprovalTask.findAll({
+        where: { instance_id: { [Op.in]: instanceIds }, status: 'pending' },
+        attributes: ['instance_id', 'node_index', 'node_name', 'assignee_staff_id', 'task_order'],
+        order: [['task_order', 'ASC']]
+      })
+    : [];
+  const currentTasks = tasks.filter(task => {
+    const instance = activeInstances.find(item => String(item.instance_id) === String(task.instance_id));
+    return instance && Number(task.node_index) === Number(instance.current_node_index);
+  });
+  const staffIds = [...new Set(currentTasks.map(task => Number(task.assignee_staff_id)).filter(Boolean))];
+  const staffRows = staffIds.length
+    ? await Staff.findAll({ where: { staff_id: { [Op.in]: staffIds } }, attributes: ['staff_id', 'name', 'phone'] })
+    : [];
+  const staffMap = new Map(staffRows.map(staff => [Number(staff.staff_id), staff.name || staff.phone || String(staff.staff_id)]));
+
+  for (const row of pendingRows) {
+    const target = row.dataValues || row;
+    const instance = latestByBusinessId.get(String(target.settlement_id || ''));
+    const nodeTasks = instance
+      ? currentTasks.filter(task => String(task.instance_id) === String(instance.instance_id))
+      : [];
+    const nodeName = nodeTasks[0]?.node_name || (instance ? `第${Number(instance.current_node_index || 0) + 1}环节` : '审批流程未关联');
+    const approverNames = [...new Set(nodeTasks.map(task => staffMap.get(Number(task.assignee_staff_id))).filter(Boolean))];
+    target.approval_stage_name = nodeName;
+    target.approval_approver_names = approverNames;
+    target.approval_progress_text = approverNames.length ? `${nodeName}（${approverNames.join('、')}）` : nodeName;
+  }
+  return rows;
+}
+
+function normalizePaymentBatch(row) {
+  const data = row.toJSON ? row.toJSON() : row;
+  return {
+    ...data,
+    supplier_names: [...new Set((data.records || []).map(record =>
+      (record.Settlement || record.settlement)?.supplier_name || record.supplier_name || '').filter(Boolean))].join('、'),
+    records: (data.records || []).map(record => {
+      const settlement = record.Settlement || record.settlement || null;
+      const counterpartyPaymentInfo = settlement
+        ? buildCounterpartyPaymentInfo(settlement)
+        : (record.counterparty_payment_info || null);
+      return {
+        ...record,
+        payee_name: settlement?.payee_name || record.payee_name || record.supplier_name || '',
+        supplier_name: settlement?.supplier_name || record.supplier_name || '',
+        distributor_id: settlement?.distributor_id || record.distributor_id || data.distributor_id || '',
+        distributor_name: settlement?.distributor_name || record.distributor_name || data.distributor_name || data.distributor_id || '',
+        tax_status: settlement?.tax_status || record.tax_status || 'UNKNOWN',
+        settlement_remark: settlement?.remark || '',
+        counterparty_payment_info: counterpartyPaymentInfo
+      };
+    })
+  };
+}
+
+function normalizePaymentBatches(rows) {
+  return rows.map(normalizePaymentBatch);
+}
+
+function toNumber(value) {
+  if (value === null || value === undefined || value === '') return 0;
+  const normalized = String(value).replace(/[¥,\s]/g, '');
+  const number = Number(normalized);
+  return Number.isFinite(number) ? number : NaN;
+}
+
+function roundAmount(value) {
+  return Math.round((Number(value) || 0) * 100) / 100;
+}
+
+function getRemainingAmount(settlement) {
+  return roundAmount(Number(settlement.total_amount || 0) - Number(settlement.paid_amount || 0));
+}
+
+function getPaymentStatus(totalAmount, paidAmount) {
+  const total = roundAmount(totalAmount);
+  const paid = roundAmount(paidAmount);
+  if (total < 0) return paid <= total ? 'refunded' : 'pending_refund';
+  if (paid <= 0) return 'unpaid';
+  if (paid < total) return 'partial_paid';
+  return 'paid';
+}
+
+function getImportValue(row, keys) {
+  for (const key of keys) {
+    if (row[key] !== undefined && row[key] !== null && row[key] !== '') {
+      return row[key];
+    }
+  }
+  return '';
+}
+
+function makePaymentImportKey(settlement) {
+  return `${settlement.settlement_id}:${settlement.settlement_no}:${Number(settlement.total_amount || 0)}:${Number(settlement.paid_amount || 0)}`;
+}
+
+async function getCurrentAccountBalance(accountId, transaction = null) {
+  const [incomeAmount, expenseAmount] = await Promise.all([
+    SettlementAccountTransaction.sum('amount', {
+      where: { account_id: accountId, type: 'income' },
+      transaction
+    }),
+    SettlementAccountTransaction.sum('amount', {
+      where: { account_id: accountId, type: 'expense' },
+      transaction
+    })
+  ]);
+  return roundAmount(Number(incomeAmount || 0) - Number(expenseAmount || 0));
+}
+
+async function refreshSettlementPaymentState(settlement, transaction = null) {
+  const totalPaid = await SettlementPaymentRecord.sum('amount', {
+    where: {
+      settlement_id: settlement.settlement_id,
+      status: 'active'
+    },
+    transaction
+  });
+  const paidAmount = roundAmount(totalPaid || 0);
+  const paymentStatus = getPaymentStatus(settlement.total_amount, paidAmount);
+
+  await settlement.update({
+    paid_amount: paidAmount,
+    payment_status: paymentStatus,
+    paid_time: ['paid', 'refunded'].includes(paymentStatus) ? new Date() : null
+  }, { transaction });
+
+  const items = settlement.items || await SettlementItem.findAll({
+    where: { settlement_id: settlement.settlement_id },
+    transaction
+  });
+
+  for (const payableId of new Set(items.map(item => item.payable_id).filter(Boolean))) {
+    await refreshPayableState(payableId, transaction);
+  }
+
+  if (settlement.source_id && ['expense', 'reimbursement'].includes(settlement.settlement_type)) {
+    await refreshExpenseState(settlement.source_id, transaction);
+  }
+
+  return { paidAmount, paymentStatus };
+}
+
+/**
+ * 结算单列表
+ */
+function buildSettlementListWhere(query, user) {
+  const { supplierId, regionId, distributorId, taxStatus, settlementType, status, paymentStatus, settlementNo, payeeName } = query;
+  const where = { is_deleted: 0 };
+  if(query.ids)where.settlement_id={[Op.in]:require('./batchSubmission').ids(query.ids)};
+  if(query.creator)where.create_user={[Op.like]:`%${String(query.creator).trim()}%`};
+  if(query.startDate||query.endDate){where.create_time={};if(query.startDate)where.create_time[Op.gte]=new Date(query.startDate+'T00:00:00+08:00');if(query.endDate)where.create_time[Op.lt]=new Date(new Date(query.endDate+'T00:00:00+08:00').getTime()+86400000);}
+  if(query.storeId||query.expenseType){
+    const clauses=["p.SOURCE_TYPE IN ('expense','reimbursement')"];
+    if(query.storeId)clauses.push(`e.STORE_ID=${sequelize.escape(String(query.storeId))}`);
+    if(query.expenseType)clauses.push(`e.EXPENSE_TYPE=${sequelize.escape(String(query.expenseType))}`);
+    where[Op.and]=[sequelize.literal(`EXISTS (SELECT 1 FROM T_SETTLEMENT_ITEM si JOIN T_PAYABLE p ON p.PAYABLE_ID=si.PAYABLE_ID JOIN T_EXPENSE e ON e.EXPENSE_ID=p.SOURCE_ID WHERE si.SETTLEMENT_ID=Settlement.SETTLEMENT_ID AND ${clauses.join(' AND ')})`)];
+  }
+
+  if (supplierId) where.supplier_id = supplierId;
+  if (regionId) where.region_id = regionId;
+  if (distributorId) where.distributor_id = distributorId;
+  if (taxStatus) where.tax_status = taxStatus;
+  if (settlementType) {
+    const settlementTypes = String(settlementType).split(',').map(item => item.trim()).filter(Boolean);
+    where.settlement_type = settlementTypes.length > 1 ? { [Op.in]: settlementTypes } : settlementTypes[0];
+  }
+  if (status) {
+    const lifecycleStatusFilters = {
+      pending_payment: ['confirmed', 'unpaid'],
+      partial_paid: ['confirmed', 'partial_paid'],
+      paid: ['confirmed', 'paid'],
+      settled: ['confirmed', 'settled'],
+      pending_refund: ['confirmed', 'pending_refund'],
+      refunded: ['confirmed', 'refunded']
+    };
+    if (lifecycleStatusFilters[status]) {
+      const [settlementStatus, paymentStatusValue] = lifecycleStatusFilters[status];
+      where.status = settlementStatus;
+      where.payment_status = paymentStatusValue;
+    } else {
+      where.status = status;
+    }
+  }
+  if (paymentStatus) where.payment_status = paymentStatus;
+  if (settlementNo) where.settlement_no = { [Op.like]: `%${String(settlementNo).trim()}%` };
+  if (payeeName) {
+    const keyword = `%${String(payeeName).trim()}%`;
+    where[Op.or] = [{ payee_name: { [Op.like]: keyword } }, { supplier_name: { [Op.like]: keyword } }];
+  }
+  applyDistributorFilter(where, user);
+  return where;
+}
+
+async function getSettlementList(ctx) {
+  const { page = 1, pageSize = 20 } = ctx.query;
+  const where = buildSettlementListWhere(ctx.query, ctx.state.user);
+
+  const order = [
+    [
+      sequelize.literal(
+        "CASE WHEN `Settlement`.`status` IN ('draft', 'pending_approval') OR " +
+        "(`Settlement`.`status` = 'confirmed' AND `Settlement`.`payment_status` IN ('unpaid', 'partial_paid', 'pending_refund')) " +
+        'THEN 0 ELSE 1 END'
+      ),
+      'ASC'
+    ],
+    [sequelize.literal('`Settlement`.`create_time`'), 'DESC'],
+    [sequelize.literal('`Settlement`.`settlement_id`'), 'DESC']
+  ];
+
+  const { count, rows } = await Settlement.findAndCountAll({
+    where,
+    distinct: true,
+    include: [{ model: SettlementItem, as: 'items' }],
+    order,
+    ...paginate({}, { page, pageSize })
+  });
+
+  await enrichSettlementMetadata(rows);
+  await enrichSettlementApprovalProgress(rows);
+  ctx.body = formatPaginatedResult(normalizeSettlements(rows), { page, pageSize, count });
+}
+
+async function exportSettlementList(ctx) {
+  const where = buildSettlementListWhere(ctx.query, ctx.state.user);
+  const rows = await Settlement.findAll({
+    where,
+    include: [{ model: SettlementItem, as: 'items' }],
+    order: [
+      [sequelize.literal(
+        "CASE WHEN `Settlement`.`status` IN ('draft', 'pending_approval') OR " +
+        "(`Settlement`.`status` = 'confirmed' AND `Settlement`.`payment_status` IN ('unpaid', 'partial_paid', 'pending_refund')) " +
+        'THEN 0 ELSE 1 END'
+      ), 'ASC'],
+      [sequelize.literal('`Settlement`.`create_time`'), 'DESC'],
+      [sequelize.literal('`Settlement`.`settlement_id`'), 'DESC']
+    ]
+  });
+  await enrichSettlementMetadata(rows);
+  await enrichSettlementApprovalProgress(rows);
+  const data = normalizeSettlements(rows).map(row => ({
+    结算单号: row.settlement_no || '',
+    收款方: row.payee_name || row.supplier_name || '',
+    收款单位: row.counterparty_payment_info.companyName || '',
+    收款开户行: row.counterparty_payment_info.bankName || '',
+    收款账号: row.counterparty_payment_info.accountNumber || '',
+    收款方税号: row.counterparty_payment_info.taxNo || '',
+    收款备注: row.counterparty_payment_info.remark || '',
+    来源单号: row.source_no || '',
+    结算类型: row.settlement_type || '',
+    经销商: row.distributor_name || row.distributor_id || '',
+    门店: row.store_names || '',
+    费用类别: row.expense_types || '',
+    税务属性: row.tax_status || 'UNKNOWN',
+    结算金额: Number(row.total_amount || 0),
+    已付金额: Number(row.paid_amount || 0),
+    状态: row.status || '',
+    当前审批环节: row.approval_progress_text || '',
+    付款状态: row.payment_status || '',
+    经手人: row.operator_name || '',
+    制单人: row.create_user || '',
+    备注: row.remark || '',
+    创建时间: row.create_time || '',
+    确认时间: row.confirmed_time || ''
+  }));
+  data.push({结算单号:`合计（${data.length}单）`,结算金额:require('./batchSubmission').totals(rows,'total_amount').totalAmount});
+  sendExcel(ctx, data, [
+    '结算单号', '收款方', '收款单位', '收款开户行', '收款账号', '收款方税号', '收款备注',
+    '来源单号', '结算类型', '经销商', '门店', '费用类别', '税务属性', '结算金额', '已付金额',
+    '状态', '当前审批环节', '付款状态', '经手人', '制单人', '备注', '创建时间', '确认时间'
+  ], `应付结算单_${new Date().toISOString().slice(0, 10)}.xlsx`, '应付结算单');
+}
+
+/**
+ * 结算单详情
+ */
+async function getSettlementDetail(ctx) {
+  const { id } = ctx.params;
+  const settlement = await Settlement.findByPk(id, {
+    include: [
+      { model: SettlementItem, as: 'items' },
+      { model: SettlementPaymentRecord, as: 'payments', where: { status: 'active' }, required: false }
+    ]
+  });
+
+  if (!settlement || settlement.is_deleted) {
+    ctx.throw(404, '结算单不存在');
+  }
+  assertDistributorOperation(ctx, settlement.distributor_id);
+  await enrichSettlementMetadata([settlement]);
+  await enrichSettlementApprovalProgress([settlement]);
+
+  const data = normalizeSettlement(settlement);
+  if (Number(settlement.total_amount || 0) < 0) {
+    data.refund_receipts = await SettlementAccountTransaction.findAll({
+      where: { related_ref: `SUPPLIER_REFUND:${settlement.settlement_id}`, type: 'income' }, order: [['create_time', 'DESC']]
+    });
+    data.refund_received_amount = roundAmount(data.refund_receipts.reduce((sum, receipt) => sum + Number(receipt.amount), 0));
+    data.refund_receipt = data.refund_receipts[0] || null;
+  }
+  ctx.body = { code: 0, data };
+}
+
+async function getSettlementById(settlementId, user = null) {
+  if (!settlementId) {
+    const error = new Error('结算单ID不能为空');
+    error.status = 400;
+    throw error;
+  }
+
+  const settlement = await Settlement.findByPk(settlementId, {
+    include: [{ model: SettlementItem, as: 'items' }]
+  });
+
+  if (!settlement || settlement.is_deleted) {
+    const error = new Error('结算单不存在');
+    error.status = 404;
+    throw error;
+  }
+  if (user && !canAccessDistributor(user, settlement.distributor_id)) {
+    const error = new Error('无权操作该经销商结算单');
+    error.status = 403;
+    throw error;
+  }
+
+  return settlement;
+}
+
+async function applyPayableSettlementApproval(instance, transaction, actor, action, comment = '') {
+  const settlement = await Settlement.findOne({
+    where: { settlement_id: instance.business_id, is_deleted: 0 },
+    transaction,
+    lock: transaction.LOCK.UPDATE
+  });
+  if (!settlement) {
+    const error = new Error('应付结算单不存在或已删除');
+    error.status = 404;
+    throw error;
+  }
+
+  const operator = actor?.name || actor?.phone || String(actor?.staffId || '');
+  const approvalComment = String(comment || '').trim().slice(0, 512) || null;
+  if (action === 'approved') {
+    if (settlement.status === 'confirmed') return settlement;
+    if (settlement.status !== 'pending_approval') throw new Error('当前结算单状态不可完成审批');
+    await settlement.update({
+      status: 'confirmed',
+      confirmed_time: new Date(),
+      approval_user: operator,
+      approval_time: new Date(),
+      approval_comment: approvalComment
+    }, { transaction });
+    await recordBusinessAction({
+      businessType: 'payable_settlement',
+      businessId: settlement.settlement_id,
+      businessNo: settlement.settlement_no,
+      action: 'approval_approved',
+      fromStatus: 'pending_approval',
+      toStatus: 'confirmed',
+      user: actor,
+      comment: approvalComment || '',
+      detail: { approvalInstanceId: instance.instance_id },
+      transaction
+    });
+    return settlement;
+  }
+
+  if (action === 'rejected') {
+    if (settlement.status === 'draft') return settlement;
+    if (settlement.status !== 'pending_approval') throw new Error('当前结算单状态不可拒绝');
+    await settlement.update({
+      status: 'draft',
+      approval_user: operator,
+      approval_time: new Date(),
+      approval_comment: approvalComment
+    }, { transaction });
+    await recordBusinessAction({
+      businessType: 'payable_settlement',
+      businessId: settlement.settlement_id,
+      businessNo: settlement.settlement_no,
+      action: 'approval_rejected',
+      fromStatus: 'pending_approval',
+      toStatus: 'draft',
+      user: actor,
+      comment: approvalComment || '',
+      detail: { approvalInstanceId: instance.instance_id },
+      transaction
+    });
+    return settlement;
+  }
+
+  if (action === 'resubmitted') {
+    if (settlement.status !== 'draft') throw new Error('当前结算单状态不可重新提交');
+    await settlement.update({
+      status: 'pending_approval',
+      submit_time: new Date(),
+      approval_user: null,
+      approval_time: null,
+      approval_comment: null
+    }, { transaction });
+    await recordBusinessAction({
+      businessType: 'payable_settlement',
+      businessId: settlement.settlement_id,
+      businessNo: settlement.settlement_no,
+      action: 'resubmitted',
+      fromStatus: 'draft',
+      toStatus: 'pending_approval',
+      user: actor,
+      comment: approvalComment || '',
+      detail: { approvalInstanceId: instance.instance_id },
+      transaction
+    });
+    return settlement;
+  }
+
+  throw new Error('不支持的应付结算审批动作');
+}
+
+async function findPayableSettlementApprovalInstance(settlementId) {
+  return ApprovalFlowInstance.findOne({
+    where: { business_type: 'payable_settlement', business_id: String(settlementId) },
+    order: [['create_time', 'DESC']]
+  });
+}
+
+/**
+ * 只更新结算单备注，不改变金额、状态及其他财务字段。
+ */
+async function updateSettlementRemark(ctx) {
+  const { id } = ctx.params;
+  const user = ctx.state.user;
+  const remark = normalizeSettlementRemark(ctx.request.body?.remark);
+
+  await sequelize.transaction(async transaction => {
+    const settlement = await Settlement.findOne({
+      where: { settlement_id: id, is_deleted: 0 },
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!settlement) ctx.throw(404, '结算单不存在');
+    assertDistributorOperation(ctx, settlement.distributor_id);
+
+    const previousRemark = settlement.remark || null;
+    await settlement.update({ remark }, { transaction });
+    await recordBusinessAction({
+      businessType: 'payable_settlement',
+      businessId: settlement.settlement_id,
+      businessNo: settlement.settlement_no,
+      action: 'remark_updated',
+      user,
+      detail: { before: { remark: previousRemark }, after: { remark } },
+      transaction
+    });
+  });
+
+  ctx.body = {
+    code: 0,
+    message: '结算单备注已更新',
+    data: { settlement_id: id, remark }
+  };
+}
+
+/**
+ * 删除从未提交过的结算单草稿，保留单据和明细用于审计。
+ */
+async function deleteSettlementDraft(ctx) {
+  const { id } = ctx.params;
+  const user = ctx.state.user;
+
+  await sequelize.transaction(async transaction => {
+    const settlement = await Settlement.findOne({
+      where: { settlement_id: id, is_deleted: 0 },
+      include: [{ model: SettlementItem, as: 'items' }],
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!settlement) ctx.throw(404, '结算单不存在');
+    if (settlement.status !== 'draft' || settlement.submit_time) {
+      ctx.throw(400, '只有从未提交过的结算单草稿可以删除');
+    }
+    if (!['unpaid', 'settled', 'pending_refund'].includes(settlement.payment_status) || Number(settlement.paid_amount || 0) !== 0) {
+      ctx.throw(400, '已有付款记录的结算单不能删除');
+    }
+
+    const payableIds = new Set((settlement.items || []).map(item => item.payable_id).filter(Boolean));
+    await reverseSettlementRebate(settlement, user, transaction);
+    await settlement.update({ is_deleted: 1 }, { transaction });
+
+    for (const payableId of payableIds) {
+      await refreshPayableState(payableId, transaction);
+    }
+    if (settlement.source_id && ['expense', 'reimbursement'].includes(settlement.settlement_type)) {
+      await Expense.update({ settlement_id: null, update_time: new Date() }, {
+        where: { expense_id: settlement.source_id, settlement_id: settlement.settlement_id },
+        transaction
+      });
+      await refreshExpenseState(settlement.source_id, transaction);
+    }
+
+    await recordBusinessAction({
+      businessType: 'payable_settlement',
+      businessId: settlement.settlement_id,
+      businessNo: settlement.settlement_no,
+      action: 'deleted',
+      fromStatus: 'draft',
+      toStatus: 'deleted',
+      user,
+      transaction
+    });
+  });
+
+  ctx.body = { code: 0, message: '结算单草稿已删除', settlementId: id };
+}
+
+function throwStatusError(ctx, error) {
+  ctx.throw(error.status || 500, error.message || '操作失败');
+}
+
+/**
+ * 草稿提交后进入审批，审批通过后进入付款管理待处理。
+ */
+async function previewSettlementSelection(ctx){
+ const selected=require('./batchSubmission').ids(ctx.request.body.ids);
+ const rows=await Settlement.findAll({where:buildSettlementListWhere({ids:selected.join(',')},ctx.state.user)});
+ if(rows.length!==selected.length)ctx.throw(400,'勾选单据已变化或无权限，请刷新后重新勾选');
+ ctx.body={code:0,data:require('./batchSubmission').totals(rows,'total_amount')};
+}
+async function batchSubmitSettlements(ctx){return require('./batchSubmission').submit(ctx,submitSettlement);}
+async function submitSettlement(ctx) {
+  try {
+    const { settlementId } = ctx.request.body;
+    const user = ctx.state.user;
+    if (!settlementId) ctx.throw(400, '结算单ID不能为空');
+    let approvalInstance;
+    await sequelize.transaction(async transaction => {
+      const settlement = await Settlement.findOne({
+        where: { settlement_id: settlementId, is_deleted: 0 },
+        transaction,
+        lock: transaction.LOCK.UPDATE
+      });
+      if (!settlement) ctx.throw(404, '结算单不存在');
+      assertDistributorOperation(ctx, settlement.distributor_id);
+      if (settlement.status !== 'draft') ctx.throw(400, '只有草稿状态的结算单可以提交');
+      await require('./settlementDraft').validateForSubmit(ctx, settlement, transaction);
+
+      await ensurePayableSettlementApprovalFlow(transaction);
+      approvalInstance = await startInstance({
+        flowCode: PAYABLE_SETTLEMENT_APPROVAL_FLOW_CODE,
+        businessType: 'payable_settlement',
+        businessId: settlement.settlement_id,
+        subjectStaffId: user.staffId,
+        title: `应付结算单 ${settlement.settlement_no}`,
+        summary: `供应商：${settlement.supplier_name || '-'}，结算金额：¥${settlement.total_amount || 0}`,
+        payload: {
+          settlement_id: settlement.settlement_id,
+          settlement_no: settlement.settlement_no,
+          supplier_name: settlement.supplier_name || '',
+          distributor_id: settlement.distributor_id || '',
+          total_amount: settlement.total_amount,
+          remark: settlement.remark || ''
+        }
+      }, user, transaction);
+
+      await settlement.update({
+        status: 'pending_approval',
+        submit_time: new Date(),
+        approval_user: null,
+        approval_time: null,
+        approval_comment: null
+      }, { transaction });
+      await recordBusinessAction({
+        businessType: 'payable_settlement',
+        businessId: settlement.settlement_id,
+        businessNo: settlement.settlement_no,
+        action: 'submitted',
+        fromStatus: 'draft',
+        toStatus: 'pending_approval',
+        user,
+        detail: { approvalInstanceId: approvalInstance.instance_id },
+        transaction
+      });
+    });
+    ctx.body = {
+      code: 0,
+      message: '结算单已提交，等待提交人直属上级审批',
+      data: { approvalInstanceId: approvalInstance.instance_id }
+    };
+  } catch (error) {
+    throwStatusError(ctx, error);
+  }
+}
+
+/**
+ * 审批通过结算单，进入付款管理待处理。
+ */
+async function confirmSettlement(ctx) {
+  try {
+    const { settlementId, comment = '' } = ctx.request.body;
+    const user = ctx.state.user;
+    if (await findPayableSettlementApprovalInstance(settlementId)) {
+      ctx.throw(400, '应付结算单请在审批中心按流程审批');
+    }
+    const settlement = await getSettlementById(settlementId, ctx.state.user);
+
+    if (settlement.status === 'pending_approval') {
+      const operator = user?.name || user?.phone || '';
+      await settlement.update({
+        status: 'confirmed',
+        confirmed_time: new Date(),
+        approval_user: operator,
+        approval_time: new Date(),
+        approval_comment: String(comment || '').trim().slice(0, 512) || null
+      });
+      ctx.body = { code: 0, message: '结算单审批通过，已进入待付款' };
+      return;
+    }
+
+    if (settlement.status === 'confirmed') {
+      ctx.body = { code: 0, message: '结算单已审批通过' };
+      return;
+    }
+
+    if (settlement.status !== 'pending_approval') {
+      ctx.throw(400, '当前结算单状态不可确认');
+    }
+  } catch (error) {
+    throwStatusError(ctx, error);
+  }
+}
+
+/**
+ * 审批拒绝后退回草稿，保留审批意见，允许重新提交。
+ */
+async function rejectSettlement(ctx) {
+  try {
+    const { settlementId, comment = '' } = ctx.request.body;
+    const user = ctx.state.user;
+    if (await findPayableSettlementApprovalInstance(settlementId)) {
+      ctx.throw(400, '应付结算单请在审批中心按流程审批');
+    }
+    const settlement = await getSettlementById(settlementId, ctx.state.user);
+    if (settlement.status !== 'pending_approval') {
+      ctx.throw(400, '只有待审批结算单可以拒绝');
+    }
+    const operator = user?.name || user?.phone || '';
+
+    await settlement.update({
+      status: 'draft',
+      approval_user: operator,
+      approval_time: new Date(),
+      approval_comment: String(comment || '').trim().slice(0, 512) || null
+    });
+    ctx.body = { code: 0, message: '结算单已退回草稿' };
+  } catch (error) {
+    throwStatusError(ctx, error);
+  }
+}
+
+/**
+ * 作废结算单。作废后不退回待付款清单。
+ */
+async function voidSettlement(ctx) {
+  try {
+    const { settlementId } = ctx.request.body;
+    await sequelize.transaction(async transaction => {
+      const settlement = await Settlement.findByPk(settlementId, {
+        include: [{ model: SettlementItem, as: 'items' }],
+        transaction,
+        lock: transaction.LOCK.UPDATE
+      });
+      if (!settlement || settlement.is_deleted) ctx.throw(404, '结算单不存在');
+      if (settlement.status === 'voided') ctx.throw(400, '结算单已经作废');
+      if (settlement.status === 'settled' || settlement.payment_status === 'settled') ctx.throw(400, '已冲平的结算单不能作废');
+      if (!['unpaid', 'pending_refund'].includes(settlement.payment_status) || Number(settlement.paid_amount || 0) !== 0) ctx.throw(400, '已发生收付款的结算单不能作废');
+      await reverseSettlementRebate(settlement, ctx.state.user, transaction);
+      await settlement.update({ status: 'voided', voided_time: new Date() }, { transaction });
+      const approvalInstances = await ApprovalFlowInstance.findAll({
+        where: {
+          business_type: 'payable_settlement',
+          business_id: String(settlement.settlement_id),
+          status: 'pending'
+        },
+        transaction,
+        lock: transaction.LOCK.UPDATE
+      });
+      const now = new Date();
+      for (const instance of approvalInstances) {
+        await ApprovalTask.update(
+          { status: 'cancelled', acted_time: now },
+          {
+            where: { instance_id: instance.instance_id, status: { [Op.in]: ['pending', 'waiting'] } },
+            transaction
+          }
+        );
+        await instance.update({ status: 'cancelled', completed_time: now, update_time: now }, { transaction });
+        await ApprovalActionLog.create({
+          log_id: generateUUID(),
+          instance_id: instance.instance_id,
+          task_id: null,
+          action: 'cancelled',
+          actor_staff_id: ctx.state.user.staffId,
+          actor_name: ctx.state.user.name || ctx.state.user.phone || String(ctx.state.user.staffId),
+          comment: '关联应付结算单已作废，审批自动终止',
+          detail_json: JSON.stringify({ settlementId: settlement.settlement_id, reason: 'settlement_voided' })
+        }, { transaction });
+      }
+      for (const payableId of new Set((settlement.items || []).map(item => item.payable_id).filter(Boolean))) {
+        await refreshPayableState(payableId, transaction);
+      }
+      if (settlement.source_id && ['expense', 'reimbursement'].includes(settlement.settlement_type)) {
+        await refreshExpenseState(settlement.source_id, transaction);
+      }
+    });
+    ctx.body = { code: 0, message: '结算单已作废' };
+  } catch (error) {
+    throwStatusError(ctx, error);
+  }
+}
+
+async function voidSettlementLegacy(ctx) {
+  try {
+    const { settlementId } = ctx.request.body;
+    const settlement = await getSettlementById(settlementId, ctx.state.user);
+
+    if (settlement.status === 'voided') {
+      ctx.throw(400, '结算单已作废');
+    }
+
+    await settlement.update({
+      status: 'voided',
+      voided_time: new Date()
+    });
+    ctx.body = { code: 0, message: '结算单已作废' };
+  } catch (error) {
+    throwStatusError(ctx, error);
+  }
+}
+
+/**
+ * 确认付款
+ */
+async function confirmPayment(ctx) {
+  ctx.throw(400, '应付结算暂不支持付款功能');
+}
+
+/** Register the supplier's incoming refund against an approved negative settlement. */
+async function registerSupplierRefund(ctx) {
+  ctx.throw(410, '请到付款管理待付款清单确认供应商退款到账');
+}
+
+async function confirmSupplierRefund(ctx) {
+  const { settlementId, accountId, amount: inputAmount, evidence = '', requestId, remark = '' } = ctx.request.body || {};
+  if (!settlementId || !accountId) ctx.throw(400, '请选择结算单和到账账户');
+  const amount = Number(inputAmount);
+  if (typeof inputAmount === 'boolean' || !Number.isFinite(amount) || amount <= 0 || Math.abs(amount * 100 - Math.round(amount * 100)) > 0.000001) ctx.throw(400, '到账金额须为大于0且最多两位小数的金额');
+  if (typeof evidence !== 'string' || !evidence.trim() || evidence.length > 200) ctx.throw(400, '请填写到账凭证或银行流水号，最多200字');
+  if (!/^[a-zA-Z0-9_-]{16,48}$/.test(String(requestId || ''))) ctx.throw(400, '请刷新后重新提交退款到账确认');
+  if (String(remark).length > 150) ctx.throw(400, '备注最多150字');
+  const user = ctx.state.user;
+  let result;
+  await sequelize.transaction(async transaction => {
+    // Same account-before-settlement lock order as ordinary payments.
+    const account = await SettlementAccount.findOne({
+      where: { account_id: accountId, account_type: 'FUND', status: 1 }, transaction, lock: transaction.LOCK.UPDATE
+    });
+    const settlement = await Settlement.findByPk(settlementId, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!settlement || settlement.is_deleted) ctx.throw(404, '结算单不存在');
+    if (!canAccessDistributor(user, settlement.distributor_id)) ctx.throw(403, '无权登记该经销商退款');
+    if (!canUsePaymentAccountForSettlement(user, account, settlement)) ctx.throw(400, '到账账户与结算单所属经销商不一致');
+    const importKey = `REFUND:${settlementId}:${requestId}`;
+    const prior = await SettlementPaymentRecord.findOne({ where: { import_key: importKey }, transaction });
+    if (prior) {
+      if (prior.account_id !== accountId || Number(prior.amount) !== -amount || prior.remark !== `${String(evidence).trim()}；${String(remark).trim()}`) ctx.throw(409, '同一请求编号的退款内容已变化，请重新打开确认');
+      result = { settlementId, transactionId: prior.transaction_id, amount, repeated: true };
+      return;
+    }
+    if (settlement.status !== 'confirmed' || Number(settlement.total_amount || 0) >= 0
+      || settlement.payment_status !== 'pending_refund') ctx.throw(400, '当前结算单不在待供应商退款状态');
+    const remaining = -getRemainingAmount(settlement);
+    if (amount > remaining) ctx.throw(400, '本次到账金额超过剩余应收退款');
+    const balanceAfter = roundAmount(await getCurrentAccountBalance(accountId, transaction) + amount);
+    const receipt = await SettlementAccountTransaction.create({
+      transaction_id: generateUUID(), account_id: accountId, type: 'income', amount,
+      balance_after: balanceAfter,
+      description: `供应商退款：${settlement.settlement_no} ${settlement.supplier_name || ''} ${String(remark).trim()}`.slice(0, 512),
+      related_ref: `SUPPLIER_REFUND:${settlement.settlement_id}`,
+      create_user: user?.name || user?.phone || '', create_time: new Date()
+    }, { transaction });
+    const batchId = generateUUID();
+    const paymentRemark = `${String(evidence).trim()}；${String(remark).trim()}`;
+    await SettlementPaymentBatch.create({ batch_id: batchId, batch_no: `RF${moment().format('YYYYMMDDHHmmss')}${batchId.slice(0, 8)}`,
+      account_id: accountId, account_name: account.account_name, distributor_id: settlement.distributor_id,
+      total_amount: -amount, total_count: 1, status: 'active', remark: paymentRemark, create_user: user.name || '', create_time: new Date() }, { transaction });
+    await SettlementPaymentRecord.create({ payment_id: generateUUID(), batch_id: batchId, settlement_id: settlementId,
+      settlement_no: settlement.settlement_no, distributor_id: settlement.distributor_id, supplier_name: settlement.supplier_name,
+      account_id: accountId, amount: -amount, payment_time: new Date(), remark: paymentRemark, import_key: importKey,
+      transaction_id: receipt.transaction_id, status: 'active', create_user: user.name || '', create_time: new Date() }, { transaction });
+    const paidAmount = roundAmount(Number(settlement.paid_amount || 0) - amount);
+    const nextStatus = paidAmount <= Number(settlement.total_amount) ? 'refunded' : 'pending_refund';
+    await settlement.update({ paid_amount: paidAmount, payment_status: nextStatus, paid_time: new Date() }, { transaction });
+    await recordBusinessAction({
+      businessType: 'payable_settlement', businessId: settlement.settlement_id,
+      businessNo: settlement.settlement_no, action: 'supplier_refund_received',
+      fromStatus: 'pending_refund', toStatus: nextStatus, user,
+      detail: { accountId, amount, evidence: String(evidence).trim(), requestId, transactionId: receipt.transaction_id }, transaction
+    });
+    result = { settlementId, transactionId: receipt.transaction_id, amount };
+  });
+  ctx.body = { code: 0, message: '供应商退款到账已登记', data: result };
+}
+
+/**
+ * 取消付款，结算单内的应付款退回待付款清单
+ */
+async function cancelPayment(ctx) {
+  await voidSettlement(ctx);
+}
+
+function buildPaymentCandidateWhere(query = {}, user = null) {
+  const candidateWhere = {
+    status: 'confirmed',
+    is_deleted: 0,
+    [Op.or]: [
+      { payment_status: { [Op.in]: ['unpaid', 'partial_paid'] }, [Op.and]: where(col('total_amount'), Op.gt, col('paid_amount')) },
+      { payment_status: 'pending_refund', total_amount: { [Op.lt]: 0 }, [Op.and]: where(col('total_amount'), Op.lt, col('paid_amount')) }
+    ]
+  };
+  if (query.supplierId) candidateWhere.supplier_id = query.supplierId;
+  if (query.distributorId) candidateWhere.distributor_id = query.distributorId;
+  if (query.taxStatus) candidateWhere.tax_status = query.taxStatus;
+  if (query.settlementType) candidateWhere.settlement_type = String(query.settlementType).trim();
+  if (query.paymentStatus) candidateWhere.payment_status = query.paymentStatus;
+  if (query.settlementNo && String(query.settlementNo).trim()) {
+    candidateWhere.settlement_no = { [Op.like]: `%${String(query.settlementNo).trim()}%` };
+  }
+  if (query.startDate || query.endDate) {
+    candidateWhere.create_time = {};
+    if (query.startDate) candidateWhere.create_time[Op.gte] = new Date(`${query.startDate}T00:00:00.000+08:00`);
+    if (query.endDate) candidateWhere.create_time[Op.lte] = new Date(`${query.endDate}T23:59:59.999+08:00`);
+  }
+  if (user) applyDistributorFilter(candidateWhere, user);
+  return candidateWhere;
+}
+
+async function getPaymentCandidates(ctx) {
+  const { page = 1, pageSize = 20 } = ctx.query;
+  const where = buildPaymentCandidateWhere(ctx.query, ctx.state.user);
+  const { count, rows } = await Settlement.findAndCountAll({
+    where,
+    include: [{ model: SettlementItem, as: 'items' }],
+    distinct: true,
+    order: [['confirmed_time', 'DESC'], ['create_time', 'DESC'], ['settlement_id', 'DESC']],
+    ...paginate({}, { page, pageSize })
+  });
+
+  await enrichSettlementMetadata(rows);
+  const list = normalizeSettlements(rows).map(row => ({
+    ...row,
+    remaining_amount: getRemainingAmount(row),
+    fund_direction: Number(row.total_amount) < 0 ? 'refund' : 'payment',
+    fund_direction_label: Number(row.total_amount) < 0 ? '供应商退款' : '付款',
+    refund_remaining_amount: Number(row.total_amount) < 0 ? -getRemainingAmount(row) : null,
+    import_key: makePaymentImportKey(row)
+  }));
+
+  ctx.body = formatPaginatedResult(list, { page, pageSize, count });
+}
+
+async function exportPaymentCandidates(ctx) {
+  const where = buildPaymentCandidateWhere(ctx.query, ctx.state.user);
+  const rows = await Settlement.findAll({
+    where,
+    include: [{ model: SettlementItem, as: 'items' }],
+    order: [['confirmed_time', 'DESC'], ['create_time', 'DESC']]
+  });
+  await enrichSettlementMetadata(rows);
+
+  const normalized = normalizeSettlements(rows);
+  const data = normalized.filter(row => Number(row.total_amount) >= 0).map(row => ({
+    付款对象类型: row.settlement_type === 'reimbursement' ? '个人报销' : row.settlement_type === 'expense' ? '费用' : '采购结算',
+    对方公司: row.supplier_account_snapshot_parsed?.companyName || '',
+    对方开户行: row.supplier_account_snapshot_parsed?.bankName || '',
+    对方账号: row.supplier_account_snapshot_parsed?.accountNumber || '',
+    对方税号: row.supplier_account_snapshot_parsed?.taxNo || '',
+    对方账户备注: row.supplier_account_snapshot_parsed?.remark || row.other_payment_remark || '',
+    结算单号: row.settlement_no,
+    付款对象: row.payee_name || row.supplier_name || '',
+    经销商: row.distributor_name || row.distributor_id || '',
+    税务属性: row.tax_status || 'UNKNOWN',
+    结算金额: Number(row.total_amount || 0),
+    已付金额: Number(row.paid_amount || 0),
+    剩余应付金额: getRemainingAmount(row),
+    本次付款金额: getRemainingAmount(row),
+    付款时间: moment().format('YYYY-MM-DD'),
+    备注: '',
+    导入标识: makePaymentImportKey(row)
+  }));
+
+  const workbook = XLSX.utils.book_new();
+  const paymentHeaders = [
+    '对方公司', '对方开户行', '对方账号', '对方税号', '对方账户备注',
+    '付款对象类型', '结算单号', '付款对象', '经销商', '税务属性', '结算金额', '已付金额', '剩余应付金额', '本次付款金额', '付款时间', '备注', '导入标识'
+  ];
+  const worksheet = XLSX.utils.json_to_sheet(data, { header: paymentHeaders });
+  worksheet['!cols'] = paymentHeaders.map((header, index) => index === paymentHeaders.length - 1 ? { hidden: true } : {});
+  XLSX.utils.book_append_sheet(workbook, worksheet, '实际付款');
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(normalized.filter(row => Number(row.total_amount) < 0).map(row => ({
+    业务类型: '供应商退款', 结算单号: row.settlement_no, 供应商: row.supplier_name,
+    结算金额: Number(row.total_amount), 已到账金额: -Number(row.paid_amount || 0),
+    剩余退款负金额: getRemainingAmount(row), 操作说明: '请在付款管理确认退款到账，不通过付款导入扣款'
+  })), { header: ['业务类型','结算单号','供应商','结算金额','已到账金额','剩余退款负金额','操作说明'] }), '供应商退款待到账');
+  const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+  const fileName = encodeURIComponent(`应付实际付款_${moment().format('YYYYMMDD_HHmmss')}.xlsx`);
+
+  ctx.set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  ctx.set('Content-Disposition', `attachment; filename*=UTF-8''${fileName}`);
+  ctx.body = buffer;
+}
+
+async function validatePaymentImportRows(rows, accountId, user = null) {
+  const errors = [];
+  const validRows = [];
+  const seenSettlementNos = new Set();
+  const seenImportKeys = new Set();
+
+  if (!accountId) {
+    errors.push({ row: 0, message: '请选择付款账户' });
+  } else {
+    const account = await SettlementAccount.findOne({ where: { account_id: accountId, status: 1 } });
+    if (!account) errors.push({ row: 0, message: '付款账户不存在或已停用' });
+  }
+
+  if (!Array.isArray(rows) || rows.length === 0) {
+    errors.push({ row: 0, message: '导入文件没有可处理的数据' });
+    return { errors, validRows, totalAmount: 0 };
+  }
+
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index] || {};
+    const rowNo = index + 2;
+    const settlementNo = String(getImportValue(row, ['结算单号', 'settlement_no', 'settlementNo'])).trim();
+    const amount = toNumber(getImportValue(row, ['本次付款金额', 'amount', 'paymentAmount']));
+    const paymentTimeText = String(getImportValue(row, ['付款时间', 'payment_time', 'paymentTime'])).trim();
+    const paymentTime = paymentTimeText ? new Date(paymentTimeText) : new Date();
+    const remark = String(getImportValue(row, ['备注', 'remark'])).trim();
+    const importKey = String(getImportValue(row, ['导入标识', 'import_key', 'importKey'])).trim();
+
+    if (!settlementNo) {
+      errors.push({ row: rowNo, message: '结算单号不能为空' });
+      continue;
+    }
+    if (seenSettlementNos.has(settlementNo)) {
+      errors.push({ row: rowNo, settlementNo, message: '同一文件中结算单重复' });
+      continue;
+    }
+    seenSettlementNos.add(settlementNo);
+
+    if (!Number.isFinite(amount) || amount <= 0) {
+      errors.push({ row: rowNo, settlementNo, message: '本次付款金额必须大于0' });
+      continue;
+    }
+    if (Number.isNaN(paymentTime.getTime())) {
+      errors.push({ row: rowNo, settlementNo, message: '付款时间格式错误' });
+      continue;
+    }
+
+    if (!importKey) {
+      errors.push({ row: rowNo, settlementNo, message: '导入标识缺失，请使用系统导出的模板' });
+      continue;
+    }
+    if (seenImportKeys.has(importKey)) {
+      errors.push({ row: rowNo, settlementNo, message: '同一文件中导入标识重复' });
+      continue;
+    }
+    seenImportKeys.add(importKey);
+
+    const existedPayment = await SettlementPaymentRecord.findOne({
+      where: { import_key: importKey, status: 'active' }
+    });
+    if (existedPayment) {
+      errors.push({ row: rowNo, settlementNo, message: '该行已导入过，禁止重复扣款' });
+      continue;
+    }
+
+    const settlement = await Settlement.findOne({
+      where: { settlement_no: settlementNo, is_deleted: 0 },
+      include: [{ model: SettlementItem, as: 'items' }]
+    });
+    if (!settlement) {
+      errors.push({ row: rowNo, settlementNo, message: '结算单不存在' });
+      continue;
+    }
+    await enrichSettlementMetadata([settlement]);
+    if (user && !canAccessDistributor(user, settlement.distributor_id)) {
+      errors.push({ row: rowNo, settlementNo, message: '无权付款该经销商结算单' });
+      continue;
+    }
+    const account = accountId
+      ? await SettlementAccount.findOne({ where: { account_id: accountId, status: 1 } })
+      : null;
+    if (!canUsePaymentAccountForSettlement(user, account, settlement)) {
+      errors.push({ row: rowNo, settlementNo, message: '付款账户与结算单所属经销商不一致' });
+      continue;
+    }
+    if (settlement.status !== 'confirmed') {
+      errors.push({ row: rowNo, settlementNo, message: '结算单未提交为待付款或已作废' });
+      continue;
+    }
+    if (settlement.payment_status === 'paid') {
+      errors.push({ row: rowNo, settlementNo, message: '结算单已付清' });
+      continue;
+    }
+
+    const remainingAmount = getRemainingAmount(settlement);
+    if (roundAmount(amount) > remainingAmount) {
+      errors.push({ row: rowNo, settlementNo, message: `本次付款金额超过剩余未付款金额 ${remainingAmount}` });
+      continue;
+    }
+
+    validRows.push({
+      row: rowNo,
+      settlementId: settlement.settlement_id,
+      settlementNo,
+      distributorId: settlement.distributor_id,
+      distributorName: settlement.distributor_name || settlement.distributor_id || '',
+      taxStatus: settlement.tax_status || 'UNKNOWN',
+      supplierName: settlement.supplier_name || '',
+      supplierAccountId: settlement.supplier_account_id || '',
+      supplierAccount: parseJsonText(settlement.supplier_account_snapshot),
+      counterpartyPaymentInfo: buildCounterpartyPaymentInfo(settlement),
+      totalAmount: Number(settlement.total_amount || 0),
+      paidAmount: Number(settlement.paid_amount || 0),
+      remainingAmount,
+      amount: roundAmount(amount),
+      paymentTime,
+      remark,
+      importKey
+    });
+  }
+
+  const distributorIds = [...new Set(validRows.map(row => String(row.distributorId || '')).filter(Boolean))];
+  if (distributorIds.length > 1) {
+    errors.push({ row: 0, message: '艾诺云与艾诺志兴不能在同一付款申请中同时发起' });
+  }
+  const taxStatus = combineTaxStatuses(validRows.map(row => row.taxStatus));
+  if (taxStatus === 'MIXED') {
+    errors.push({ row: 0, message: '含税与未税不能在同一付款申请中同时发起' });
+  }
+
+  return {
+    errors,
+    validRows,
+    totalAmount: roundAmount(validRows.reduce((sum, row) => sum + row.amount, 0))
+  };
+}
+
+async function validatePaymentImport(ctx) {
+  const { accountId, rows } = ctx.request.body;
+  const account = accountId ? await SettlementAccount.findByPk(accountId) : null;
+  if (account) {
+    const distributor = await Distributor.findByPk(account.distributor_id, { attributes: ['distributor_id', 'name'] });
+    if (distributor) account.setDataValue('distributor_name', distributor.name || distributor.distributor_id);
+  }
+  const result = await validatePaymentImportRows(rows, accountId, ctx.state.user);
+  ctx.body = {
+    code: result.errors.length > 0 ? 400 : 0,
+    message: result.errors.length > 0 ? '导入校验失败，整批未处理' : '导入校验通过',
+    data: {
+      account,
+      errors: result.errors,
+      list: result.validRows,
+      totalAmount: result.totalAmount,
+      totalCount: result.validRows.length
+    }
+  };
+}
+
+async function commitPaymentImport(ctx) {
+  const { accountId, rows, remark } = ctx.request.body;
+  const user = ctx.state.user;
+  const account = await SettlementAccount.findOne({ where: { account_id: accountId, status: 1 } });
+  if (!account) ctx.throw(400, '付款账户不存在或已停用');
+  if (!canAccessPaymentAccount(ctx.state.user, account)) ctx.throw(403, '无权使用该付款账户');
+
+  const result = await validatePaymentImportRows(rows, accountId, user);
+  if (result.errors.length > 0) {
+    ctx.body = {
+      code: 400,
+      message: '导入校验失败，整批未处理',
+      data: { errors: result.errors }
+    };
+    return;
+  }
+
+  const batchId = generateUUID();
+  const batchNo = `PB${moment().format('YYYYMMDDHHmmss')}${String(Math.floor(Math.random() * 1000)).padStart(3, '0')}`;
+
+  await sequelize.transaction(async (transaction) => {
+    const lockedAccount = await SettlementAccount.findOne({
+      where: { account_id: accountId, status: 1 },
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!lockedAccount) ctx.throw(400, '付款账户不存在或已停用');
+    let balance = await getCurrentAccountBalance(accountId, transaction);
+
+    await SettlementPaymentBatch.create({
+      batch_id: batchId,
+      batch_no: batchNo,
+      account_id: accountId,
+      distributor_id: account.distributor_id,
+      account_name: account.account_name,
+      total_amount: result.totalAmount,
+      total_count: result.validRows.length,
+      status: 'active',
+      remark: remark || '',
+      create_user: user.name || user.staffId
+    }, { transaction });
+
+    for (const row of result.validRows) {
+      const settlement = await Settlement.findByPk(row.settlementId, {
+        transaction,
+        lock: transaction.LOCK.UPDATE
+      });
+      if (!settlement || settlement.is_deleted || settlement.status !== 'confirmed' || settlement.payment_status === 'paid') {
+        ctx.throw(400, `结算单 ${row.settlementNo} 当前状态不可付款`);
+      }
+
+      const activePaidAmount = await SettlementPaymentRecord.sum('amount', {
+        where: { settlement_id: row.settlementId, status: 'active' },
+        transaction
+      });
+      const remainingAmount = roundAmount(Number(settlement.total_amount || 0) - Number(activePaidAmount || 0));
+      if (row.amount > remainingAmount) {
+        ctx.throw(400, `结算单 ${row.settlementNo} 本次付款金额超过剩余未付款金额 ${remainingAmount}`);
+      }
+
+      const transactionId = generateUUID();
+      balance = roundAmount(balance - row.amount);
+
+      await SettlementAccountTransaction.create({
+        transaction_id: transactionId,
+        account_id: accountId,
+        type: 'expense',
+        amount: row.amount,
+        balance_after: balance,
+        description: `应付付款：${row.settlementNo} 供应商：${row.supplierName}`,
+        related_ref: batchNo,
+        create_user: user.name || user.staffId
+      }, { transaction });
+
+      await SettlementPaymentRecord.create({
+        payment_id: generateUUID(),
+        batch_id: batchId,
+        settlement_id: row.settlementId,
+        settlement_no: row.settlementNo,
+        distributor_id: row.distributorId,
+        supplier_name: row.supplierName,
+        account_id: accountId,
+        amount: row.amount,
+        payment_time: row.paymentTime,
+        remark: row.remark,
+        import_key: row.importKey,
+        transaction_id: transactionId,
+        status: 'active',
+        create_user: user.name || user.staffId
+      }, { transaction });
+
+      await refreshSettlementPaymentState(settlement, transaction);
+    }
+  });
+
+  ctx.body = {
+    code: 0,
+    message: '付款导入成功',
+    data: { batchId, batchNo, totalAmount: result.totalAmount, totalCount: result.validRows.length }
+  };
+}
+
+/**
+ * 发起人或经销商账号可在审批完成前撤回结算单，撤回后恢复为可编辑草稿。
+ */
+async function revokeSettlement(ctx) {
+  try {
+    const { settlementId, comment = '' } = ctx.request.body || {};
+    const user = ctx.state.user;
+    if (!settlementId) ctx.throw(400, '结算单ID不能为空');
+    await sequelize.transaction(async transaction => {
+      const settlement = await Settlement.findOne({
+        where: { settlement_id: settlementId, is_deleted: 0 },
+        include: [{ model: SettlementItem, as: 'items' }],
+        transaction,
+        lock: transaction.LOCK.UPDATE
+      });
+      if (!settlement) ctx.throw(404, '结算单不存在');
+      const operator = user?.name || user?.phone || String(user?.staffId || user?.id || '');
+      const isInitiator = [user?.name, user?.phone, user?.staffId, user?.id]
+        .filter(value => value !== undefined && value !== null && String(value).trim() !== '')
+        .some(value => String(value) === String(settlement.create_user));
+      if (!isInitiator && !canAccessDistributor(user, settlement.distributor_id)) {
+        ctx.throw(403, '只有结算单发起人或经销商账号可以撤回');
+      }
+      if (settlement.status !== 'pending_approval') ctx.throw(400, '仅审批未完成的结算单可以撤回');
+      if (!['unpaid', 'settled', 'pending_refund'].includes(settlement.payment_status) || Number(settlement.paid_amount || 0) !== 0) {
+        ctx.throw(400, '已付款结算单不能撤回');
+      }
+
+      const now = new Date();
+      const approvalInstances = await ApprovalFlowInstance.findAll({
+        where: { business_type: 'payable_settlement', business_id: String(settlement.settlement_id), status: 'pending' },
+        transaction,
+        lock: transaction.LOCK.UPDATE
+      });
+      for (const instance of approvalInstances) {
+        await ApprovalTask.update(
+          { status: 'cancelled', acted_time: now },
+          { where: { instance_id: instance.instance_id, status: { [Op.in]: ['pending', 'waiting'] } }, transaction }
+        );
+        await instance.update({ status: 'cancelled', completed_time: now, update_time: now }, { transaction });
+        await ApprovalActionLog.create({
+          log_id: generateUUID(),
+          instance_id: instance.instance_id,
+          task_id: null,
+          action: 'cancelled',
+          actor_staff_id: user?.staffId || user?.id || null,
+          actor_name: operator,
+          comment: String(comment || '').trim() || '结算单已撤回',
+          detail_json: JSON.stringify({ settlementId: settlement.settlement_id, reason: 'settlement_revoked_to_draft' })
+        }, { transaction });
+      }
+
+      await settlement.update({
+        status: 'draft',
+        submit_time: null,
+        approval_user: operator || null,
+        approval_time: now,
+        approval_comment: String(comment || '').trim().slice(0, 512) || null,
+        update_time: now
+      }, { transaction });
+      for (const payableId of new Set((settlement.items || []).map(item => item.payable_id).filter(Boolean))) {
+        await refreshPayableState(payableId, transaction);
+      }
+      await recordBusinessAction({
+        businessType: 'payable_settlement',
+        businessId: settlement.settlement_id,
+        businessNo: settlement.settlement_no,
+        action: 'revoked_to_draft',
+        fromStatus: 'pending_approval',
+        toStatus: 'draft',
+        user,
+        comment,
+        transaction
+      });
+    });
+    ctx.body = { code: 0, message: '结算单已撤回并退回草稿' };
+  } catch (error) {
+    throwStatusError(ctx, error);
+  }
+}
+
+async function createBatchPayment(ctx) {
+  const { accountId, items, remark } = ctx.request.body || {};
+  if (!Array.isArray(items) || items.length === 0) ctx.throw(400, '请至少勾选一张待付款结算单');
+  const batchToken = generateUUID();
+  ctx.request.body = {
+    accountId,
+    remark: String(remark || '').trim() || '勾选批量付款',
+    rows: items.map((item, index) => ({
+      settlementNo: item.settlementNo || item.settlement_no,
+      amount: item.amount,
+      paymentTime: new Date().toISOString(),
+      remark: String(item.remark || remark || '').trim() || '勾选批量付款',
+      importKey: `MANUAL_BATCH:${batchToken}:${index + 1}`
+    }))
+  };
+  await commitPaymentImport(ctx);
+  if (ctx.body?.code === 0) ctx.body.message = '批量付款成功';
+}
+
+async function createDirectPayment(ctx) {
+  const { settlementId, accountId, amount } = ctx.request.body;
+  const user = ctx.state.user;
+  const paymentAmount = roundAmount(amount);
+
+  if (!settlementId) ctx.throw(400, '结算单ID不能为空');
+  if (!accountId) ctx.throw(400, '请选择付款账户');
+  if (!Number.isFinite(Number(amount)) || paymentAmount <= 0) {
+    ctx.throw(400, '本次付款金额必须大于0');
+  }
+
+  const batchId = generateUUID();
+  const paymentId = generateUUID();
+  const batchNo = `PB${moment().format('YYYYMMDDHHmmss')}${String(Math.floor(Math.random() * 1000)).padStart(3, '0')}`;
+  let result = null;
+
+  await sequelize.transaction(async (transaction) => {
+    const account = await SettlementAccount.findOne({
+      where: { account_id: accountId, status: 1 },
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!account) ctx.throw(400, '付款账户不存在或已停用');
+
+    const settlement = await Settlement.findByPk(settlementId, {
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!settlement) ctx.throw(404, '结算单不存在');
+    if (!canAccessDistributor(user, settlement.distributor_id)) ctx.throw(403, '无权付款该经销商结算单');
+    if (!canUsePaymentAccountForSettlement(user, account, settlement)) {
+      ctx.throw(400, '付款账户与结算单所属经销商不一致');
+    }
+    if (settlement.is_deleted || settlement.status !== 'confirmed' || settlement.payment_status === 'paid') {
+      ctx.throw(400, '当前结算单不可付款');
+    }
+
+    const activePaidAmount = await SettlementPaymentRecord.sum('amount', {
+      where: { settlement_id: settlementId, status: 'active' },
+      transaction
+    });
+    const remainingAmount = roundAmount(Number(settlement.total_amount || 0) - Number(activePaidAmount || 0));
+    if (paymentAmount > remainingAmount) {
+      ctx.throw(400, `本次付款金额超过剩余未付款金额 ${remainingAmount}`);
+    }
+
+    const balanceBefore = roundAmount(await getCurrentAccountBalance(accountId, transaction));
+    const balanceAfter = roundAmount(balanceBefore - paymentAmount);
+    const transactionId = generateUUID();
+    const operator = user.name || user.staffId;
+
+    await SettlementPaymentBatch.create({
+      batch_id: batchId,
+      batch_no: batchNo,
+      account_id: accountId,
+      distributor_id: settlement.distributor_id,
+      account_name: account.account_name,
+      total_amount: paymentAmount,
+      total_count: 1,
+      status: 'active',
+      remark: '单笔立即付款',
+      create_user: operator
+    }, { transaction });
+
+    await SettlementAccountTransaction.create({
+      transaction_id: transactionId,
+      account_id: accountId,
+      type: 'expense',
+      amount: paymentAmount,
+      balance_after: balanceAfter,
+      description: `应付付款：${settlement.settlement_no} 供应商：${settlement.supplier_name || ''}`,
+      related_ref: batchNo,
+      create_user: operator
+    }, { transaction });
+
+    await SettlementPaymentRecord.create({
+      payment_id: paymentId,
+      batch_id: batchId,
+      settlement_id: settlementId,
+      settlement_no: settlement.settlement_no,
+      distributor_id: settlement.distributor_id,
+      supplier_name: settlement.supplier_name || '',
+      account_id: accountId,
+      amount: paymentAmount,
+      payment_time: new Date(),
+      remark: '单笔立即付款',
+      import_key: `DIRECT:${paymentId}`,
+      transaction_id: transactionId,
+      status: 'active',
+      create_user: operator
+    }, { transaction });
+
+    const paymentState = await refreshSettlementPaymentState(settlement, transaction);
+    result = {
+      batchId,
+      batchNo,
+      paymentId,
+      amount: paymentAmount,
+      balanceBefore,
+      balanceAfter,
+      paymentStatus: paymentState.paymentStatus
+    };
+  });
+
+  ctx.body = {
+    code: 0,
+    message: result.balanceAfter < 0 ? '付款登记成功，账户余额已为负数' : '付款登记成功',
+    data: result
+  };
+}
+
+async function getPaymentBatches(ctx, exportMode = false) {
+  exportMode = exportMode === true;
+  const { page = 1, pageSize = 20, status } = ctx.query;
+  const where = {};
+  if (status) where.status = status;
+  if (String(ctx.query.batchNo || '').trim()) where.batch_no = { [Op.like]: `%${String(ctx.query.batchNo).trim()}%` };
+  if (ctx.query.distributorId) where.distributor_id = ctx.query.distributorId;
+  if (ctx.query.startDate || ctx.query.endDate) {
+    where.create_time = {};
+    if (ctx.query.startDate) where.create_time[Op.gte] = new Date(`${ctx.query.startDate}T00:00:00.000+08:00`);
+    if (ctx.query.endDate) where.create_time[Op.lte] = new Date(`${ctx.query.endDate}T23:59:59.999+08:00`);
+  }
+  if (String(ctx.query.supplierName || '').trim()) {
+    where[Op.and] = [sequelize.literal(`EXISTS (SELECT 1 FROM T_SETTLEMENT_PAYMENT_RECORD filter_payment
+      JOIN T_SETTLEMENT filter_settlement ON filter_settlement.SETTLEMENT_ID = filter_payment.SETTLEMENT_ID
+      WHERE filter_payment.BATCH_ID = SettlementPaymentBatch.BATCH_ID
+        AND filter_settlement.SUPPLIER_NAME LIKE ${sequelize.escape(`%${String(ctx.query.supplierName).trim()}%`)})`)];
+  }
+  applyDistributorFilter(where, ctx.state.user);
+
+  const options = {
+    where,
+    include: [{
+      model: SettlementPaymentRecord,
+      as: 'records',
+      required: false,
+      include: [{
+        model: Settlement,
+        attributes: [
+          'settlement_id', 'settlement_no', 'supplier_name', 'payee_name', 'distributor_id', 'tax_status', 'remark',
+          'supplier_account_snapshot', 'other_payment_remark', 'other_payment_image'
+        ],
+        include: [{ model: SettlementItem, as: 'items' }],
+        required: false
+      }]
+    }],
+    distinct: true,
+    order: [['create_time', 'DESC'], ['batch_id', 'DESC']],
+    ...(exportMode ? {} : paginate({}, { page, pageSize }))
+  };
+  const { count, rows } = exportMode
+    ? { rows: await SettlementPaymentBatch.findAll(options), count: 0 }
+    : await SettlementPaymentBatch.findAndCountAll(options);
+
+  const batchSettlementRows = rows.flatMap(row => (row.records || []).map(record => record.Settlement || record.settlement).filter(Boolean));
+  await enrichSettlementMetadata(batchSettlementRows);
+  const batchDistributorIds = [...new Set(rows.map(row => row.distributor_id).filter(Boolean).map(String))];
+  const batchDistributors = batchDistributorIds.length
+    ? await Distributor.findAll({ where: { distributor_id: { [Op.in]: batchDistributorIds } }, attributes: ['distributor_id', 'name'] })
+    : [];
+  const batchDistributorMap = new Map(batchDistributors.map(row => [String(row.distributor_id), row.name || row.distributor_id]));
+  rows.forEach(row => {
+    setDataValue(row, 'fund_direction_label', Number(row.total_amount) < 0 ? '供应商退款到账' : '付款');
+    setDataValue(row, 'distributor_name', batchDistributorMap.get(String(row.distributor_id || '')) || row.distributor_id || '未知经销商');
+    setDataValue(row, 'tax_status', combineTaxStatuses((row.records || []).map(record => (record.Settlement || record.settlement)?.tax_status)));
+  });
+  const list = normalizePaymentBatches(rows);
+  if (exportMode) {
+    const data = list.map(row => ({
+      付款批次号: row.batch_no, 资金方向: row.fund_direction_label, 供应商: row.supplier_names, 经销商: row.distributor_name,
+      付款账户: row.account_name, 付款总额: Number(row.total_amount || 0), 笔数: Number(row.total_count || 0),
+      状态: row.status === 'active' ? '正常' : '已撤销', 操作人: row.create_user,
+      操作时间: row.create_time ? moment(row.create_time).utcOffset(480).format('YYYY-MM-DD HH:mm:ss') : '', 备注: row.remark || ''
+    }));
+    sendExcel(ctx, data, ['付款批次号', '资金方向', '供应商', '经销商', '付款账户', '付款总额', '笔数', '状态', '操作人', '操作时间', '备注'],
+      '付款批次.xlsx', '付款批次', { textHeaders: ['付款批次号'] });
+    return;
+  }
+  ctx.body = formatPaginatedResult(list, { page, pageSize, count });
+}
+
+async function exportPaymentBatches(ctx) { return getPaymentBatches(ctx, true); }
+
+async function getPaymentBatchDetail(ctx) {
+  const { id } = ctx.params;
+  const batch = await SettlementPaymentBatch.findByPk(id, {
+    include: [{
+      model: SettlementPaymentRecord,
+      as: 'records',
+      include: [{
+        model: Settlement,
+        attributes: [
+          'settlement_id', 'settlement_no', 'supplier_name', 'payee_name', 'distributor_id', 'tax_status', 'remark',
+          'supplier_account_snapshot', 'other_payment_remark', 'other_payment_image'
+        ],
+        include: [{ model: SettlementItem, as: 'items' }],
+        required: false
+      }]
+    }]
+  });
+  if (!batch) ctx.throw(404, '付款批次不存在');
+  assertDistributorOperation(ctx, batch.distributor_id);
+  const batchSettlementRows = (batch.records || []).map(record => record.Settlement || record.settlement).filter(Boolean);
+  await enrichSettlementMetadata(batchSettlementRows);
+  const distributor = batch.distributor_id
+    ? await Distributor.findByPk(batch.distributor_id, { attributes: ['distributor_id', 'name'] })
+    : null;
+  setDataValue(batch, 'distributor_name', distributor?.name || batch.distributor_id || '未知经销商');
+  setDataValue(batch, 'tax_status', combineTaxStatuses(batchSettlementRows.map(row => row.tax_status)));
+  ctx.body = { code: 0, data: normalizePaymentBatch(batch) };
+}
+
+async function voidPaymentBatch(ctx) {
+  const { batchId } = ctx.request.body;
+  if (!batchId) ctx.throw(400, '付款批次ID不能为空');
+
+  const batch = await SettlementPaymentBatch.findByPk(batchId, {
+    include: [{ model: SettlementPaymentRecord, as: 'records', where: { status: 'active' }, required: false }]
+  });
+  if (!batch) ctx.throw(404, '付款批次不存在');
+  assertDistributorOperation(ctx, batch.distributor_id);
+  if (batch.status === 'voided') ctx.throw(400, '付款批次已撤销');
+  ctx.throw(400, '已支付的金额不能撤销');
+}
+
+module.exports = {
+  previewSettlementSelection,batchSubmitSettlements,
+  getPurchaseAdjustmentQuantityDeltasForDraft: getPurchaseAdjustmentQuantityDeltas,
+  normalizeSettlementRemark,
+  buildPayableSettlementResidual,
+  PAYABLE_SETTLEMENT_APPROVAL_FLOW_CODE,
+  PAYABLE_SETTLEMENT_APPROVER_PHONES,
+  ensurePayableSettlementApprovalFlow,
+  applyPayableSettlementApproval,
+  getPayableList,
+  isPayableListVisible,
+  exportPayableList,
+  buildPayableExportQuery,
+  getPayableSourceTypeLabel,
+  getPayableStatusLabel,
+  getPayableTaxStatus,
+  parsePayableInvoice,
+  combineTaxStatuses,
+  getUnpaidBySupplier,
+  getPayableSettlementItems,
+  createSettlement,
+  createExpenseSettlement,
+  getSettlementList,
+  exportSettlementList,
+  getSettlementDetail,
+  updateSettlementRemark,
+  deleteSettlementDraft,
+  submitSettlement,
+  confirmSettlement,
+  rejectSettlement,
+  revokeSettlement,
+  voidSettlement,
+  getPaymentCandidates,
+  exportPaymentCandidates,
+  validatePaymentImport,
+  commitPaymentImport,
+  createBatchPayment,
+  createDirectPayment,
+  registerSupplierRefund,
+  confirmSupplierRefund,
+  getPaymentBatches,
+  exportPaymentBatches,
+  getPaymentBatchDetail,
+  voidPaymentBatch,
+  confirmPayment,
+  cancelPayment
+};

@@ -1,0 +1,1037 @@
+/**
+ * 字典管理控制器
+ * 客户来源 / 收款方式 / 结算账号 / 金额补录项目
+ */
+const {
+  sequelize, CustomerSource, PaymentMethod, PaymentMethodStore, SupplementItem, ExpenseType,
+  SettlementAccount, SettlementAccountTransaction, RebatePostingOrder, ResourceSettlement,
+  SupplierRebate, Store, Supplier, Region
+} = require('../../models');
+const { Op } = require('sequelize');
+const { generateUUID, paginate, formatPaginatedResult } = require('../../utils');
+const { accessibleDistributorIds, canAccessDistributor, validateDistributorIds } = require('../../utils/distributorScope');
+
+function applySettlementAccountScope(ctx, where) {
+  const ids = accessibleDistributorIds(ctx.state.user);
+  if (!ids.includes('*')) {
+    where[Op.or] = [
+      { distributor_id: { [Op.in]: ids } },
+      { distributor_id: null }
+    ];
+  }
+  return where;
+}
+
+async function validateSettlementAccountDistributor(ctx, distributorId, { required = false } = {}) {
+  const value = distributorId ? String(distributorId) : '';
+  if (!value) {
+    if (required) ctx.throw(400, '资金账户必须指定所属经销商');
+    return null;
+  }
+  try {
+    await validateDistributorIds([value]);
+  } catch (error) {
+    ctx.throw(error.status || 400, error.message);
+  }
+  if (!canAccessDistributor(ctx.state.user, value)) ctx.throw(403, '无权配置该经销商账户');
+  return value;
+}
+
+function businessNo(prefix = 'RPO') {
+  const date = new Date();
+  const stamp = [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, '0'),
+    String(date.getDate()).padStart(2, '0'),
+    String(date.getHours()).padStart(2, '0'),
+    String(date.getMinutes()).padStart(2, '0'),
+    String(date.getSeconds()).padStart(2, '0')
+  ].join('');
+  return `${prefix}${stamp}${generateUUID().slice(-6).toUpperCase()}`;
+}
+
+function money(value) {
+  const number = Number(value || 0);
+  return Number.isFinite(number) ? Math.round(number * 100) / 100 : 0;
+}
+
+// ==============================================
+// 客户来源管理（一级/二级联动）
+// ==============================================
+
+async function getCustomerSourceList(ctx) {
+  const { keyword, page = 1, pageSize = 20 } = ctx.query;
+  const where = { status: 1 };
+  if (keyword) {
+    where.name = { [Op.like]: `%${keyword}%` };
+  }
+
+  const { count, rows } = await CustomerSource.findAndCountAll({
+    where,
+    order: [['sort_order', 'ASC']],
+    ...paginate({}, { page, pageSize })
+  });
+
+  ctx.body = formatPaginatedResult(rows, { page, pageSize, count });
+}
+
+async function getAllCustomerSources(ctx) {
+  const rows = await CustomerSource.findAll({
+    where: { status: 1 },
+    order: [['sort_order', 'ASC']]
+  });
+  ctx.body = { code: 0, data: rows };
+}
+
+async function getCustomerSourceTree(ctx) {
+  const rows = await CustomerSource.findAll({
+    where: { status: 1 },
+    order: [['sort_order', 'ASC']]
+  });
+  const level1 = rows.filter(r => r.level === 1);
+  const level2 = rows.filter(r => r.level === 2);
+  const tree = level1.map(l1 => ({
+    ...l1.toJSON(),
+    children: level2.filter(l2 => l2.parent_id === l1.source_id)
+  }));
+  ctx.body = { code: 0, data: tree };
+}
+
+async function createCustomerSource(ctx) {
+  const { name, parentId, sortOrder } = ctx.request.body;
+  if (!name) ctx.throw(400, '名称不能为空');
+
+  try {
+    await CustomerSource.create({
+      source_id: generateUUID(),
+      name,
+      parent_id: parentId || null,
+      level: parentId ? 2 : 1,
+      sort_order: sortOrder || 0,
+      status: 1
+    });
+    ctx.body = { code: 0, message: '创建成功' };
+  } catch (error) {
+    console.error('[Dict] createCustomerSource Error:', error.message, error.parent?.sqlMessage);
+    ctx.throw(500, error.parent?.sqlMessage || error.message || '创建失败');
+  }
+}
+
+async function updateCustomerSource(ctx) {
+  const { id } = ctx.params;
+  const { name, parentId, sortOrder, status } = ctx.request.body;
+
+  const record = await CustomerSource.findByPk(id);
+  if (!record) ctx.throw(404, '记录不存在');
+
+  const updates = {};
+  if (name !== undefined) updates.name = name;
+  if (parentId !== undefined) {
+    updates.parent_id = parentId;
+    updates.level = parentId ? 2 : 1;
+  }
+  if (sortOrder !== undefined) updates.sort_order = sortOrder;
+  if (status !== undefined) updates.status = status;
+
+  await record.update(updates);
+  ctx.body = { code: 0, message: '更新成功' };
+}
+
+async function deleteCustomerSource(ctx) {
+  const { id } = ctx.params;
+  const record = await CustomerSource.findByPk(id);
+  if (!record) ctx.throw(404, '记录不存在');
+
+  const children = await CustomerSource.findAll({ where: { parent_id: id, status: 1 } });
+  for (const child of children) {
+    await child.update({ status: 0 });
+  }
+
+  await record.update({ status: 0 });
+  ctx.body = { code: 0, message: '删除成功' };
+}
+
+async function sortCustomerSources(ctx) {
+  const { items } = ctx.request.body;
+  if (!items || !Array.isArray(items)) ctx.throw(400, '排序数据格式无效');
+
+  for (const item of items) {
+    await CustomerSource.update(
+      { sort_order: item.sortOrder },
+      { where: { source_id: item.id } }
+    );
+  }
+
+  ctx.body = { code: 0, message: '排序更新成功' };
+}
+
+// ==============================================
+// 收款方式管理（支持按门店配置不同结算账号）
+// ==============================================
+
+async function getPaymentMethodList(ctx) {
+  const { keyword, page = 1, pageSize = 20, storeId } = ctx.query;
+  const where = { status: 1 };
+  if (keyword) {
+    where.name = { [Op.like]: `%${keyword}%` };
+  }
+
+  const include = [{
+    model: SettlementAccount,
+    attributes: ['account_id', 'account_name', 'bank_name', 'account_number']
+  }, {
+    model: SettlementAccount,
+    as: 'ReceivableSettlementAccount',
+    attributes: ['account_id', 'account_name', 'bank_name', 'account_number', 'account_type']
+  }, {
+    model: PaymentMethodStore,
+    include: [
+      {
+        model: Store,
+        attributes: ['store_id', 'name'],
+        ...(storeId ? { where: { store_id: storeId }, required: false } : {})
+      },
+      {
+        model: SettlementAccount,
+        attributes: ['account_id', 'account_name', 'bank_name', 'account_number']
+      },
+      {
+        model: SettlementAccount,
+        as: 'ReceivableSettlementAccount',
+        attributes: ['account_id', 'account_name', 'bank_name', 'account_number', 'account_type']
+      }
+    ],
+    ...(storeId ? { where: { store_id: storeId }, required: false } : {})
+  }];
+
+  const { count, rows } = await PaymentMethod.findAndCountAll({
+    where,
+    include,
+    order: [['sort_order', 'ASC']],
+    ...paginate({}, { page, pageSize })
+  });
+
+  // 兼容前端旧格式：把 PaymentMethodStore 映射到 Stores 上
+  const mappedRows = rows.map(row => {
+    const plain = row.toJSON();
+    plain.Stores = (plain.PaymentMethodStores || []).map(pms => ({
+      ...pms.Store,
+      PaymentMethodStore: {
+        settlement_account_id: pms.settlement_account_id,
+        receivable_settlement_account_id: pms.receivable_settlement_account_id,
+        tax_rate_override: pms.tax_rate_override,
+        SettlementAccount: pms.SettlementAccount,
+        ReceivableSettlementAccount: pms.ReceivableSettlementAccount
+      }
+    })).filter(s => s.store_id);
+    delete plain.PaymentMethodStores;
+    return plain;
+  });
+
+  ctx.body = formatPaginatedResult(mappedRows, { page, pageSize, count });
+}
+
+async function getAllPaymentMethods(ctx) {
+  const { storeId } = ctx.query;
+  const where = { status: 1, ...(ctx.query.excludeCoupons === 'true' ? { coupon_rule: { [Op.is]: null } } : {}) };
+
+  const include = [{
+    model: SettlementAccount,
+    attributes: ['account_id', 'account_name', 'bank_name', 'account_number']
+  }, {
+    model: SettlementAccount,
+    as: 'ReceivableSettlementAccount',
+    attributes: ['account_id', 'account_name', 'bank_name', 'account_number', 'account_type']
+  }, {
+    model: PaymentMethodStore,
+    include: [
+      {
+        model: Store,
+        attributes: ['store_id', 'name'],
+        ...(storeId ? { where: { store_id: storeId }, required: false } : {})
+      },
+      {
+        model: SettlementAccount,
+        attributes: ['account_id', 'account_name', 'bank_name', 'account_number']
+      },
+      {
+        model: SettlementAccount,
+        as: 'ReceivableSettlementAccount',
+        attributes: ['account_id', 'account_name', 'bank_name', 'account_number', 'account_type']
+      }
+    ],
+    ...(storeId ? { where: { store_id: storeId }, required: false } : {})
+  }];
+
+  const rows = await PaymentMethod.findAll({
+    where,
+    include,
+    order: [['sort_order', 'ASC']]
+  });
+
+  // 兼容前端旧格式：把 PaymentMethodStore 映射到 Stores 上
+  const mappedRows = rows.map(row => {
+    const plain = row.toJSON();
+    plain.Stores = (plain.PaymentMethodStores || []).map(pms => ({
+      ...pms.Store,
+      PaymentMethodStore: {
+        settlement_account_id: pms.settlement_account_id,
+        receivable_settlement_account_id: pms.receivable_settlement_account_id,
+        tax_rate_override: pms.tax_rate_override,
+        SettlementAccount: pms.SettlementAccount,
+        ReceivableSettlementAccount: pms.ReceivableSettlementAccount
+      }
+    })).filter(s => s.store_id);
+    delete plain.PaymentMethodStores;
+    return plain;
+  });
+
+  ctx.body = { code: 0, data: mappedRows };
+}
+
+async function getPaymentMethodsByStore(ctx) {
+  const { storeId } = ctx.query;
+  if (!storeId) ctx.throw(400, '门店ID不能为空');
+  const user = ctx.state.user;
+  const allowed = user.accessibleStoreIds || [];
+  if (!allowed.includes('*') && !allowed.map(String).includes(String(storeId))) ctx.throw(403,'无权访问该门店收款方式');
+
+
+  const globalMethods = await PaymentMethod.findAll({
+    where: { status: 1, is_global: 1 },
+    include: [{
+      model: SettlementAccount,
+      attributes: ['account_id', 'account_name', 'bank_name', 'account_number']
+    }, {
+      model: SettlementAccount,
+      as: 'ReceivableSettlementAccount',
+      attributes: ['account_id', 'account_name', 'bank_name', 'account_number', 'account_type']
+    }],
+    order: [['sort_order', 'ASC']]
+  });
+
+  const storeConfigs = await PaymentMethodStore.findAll({
+    where: { store_id: storeId },
+    include: [
+      {
+        model: PaymentMethod,
+        where: { status: 1 },
+        attributes: ['method_id', 'name', 'code', 'icon', 'default_tax_rate', 'sort_order', 'coupon_rule']
+      },
+      { model: SettlementAccount, attributes: ['account_id', 'account_name', 'bank_name', 'account_number'] },
+      {
+        model: SettlementAccount,
+        as: 'ReceivableSettlementAccount',
+        attributes: ['account_id', 'account_name', 'bank_name', 'account_number', 'account_type']
+      }
+    ]
+  });
+
+  const storeMethodMap = new Map();
+  for (const cfg of storeConfigs) {
+    if (cfg.PaymentMethod) {
+      storeMethodMap.set(cfg.PaymentMethod.method_id, {
+        settlement_account_id: cfg.settlement_account_id,
+        receivable_settlement_account_id: cfg.receivable_settlement_account_id,
+        tax_rate_override: cfg.tax_rate_override,
+        SettlementAccount: cfg.SettlementAccount,
+        ReceivableSettlementAccount: cfg.ReceivableSettlementAccount
+      });
+    }
+  }
+
+  const result = globalMethods.map(m => {
+    const storeCfg = storeMethodMap.get(m.method_id);
+    return {
+      ...m.toJSON(),
+      effective_tax_rate: storeCfg?.tax_rate_override === null || storeCfg?.tax_rate_override === undefined
+        ? m.default_tax_rate
+        : storeCfg.tax_rate_override,
+      tax_rate_override: storeCfg?.tax_rate_override ?? null,
+      store_settlement_account_id: storeCfg?.settlement_account_id || null,
+      store_receivable_settlement_account_id: storeCfg?.receivable_settlement_account_id || null,
+      storeSettlementAccount: storeCfg?.SettlementAccount || null,
+      storeReceivableSettlementAccount: storeCfg?.ReceivableSettlementAccount || null
+    };
+  });
+
+  for (const cfg of storeConfigs) {
+    if (cfg.PaymentMethod && !globalMethods.find(m => m.method_id === cfg.PaymentMethod.method_id)) {
+      result.push({
+        method_id: cfg.PaymentMethod.method_id,
+        name: cfg.PaymentMethod.name,
+        coupon_rule: cfg.PaymentMethod.coupon_rule,
+        code: cfg.PaymentMethod.code,
+        icon: cfg.PaymentMethod.icon,
+        default_tax_rate: cfg.PaymentMethod.default_tax_rate,
+        effective_tax_rate: cfg.tax_rate_override === null || cfg.tax_rate_override === undefined
+          ? cfg.PaymentMethod.default_tax_rate
+          : cfg.tax_rate_override,
+        tax_rate_override: cfg.tax_rate_override ?? null,
+        sort_order: cfg.PaymentMethod.sort_order,
+        settlement_account_id: null,
+        receivable_settlement_account_id: null,
+        is_global: 0,
+        store_settlement_account_id: cfg.settlement_account_id,
+        store_receivable_settlement_account_id: cfg.receivable_settlement_account_id,
+        storeSettlementAccount: cfg.SettlementAccount,
+        storeReceivableSettlementAccount: cfg.ReceivableSettlementAccount
+      });
+    }
+  }
+
+  // 门店专属方式在上面是后追加的；合并后统一排序，保证与管理页一致。
+  result.sort((a, b) => {
+    const orderDiff = Number(a.sort_order || 0) - Number(b.sort_order || 0);
+    if (orderDiff !== 0) return orderDiff;
+    return String(a.method_id || '').localeCompare(String(b.method_id || ''));
+  });
+
+  ctx.body = { code: 0, data: result.flatMap(method => require('../sales/couponConfiguration').options(method, storeId)).filter(method => require('../sales/couponPricing').isActiveToday(method.coupon_rule)).map(require('../sales/couponConfiguration').entry) };
+}
+
+async function validatePaymentMethodAccounts(ctx, {
+  settlementAccountId,
+  receivableSettlementAccountId,
+  storeConfigs
+}) {
+  const settlementIds = new Set();
+  const receivableIds = new Set();
+  if (settlementAccountId) settlementIds.add(String(settlementAccountId));
+  if (receivableSettlementAccountId) receivableIds.add(String(receivableSettlementAccountId));
+  for (const config of Array.isArray(storeConfigs) ? storeConfigs : []) {
+    if (config.settlementAccountId) settlementIds.add(String(config.settlementAccountId));
+    if (config.receivableSettlementAccountId) receivableIds.add(String(config.receivableSettlementAccountId));
+  }
+  const allIds = [...new Set([...settlementIds, ...receivableIds])];
+  if (allIds.length === 0) return;
+  const accounts = await SettlementAccount.findAll({
+    where: { account_id: { [Op.in]: allIds }, status: 1 }
+  });
+  const accountMap = new Map(accounts.map(account => [String(account.account_id), account]));
+  for (const accountId of settlementIds) {
+    if (!['FUND', 'SUPPLIER_REBATE', 'POLICY_RECEIVABLE'].includes(accountMap.get(accountId)?.account_type)) {
+      ctx.throw(400, '收款方式只能绑定启用的资金账户、返利账户或政策应收账户');
+    }
+  }
+  for (const accountId of receivableIds) {
+    if (accountMap.get(accountId)?.account_type !== 'POLICY_RECEIVABLE') {
+      ctx.throw(400, '政策补贴应收只能绑定启用的政策补贴应收账户');
+    }
+  }
+}
+
+function normalizeStoreTaxRate(ctx, value) {
+  if (value === undefined || value === null || value === '') return null;
+  const taxRate = Number(value);
+  if (!Number.isFinite(taxRate) || taxRate < 0 || taxRate > 100) {
+    ctx.throw(400, '门店税率必须是0至100之间的百分数');
+  }
+  return taxRate;
+}
+
+function validateStoreTaxRates(ctx, storeConfigs) {
+  for (const config of Array.isArray(storeConfigs) ? storeConfigs : []) {
+    normalizeStoreTaxRate(ctx, config.taxRateOverride);
+  }
+}
+
+async function validateCouponRule(ctx) {
+  if (ctx.request.body.couponRule === undefined) return undefined;
+  const config = require('../sales/couponConfiguration');
+  if (config.bundle(ctx.request.body.couponRule)) {
+    const existing=ctx.params?.id?await PaymentMethod.findByPk(ctx.params.id):null;
+    const name=String(ctx.request.body.name??existing?.name??'').trim();
+    const duplicate=await PaymentMethod.findOne({where:{name,...(existing?{method_id:{[Op.ne]:existing.method_id}}:{})}});
+    if(duplicate)ctx.throw(400,'收款方式名称已存在');
+    return config.normalize(ctx,existing);
+  }
+  const rule = require('../sales/couponPricing').normalizeRule(ctx.request.body.couponRule);
+  if (!rule) return null;
+  const existing = ctx.params?.id ? await PaymentMethod.findByPk(ctx.params.id) : null;
+  if (!ctx.state.user.roles?.some(role=>['admin','boss'].includes(role))) ctx.throw(403,'仅配置管理员可管理优惠券方案');
+  if (!existing) {
+    const configs=ctx.request.body.storeConfigs;
+    if (ctx.request.body.isGlobal || !Array.isArray(configs) || configs.length!==1 || !configs[0].storeId) ctx.throw(400,'新优惠券方案必须先选择单个门店');
+    const store=await Store.findByPk(configs[0].storeId);
+    if (!store || !canAccessDistributor(ctx.state.user,store.distributor_id)) ctx.throw(403,'无权管理该门店优惠券');
+  }
+
+  const name = String(ctx.request.body.name ?? existing?.name ?? '').trim();
+  const code = String(ctx.request.body.code ?? ctx.request.body.name ?? existing?.code ?? name).trim();
+  if (!name || name.length > 50 || !code || code.length > 50) ctx.throw(400, '优惠券方案名称及编码必须为1至50字');
+  const duplicates = await PaymentMethod.findAll({ where: {
+    [Op.or]: [{ name }, { code }, { name: code }, { code: name }],
+    ...(ctx.params?.id ? { method_id: { [Op.ne]: ctx.params.id } } : {})
+  } });
+  if (duplicates.length) ctx.throw(400, '优惠券方案名称或编码已存在，请编辑原方案或使用不同名称');
+  const ids = [...new Set([rule.mallAccountId, rule.platformAccountId].filter(Boolean))];
+  const accounts = await SettlementAccount.findAll({ where: applySettlementAccountScope(ctx, { account_id: { [Op.in]: ids }, status: 1 }) });
+  if (accounts.length !== ids.length || accounts.some(a => a.account_type !== 'FUND')) ctx.throw(400, '优惠券返款必须绑定启用的资金下账账户');
+  return rule;
+}
+async function createPaymentMethod(ctx) {
+  const couponRule = await validateCouponRule(ctx);
+  const {
+    name, code, icon, isGlobal, storeConfigs, sortOrder,
+    settlementAccountId, receivableSettlementAccountId, defaultTaxRate = 0
+  } = ctx.request.body;
+  if (!name) ctx.throw(400, '名称不能为空');
+  const numericTaxRate = Number(defaultTaxRate);
+  if (!Number.isFinite(numericTaxRate) || numericTaxRate < 0 || numericTaxRate > 100) {
+    ctx.throw(400, '默认税率必须是0至100之间的百分数');
+  }
+  await validatePaymentMethodAccounts(ctx, {
+    settlementAccountId,
+    receivableSettlementAccountId,
+    storeConfigs
+  });
+  validateStoreTaxRates(ctx, storeConfigs);
+
+  const t = await (require('../../models').sequelize).transaction();
+  try {
+    const method = await PaymentMethod.create({
+      coupon_rule: couponRule || null,
+      method_id: generateUUID(),
+      name,
+      code: code || name,
+      icon: icon || null,
+      is_global: isGlobal ? 1 : 0,
+      settlement_account_id: settlementAccountId || null,
+      receivable_settlement_account_id: receivableSettlementAccountId || null,
+      default_tax_rate: numericTaxRate,
+      sort_order: sortOrder || 0,
+      status: couponRule && ctx.request.body.status === 0 ? 0 : 1
+    }, { transaction: t });
+
+    if (!isGlobal && Array.isArray(storeConfigs) && storeConfigs.length > 0) {
+      for (const cfg of storeConfigs) {
+        if (cfg.storeId) {
+          await PaymentMethodStore.create({
+            method_id: method.method_id,
+            store_id: cfg.storeId,
+            settlement_account_id: cfg.settlementAccountId || null,
+            receivable_settlement_account_id: cfg.receivableSettlementAccountId || null,
+            tax_rate_override: normalizeStoreTaxRate(ctx, cfg.taxRateOverride)
+          }, { transaction: t });
+        }
+      }
+    }
+
+    if (couponRule) await require('../../utils/businessActionLog').recordBusinessAction({ businessType: 'coupon_scheme', businessId: method.method_id, businessNo: name, action: 'created', user: ctx.state.user, detail: couponRule, transaction: t });
+    await t.commit();
+    ctx.body = { code: 0, message: '创建成功' };
+  } catch (error) {
+    await t.rollback();
+    console.error('[Dict] createPaymentMethod Error:', error.message, error.parent?.sqlMessage);
+    ctx.throw(500, error.parent?.sqlMessage || error.message || '创建失败');
+  }
+}
+
+async function updatePaymentMethod(ctx) {
+  const couponRule = await validateCouponRule(ctx);
+  const { id } = ctx.params;
+  const {
+    name, code, icon, isGlobal, storeConfigs, sortOrder, status,
+    settlementAccountId, receivableSettlementAccountId, defaultTaxRate
+  } = ctx.request.body;
+
+  const record = await PaymentMethod.findByPk(id);
+  if (!record) ctx.throw(404, '记录不存在');
+  if (record.coupon_rule) {
+    const used = await require('../../models').OrderPayment.count({ where:{ [Op.or]:[{payment_method:{[Op.in]:[record.name,record.code]}},{payment_method:{[Op.like]:record.name+'｜%'}}] } });
+    if (used && ((name !== undefined && name !== record.name) || (code !== undefined && code !== record.code) || couponRule === null)) ctx.throw(400,'已使用的优惠券不能改名或改为普通收款，请新增方案');
+  }
+
+  let numericTaxRate;
+  if (defaultTaxRate !== undefined) {
+    numericTaxRate = Number(defaultTaxRate);
+    if (!Number.isFinite(numericTaxRate) || numericTaxRate < 0 || numericTaxRate > 100) {
+      ctx.throw(400, '默认税率必须是0至100之间的百分数');
+    }
+  }
+  await validatePaymentMethodAccounts(ctx, {
+    settlementAccountId,
+    receivableSettlementAccountId,
+    storeConfigs
+  });
+  validateStoreTaxRates(ctx, storeConfigs);
+
+  const t = await (require('../../models').sequelize).transaction();
+  try {
+    if (require('../sales/couponConfiguration').bundle(couponRule)) {
+      const lockedRecord = await PaymentMethod.findByPk(id, {transaction:t,lock:t.LOCK.UPDATE});
+      await require('../sales/couponConfiguration').normalize(ctx, lockedRecord, {transaction:t});
+    }
+    const updates = {};
+    if (name !== undefined) { updates.name = name; updates.code = name; }
+    if (code !== undefined) updates.code = code;
+    if (icon !== undefined) updates.icon = icon;
+    if (isGlobal !== undefined) updates.is_global = isGlobal ? 1 : 0;
+    if (sortOrder !== undefined) updates.sort_order = sortOrder;
+    if (status !== undefined) updates.status = status;
+    if (settlementAccountId !== undefined) updates.settlement_account_id = settlementAccountId || null;
+    if (receivableSettlementAccountId !== undefined) {
+      updates.receivable_settlement_account_id = receivableSettlementAccountId || null;
+    }
+    if (defaultTaxRate !== undefined) {
+      updates.default_tax_rate = numericTaxRate;
+    }
+
+    if (couponRule !== undefined) updates.coupon_rule = couponRule;
+    const previousCouponRule = record.coupon_rule;
+    await record.update(updates, { transaction: t });
+    if (couponRule !== undefined) await require('../../utils/businessActionLog').recordBusinessAction({ businessType: 'coupon_scheme', businessId: id, businessNo: record.name, action: 'updated', user: ctx.state.user, detail: { before: previousCouponRule, after: couponRule }, transaction: t });
+
+    if (storeConfigs !== undefined) {
+      await PaymentMethodStore.destroy({ where: { method_id: id }, transaction: t });
+      if (Array.isArray(storeConfigs) && storeConfigs.length > 0) {
+        for (const cfg of storeConfigs) {
+          if (cfg.storeId) {
+            await PaymentMethodStore.create({
+              method_id: id,
+              store_id: cfg.storeId,
+              settlement_account_id: cfg.settlementAccountId || null,
+              receivable_settlement_account_id: cfg.receivableSettlementAccountId || null,
+              tax_rate_override: normalizeStoreTaxRate(ctx, cfg.taxRateOverride)
+            }, { transaction: t });
+          }
+        }
+      }
+    }
+
+    await t.commit();
+    ctx.body = { code: 0, message: '更新成功' };
+  } catch (error) {
+    await t.rollback();
+    console.error('[Dict] updatePaymentMethod Error:', error.message, error.parent?.sqlMessage);
+    ctx.throw(500, error.parent?.sqlMessage || error.message || '更新失败');
+  }
+}
+
+async function deletePaymentMethod(ctx) {
+  const { id } = ctx.params;
+  const record = await PaymentMethod.findByPk(id);
+  if (!record) ctx.throw(404, '记录不存在');
+
+
+  if (record.coupon_rule) {
+    const used = await require('../../models').OrderPayment.count({where:{[Op.or]:[{payment_method:{[Op.in]:[record.name,record.code]}},{payment_method:{[Op.like]:record.name+'｜%'}}]}});
+    if (used) ctx.throw(400,'该方案已被订单使用，只能停用，不能删除');
+  }
+  const t = await (require('../../models').sequelize).transaction();
+  try {
+    await PaymentMethodStore.destroy({ where: { method_id: id }, transaction: t });
+    await record.update({ status: 0 }, { transaction: t });
+    await t.commit();
+    ctx.body = { code: 0, message: '删除成功' };
+  } catch (error) {
+    await t.rollback();
+    throw error;
+  }
+}
+
+async function sortPaymentMethods(ctx) {
+  const { items } = ctx.request.body;
+  if (!items || !Array.isArray(items)) ctx.throw(400, '排序数据格式无效');
+
+  for (const item of items) {
+    await PaymentMethod.update(
+      { sort_order: item.sortOrder },
+      { where: { method_id: item.id } }
+    );
+  }
+
+  ctx.body = { code: 0, message: '排序更新成功' };
+}
+
+// ==============================================
+// 结算账号管理
+// ==============================================
+
+async function getSettlementAccountList(ctx) {
+  const { keyword, regionId, page = 1, pageSize = 20 } = ctx.query;
+  const where = { status: 1 };
+  applySettlementAccountScope(ctx, where);
+  if (regionId) where.region_id = regionId;
+  if (keyword) {
+    where[Op.or] = [
+      { account_name: { [Op.like]: `%${keyword}%` } },
+      { bank_name: { [Op.like]: `%${keyword}%` } },
+      { account_number: { [Op.like]: `%${keyword}%` } }
+    ];
+  }
+
+  const { count, rows } = await SettlementAccount.findAndCountAll({
+    where,
+    include: [{ model: Region, attributes: ['region_id', 'region_code', 'name'] }],
+    order: [['sort_order', 'ASC']],
+    ...paginate({}, { page, pageSize })
+  });
+
+  ctx.body = formatPaginatedResult(rows, { page, pageSize, count });
+}
+
+async function getAllSettlementAccounts(ctx) {
+  const { regionId } = ctx.query;
+  const where = { status: 1 };
+  applySettlementAccountScope(ctx, where);
+  if (regionId) where.region_id = regionId;
+  if (ctx.query.purpose === 'coupon') {
+    where.account_type = 'FUND';
+    if (ctx.query.storeId) {
+      const store=await Store.findByPk(ctx.query.storeId);
+      const user=ctx.state.user,allowed=(user.accessibleStoreIds||[]).map(String);
+      if(!store || (!allowed.includes('*')&&!allowed.includes(String(store.store_id))) || !canAccessDistributor(user,store.distributor_id)) ctx.throw(403,'无权查询该门店返款账户');
+      where[Op.and]=[{[Op.or]:[{distributor_id:store.distributor_id},{distributor_id:null}]}];
+    }
+  }
+
+  const rows = await SettlementAccount.findAll({
+    where,
+    include: [{ model: Region, attributes: ['region_id', 'region_code', 'name'] }],
+    order: [['sort_order', 'ASC']]
+  });
+  ctx.body = { code: 0, data: rows };
+}
+
+async function createSettlementAccount(ctx) {
+  const {
+    accountName, bankName, accountNumber, accountType = 'FUND', regionId, distributorId,
+    supplierId, openingAmount = 0, usageNote, sortOrder
+  } = ctx.request.body;
+  if (!accountName) ctx.throw(400, '账号名称不能为空');
+  if (!['FUND', 'POLICY_RECEIVABLE', 'CARE_CREDIT', 'SUPPLIER_REBATE'].includes(accountType)) {
+    ctx.throw(400, '账户类型无效');
+  }
+  const initialAmount = money(openingAmount);
+  if (initialAmount < 0) ctx.throw(400, '新增返利金额不能为负数');
+  let supplier = null;
+  if (accountType === 'SUPPLIER_REBATE') {
+    if (!supplierId) ctx.throw(400, '返利账户必须关联供应商');
+    supplier = await Supplier.findOne({ where: { supplier_id: supplierId, status: 1, is_deleted: 0 } });
+    if (!supplier) ctx.throw(400, '供应商不存在或已停用');
+    const existingAccount = await SettlementAccount.findOne({
+      where: { account_type: 'SUPPLIER_REBATE', supplier_id: supplierId, status: 1 }
+    });
+    if (existingAccount) ctx.throw(400, '该供应商已有启用的返利账户');
+  } else if (openingAmount !== undefined && initialAmount > 0) {
+    ctx.throw(400, '只有返利账户可以填写新增返利金额');
+  }
+  const accountDistributorId = await validateSettlementAccountDistributor(ctx, distributorId, { required: accountType === 'FUND' });
+  if (regionId) {
+    const region = await Region.findOne({ where: { region_id: regionId, status: 1 } });
+    if (!region) ctx.throw(400, '所属区域不存在或已停用');
+  }
+
+  try {
+    await sequelize.transaction(async transaction => {
+      const accountId = generateUUID();
+      const user = ctx.state.user || {};
+      await SettlementAccount.create({
+        account_id: accountId, account_name: accountName, bank_name: bankName || '', account_number: accountNumber || '',
+        account_type: accountType, region_id: regionId || null, distributor_id: accountDistributorId,
+        supplier_id: accountType === 'SUPPLIER_REBATE' ? supplierId : null,
+        usage_note: usageNote || '', sort_order: sortOrder || 0, status: 1
+      }, { transaction });
+      if (accountType === 'SUPPLIER_REBATE' && initialAmount > 0) {
+        const postingId = generateUUID();
+        const postingNo = businessNo('RPO');
+        const receiptId = generateUUID();
+        const today = new Date().toISOString().slice(0, 10);
+        const userName = user.name || user.phone || '';
+        const remark = `新增返利账户${accountName}期初返利`;
+        const latest = await SupplierRebate.findOne({
+          where: { supplier_id: supplierId },
+          order: [['create_time', 'DESC'], ['rebate_id', 'DESC']],
+          transaction,
+          lock: transaction.LOCK.UPDATE
+        });
+        const balance = money(latest?.balance) + initialAmount;
+        await RebatePostingOrder.create({
+          posting_id: postingId, posting_no: postingNo, supplier_id: supplierId, supplier_name: supplier.name,
+          source_type: 'ACCOUNT_OPENING', source_id: accountId, source_no: accountName, posting_date: today,
+          amount: initialAmount, matched_amount: 0, status: 'UNMATCHED', rebate_id: receiptId,
+          create_staff_id: user.staffId || null, create_user: userName, remark
+        }, { transaction });
+        await SupplierRebate.create({
+          rebate_id: receiptId, supplier_id: supplierId, supplier_name: supplier.name, type: 'credit',
+          amount: initialAmount, balance, related_no: postingNo, remark, status: 'active',
+          source_type: 'account_opening', source_id: accountId, create_user: userName
+        }, { transaction });
+        await SettlementAccountTransaction.create({
+          transaction_id: generateUUID(), account_id: accountId, type: 'income', amount: initialAmount,
+          balance_after: initialAmount, description: '新增返利账户计入返利池', related_ref: postingNo, create_user: userName
+        }, { transaction });
+        await ResourceSettlement.create({
+          settlement_id: generateUUID(), settlement_no: businessNo('RST'), source_type: 'REBATE_RECEIPT',
+          source_id: postingId, sn_id: null, sn_code: null, product_id: null, resource_type: 'MANUAL_REBATE',
+          counterparty_id: supplierId, counterparty_name: supplier.name, amount: initialAmount, matched_amount: 0,
+          status: 'PENDING', target_account_id: accountId, create_staff_id: user.staffId || null,
+          create_user: userName, remark: '返利账户新增收款，待在返利下账页面勾稽'
+        }, { transaction });
+      }
+    });
+    ctx.body = { code: 0, message: '创建成功' };
+  } catch (error) {
+    console.error('[Dict] createSettlementAccount Error:', error.message, error.parent?.sqlMessage);
+    ctx.throw(500, error.parent?.sqlMessage || error.message || '创建失败');
+  }
+}
+
+async function updateSettlementAccount(ctx) {
+  const { id } = ctx.params;
+  const { accountName, bankName, accountNumber, accountType, supplierId, regionId, distributorId, usageNote, sortOrder, status } = ctx.request.body;
+
+  const record = await SettlementAccount.findByPk(id);
+  if (!record) ctx.throw(404, '记录不存在');
+  if (!canAccessDistributor(ctx.state.user, record.distributor_id)) ctx.throw(403, '无权修改该经销商账户');
+
+  const updates = {};
+  if (regionId !== undefined) {
+    if (regionId) {
+      const region = await Region.findOne({ where: { region_id: regionId, status: 1 } });
+      if (!region) ctx.throw(400, '所属区域不存在或已停用');
+    }
+    updates.region_id = regionId || null;
+  }
+  if (accountName !== undefined) updates.account_name = accountName;
+  if (bankName !== undefined) updates.bank_name = bankName;
+  if (accountNumber !== undefined) updates.account_number = accountNumber;
+  if (accountType !== undefined) {
+    if (!['FUND', 'POLICY_RECEIVABLE', 'CARE_CREDIT', 'SUPPLIER_REBATE'].includes(accountType)) {
+      ctx.throw(400, '账户类型无效');
+    }
+
+    if (accountType === 'SUPPLIER_REBATE') {
+      const nextSupplierId = supplierId || record.supplier_id;
+      if (!nextSupplierId) ctx.throw(400, '厂商返利账户必须关联厂商');
+
+      const supplier = await Supplier.findOne({
+        where: { supplier_id: nextSupplierId, status: 1, is_deleted: 0 }
+      });
+      if (!supplier) ctx.throw(400, '厂商不存在或已停用');
+
+      const existingAccount = await SettlementAccount.findOne({
+        where: {
+          account_type: 'SUPPLIER_REBATE',
+          supplier_id: nextSupplierId,
+          status: 1,
+          account_id: { [Op.ne]: id }
+        }
+      });
+      if (existingAccount) ctx.throw(400, '该厂商已有启用的厂商返利账户');
+
+      updates.supplier_id = nextSupplierId;
+    } else {
+      updates.supplier_id = null;
+    }
+    updates.account_type = accountType;
+  }
+  if (distributorId !== undefined) {
+    updates.distributor_id = await validateSettlementAccountDistributor(ctx, distributorId, { required: accountType === 'FUND' || (accountType === undefined && record.account_type === 'FUND') });
+  }
+  if (usageNote !== undefined) updates.usage_note = usageNote;
+  if (sortOrder !== undefined) updates.sort_order = sortOrder;
+  if (status !== undefined) updates.status = status;
+
+  await record.update(updates);
+  ctx.body = { code: 0, message: '更新成功' };
+}
+
+async function deleteSettlementAccount(ctx) {
+  const { id } = ctx.params;
+  const record = await SettlementAccount.findByPk(id);
+  if (!record) ctx.throw(404, '记录不存在');
+  if (record.account_type === 'SUPPLIER_REBATE') {
+    ctx.throw(403, '供应商返利账户由系统自动维护，不允许手工删除');
+  }
+  await record.update({ status: 0 });
+  ctx.body = { code: 0, message: '删除成功' };
+}
+
+async function sortSettlementAccounts(ctx) {
+  const { items } = ctx.request.body;
+  if (!items || !Array.isArray(items)) ctx.throw(400, '排序数据格式无效');
+
+  for (const item of items) {
+    await SettlementAccount.update(
+      { sort_order: item.sortOrder },
+      { where: { account_id: item.id } }
+    );
+  }
+
+  ctx.body = { code: 0, message: '排序更新成功' };
+}
+
+// ==============================================
+// 金额补录项目管理
+// ==============================================
+
+async function getSupplementItemList(ctx) {
+  const { keyword, page = 1, pageSize = 20 } = ctx.query;
+  const where = { is_active: 1 };
+  if (keyword) {
+    where.name = { [Op.like]: `%${keyword}%` };
+  }
+
+  const { count, rows } = await SupplementItem.findAndCountAll({
+    where,
+    order: [['sort_order', 'ASC']],
+    ...paginate({}, { page, pageSize })
+  });
+
+  ctx.body = formatPaginatedResult(rows, { page, pageSize, count });
+}
+
+async function getAllSupplementItems(ctx) {
+  const rows = await SupplementItem.findAll({
+    where: { is_active: 1 },
+    order: [['sort_order', 'ASC']]
+  });
+  ctx.body = { code: 0, data: rows };
+}
+
+async function createSupplementItem(ctx) {
+  const { name, amount, sortOrder, amountType = 'increase' } = ctx.request.body;
+  if (!name) ctx.throw(400, '名称不能为空');
+  if (!['increase', 'decrease'].includes(amountType)) ctx.throw(400, '金额方向无效');
+
+  try {
+    await SupplementItem.create({
+      item_id: generateUUID(),
+      name,
+      amount: amount || 0,
+      amount_type: amountType,
+      is_active: 1,
+      sort_order: sortOrder || 0
+    });
+    ctx.body = { code: 0, message: '创建成功' };
+  } catch (error) {
+    console.error('[Dict] createSupplementItem Error:', error.message, error.parent?.sqlMessage);
+    ctx.throw(500, error.parent?.sqlMessage || error.message || '创建失败');
+  }
+}
+
+async function updateSupplementItem(ctx) {
+  const { id } = ctx.params;
+  const { name, amount, sortOrder, isActive, amountType } = ctx.request.body;
+
+  const record = await SupplementItem.findByPk(id);
+  if (!record) ctx.throw(404, '记录不存在');
+
+  const updates = {};
+  if (name !== undefined) updates.name = name;
+  if (amount !== undefined) updates.amount = amount;
+  if (amountType !== undefined) {
+    if (!['increase', 'decrease'].includes(amountType)) ctx.throw(400, '金额方向无效');
+    updates.amount_type = amountType;
+  }
+  if (sortOrder !== undefined) updates.sort_order = sortOrder;
+  if (isActive !== undefined) updates.is_active = isActive;
+
+  await record.update(updates);
+  ctx.body = { code: 0, message: '更新成功' };
+}
+
+async function deleteSupplementItem(ctx) {
+  const { id } = ctx.params;
+  const record = await SupplementItem.findByPk(id);
+  if (!record) ctx.throw(404, '记录不存在');
+  await record.update({ is_active: 0 });
+  ctx.body = { code: 0, message: '删除成功' };
+}
+
+async function sortSupplementItems(ctx) {
+  const { items } = ctx.request.body;
+  if (!items || !Array.isArray(items)) ctx.throw(400, '排序数据格式无效');
+
+  for (const item of items) {
+    await SupplementItem.update(
+      { sort_order: item.sortOrder },
+      { where: { item_id: item.id } }
+    );
+  }
+
+  ctx.body = { code: 0, message: '排序更新成功' };
+}
+
+// ==============================================
+// 报销类型管理
+// ==============================================
+
+async function getExpenseTypes(ctx) {
+  const where = {};
+  if (ctx.query.activeOnly === '1') where.status = 1;
+  const rows = await ExpenseType.findAll({ where, order: [['sort_order', 'ASC'], ['name', 'ASC']] });
+  ctx.body = { code: 0, data: rows };
+}
+
+async function createExpenseType(ctx) {
+  const name = String(ctx.request.body.name || '').trim();
+  if (!name) ctx.throw(400, '报销类型名称不能为空');
+  await ExpenseType.create({
+    type_id: generateUUID(),
+    name,
+    sort_order: Number(ctx.request.body.sortOrder || 0),
+    status: ctx.request.body.status === 0 ? 0 : 1,
+    remark: String(ctx.request.body.remark || '').trim()
+  });
+  ctx.body = { code: 0, message: '报销类型创建成功' };
+}
+
+async function updateExpenseType(ctx) {
+  const record = await ExpenseType.findByPk(ctx.params.id);
+  if (!record) ctx.throw(404, '报销类型不存在');
+  const updates = {};
+  if (ctx.request.body.name !== undefined) {
+    updates.name = String(ctx.request.body.name || '').trim();
+    if (!updates.name) ctx.throw(400, '报销类型名称不能为空');
+  }
+  if (ctx.request.body.sortOrder !== undefined) updates.sort_order = Number(ctx.request.body.sortOrder || 0);
+  if (ctx.request.body.status !== undefined) updates.status = Number(ctx.request.body.status) ? 1 : 0;
+  if (ctx.request.body.remark !== undefined) updates.remark = String(ctx.request.body.remark || '').trim();
+  updates.update_time = new Date();
+  await record.update(updates);
+  ctx.body = { code: 0, message: '报销类型更新成功' };
+}
+
+async function deleteExpenseType(ctx) {
+  const record = await ExpenseType.findByPk(ctx.params.id);
+  if (!record) ctx.throw(404, '报销类型不存在');
+  await record.update({ status: 0, update_time: new Date() });
+  ctx.body = { code: 0, message: '报销类型已停用' };
+}
+
+module.exports = {
+  getCustomerSourceList,
+  getAllCustomerSources,
+  getCustomerSourceTree,
+  createCustomerSource,
+  updateCustomerSource,
+  deleteCustomerSource,
+  sortCustomerSources,
+  getPaymentMethodList,
+  getAllPaymentMethods,
+  getPaymentMethodsByStore,
+  createPaymentMethod,
+  updatePaymentMethod,
+  deletePaymentMethod,
+  sortPaymentMethods,
+  getSettlementAccountList,
+  getAllSettlementAccounts,
+  createSettlementAccount,
+  updateSettlementAccount,
+  deleteSettlementAccount,
+  sortSettlementAccounts,
+  getSupplementItemList,
+  getAllSupplementItems,
+  createSupplementItem,
+  updateSupplementItem,
+  deleteSupplementItem,
+  sortSupplementItems,
+  getExpenseTypes,
+  createExpenseType,
+  updateExpenseType,
+  deleteExpenseType
+};

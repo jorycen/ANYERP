@@ -2,15 +2,84 @@
  * 商品管理路由
  */
 const Router = require('koa-router');
-const { getProductList, createProduct, updateProduct, getPnList, addPn, getCategory } = require('./controller');
+const multer = require('@koa/multer');
+const {
+  getProductList, submitProductApplication, getProductApplicationList, getProductApplicationDetail, revokeProductApplication, reviewProductApplication,
+  updateProduct, deleteProduct, batchDeleteProducts, togglePause, importProducts, exportProducts,
+  getBarcodes, addBarcode, deleteBarcode,
+  getCategoryTree, createCategory, updateCategory, deleteCategory, sortCategories,
+  getCategoryFields, saveCategoryFields, getCategoryFieldConfig,
+  getPriceList, exportCostPrices, setPrice, refreshCostPrice, batchRefreshCost, setCostPriceLock, validateImportPrices, importPrices, importCostRefresh, getPriceChangeHistory, getRecentPriceChanges,
+  getProductImportTask, downloadProductImportErrors,
+  getPnList, addPn, searchProduct, getPnAvailability
+} = require('./controller');
+const { requireRole } = require('../../middleware/permission');
 
 const router = new Router();
+const inventoryPricing = require('./inventoryPricing');
+const foundation = require('../inventory/foundationController');
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
-router.get('/', getProductList);
-router.post('/', createProduct);
-router.put('/:productId', updateProduct);
-router.get('/pn', getPnList);
+// 商品基础管理
+router.get('/list', getProductList);
+router.get('/search', searchProduct);
+router.get('/export', exportProducts);
+router.get('/application-list', getProductApplicationList);
+router.post('/application', submitProductApplication);
+router.get('/application/:applicationId', getProductApplicationDetail);
+router.post('/application/:applicationId/revoke', revokeProductApplication);
+router.post('/application/:applicationId/review', reviewProductApplication);
+// 兼容现有客户端：手工新建商品统一转为审批申请。
+router.post('/create', submitProductApplication);
+router.put('/update/:productId', updateProduct);
+router.post('/batch-delete', batchDeleteProducts);
+router.delete('/delete/:productId', deleteProduct);
+router.post('/toggle-pause/:productId', togglePause);
+router.post('/import', upload.single('file'), importProducts);
+router.get('/import/task/:taskId/errors', downloadProductImportErrors);
+router.get('/import/task/:taskId', getProductImportTask);
+
+// 商品条码
+router.get('/barcode', getBarcodes);
+router.post('/barcode', addBarcode);
+router.delete('/barcode/:barcodeId', deleteBarcode);
+
+// 商品分类
+router.get('/category/tree', getCategoryTree);
+router.post('/category/sort', sortCategories);
+router.post('/category', createCategory);
+router.put('/category/:categoryId', updateCategory);
+router.delete('/category/:categoryId', deleteCategory);
+
+// 分类字段配置
+router.get('/category/fields', getCategoryFields);
+router.post('/category/fields', saveCategoryFields);
+router.get('/category/field-config', getCategoryFieldConfig);
+
+// 商品价格
+router.get('/price/list', getPriceList);
+router.get('/price/inventory-foundation', foundation.list);
+router.put('/price/inventory-foundation/:basisId', foundation.update);
+router.get('/price/inventory-foundation/:basisId/history', foundation.history);
+router.post('/price/inventory-foundation/link', foundation.link);
+router.get('/price/inventory-pricing', inventoryPricing.list);
+router.get('/price/inventory-pricing/:snId/history', inventoryPricing.history);
+router.post('/price/inventory-pricing/preview', inventoryPricing.preview);
+router.post('/price/inventory-pricing/apply', inventoryPricing.apply);
+router.get('/price/export', exportCostPrices);
+router.post('/price/set', setPrice);
+router.post('/price/refresh-cost/:productId', refreshCostPrice);
+router.post('/price/batch-refresh-cost', batchRefreshCost);
+router.post('/price/cost-lock', setCostPriceLock);
+router.post('/price/import/validate', upload.single('file'), validateImportPrices);
+router.post('/price/import', upload.single('file'), importPrices);
+router.post('/price/import-cost-refresh', upload.single('file'), importCostRefresh);
+router.get('/price/recent-changes', getRecentPriceChanges);
+router.get('/price/history', getPriceChangeHistory);
+
+// PN管理
+router.get('/pn-availability', getPnAvailability);
+router.get('/pn-list', getPnList);
 router.post('/pn', addPn);
-router.get('/category', getCategory);
 
 module.exports = router;

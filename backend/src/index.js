@@ -1,14 +1,12 @@
-/**
- * ANY-ERP 后端服务入口
- */
 const Koa = require('koa');
 const Router = require('koa-router');
 const bodyParser = require('koa-bodyparser');
 const cors = require('koa-cors');
 const static = require('koa-static');
 const path = require('path');
+const fs = require('fs');
+const { randomUUID } = require('node:crypto');
 
-// 导入路由
 const authRouter = require('./modules/auth/routes');
 const salesRouter = require('./modules/sales/routes');
 const inventoryRouter = require('./modules/inventory/routes');
@@ -18,45 +16,83 @@ const productRouter = require('./modules/product/routes');
 const storeRouter = require('./modules/store/routes');
 const reportRouter = require('./modules/report/routes');
 const systemRouter = require('./modules/system/routes');
+const dictRouter = require('./modules/dict/routes');
+const ocrRouter = require('./modules/ocr/routes');
+const approvalRouter = require('./modules/approval/routes');
+const storageRouter = require('./modules/storage/routes');
 
-// 导入中间件
+const { ensureDatabaseReady, markDatabaseUnhealthy } = require('./config/database');
+const { runSchemaMigrations } = require('./utils/dbMigration');
 const { errorHandler } = require('./middleware/errorHandler');
 const { responseFormatter } = require('./middleware/responseFormatter');
-const { authMiddleware } = require('./middleware/auth');
+const { databaseRecoveryMiddleware, databaseHealth } = require('./middleware/databaseRecovery');
+const { authMiddleware, storeAccessMiddleware } = require('./middleware/auth');
+const { snNormalization } = require('./middleware/snNormalization');
+const { applyPendingProductPriceChanges, recoverProductImportTasks } = require('./modules/product/controller');
+const { startDatabaseHeartbeat } = require('./utils/databaseHeartbeat');
+const { recordDatabaseTiming } = require('./utils/databaseTiming');
+const { recoverExecutingBatchApplications } = require('./modules/inventory/batchMaintenance');
 
 const app = new Koa();
-const router = new Router();
-
-// 配置
+const customerOpsRouters = require('./modules/customerOps/routes');
 const PORT = process.env.PORT || 3000;
+let schemaInitializationReady = false;
 
-// 全局中间件
+const inventoryModes = new Set(['demo', 'focus', 'special', 'hot7', 'highMargin7']);
+app.use(async (ctx, next) => {
+  if (!ctx.path.startsWith('/api/') || ctx.method === 'OPTIONS') return next();
+  const requestId = randomUUID();
+  ctx.set('X-Request-Id', requestId);
+  const isDashboard = ctx.path === '/api/v1/report/dashboard/overview';
+  const companyWideRank = ctx.query.companyWideRank === '1' || ctx.query.company_wide_rank === '1';
+  const leaderboard = isDashboard
+    ? ctx.query.companyWideGrossProfitLeaderboard === '1'
+    : ctx.query.companyWideLeaderboard === '1';
+  return recordDatabaseTiming('api', 0, next, () => ({
+    label: ctx._matchedRoute || 'unmatched-api',
+    method: ctx.method,
+    requestId,
+    status: ctx.status,
+    ...(ctx.state.databaseErrorCode && { databaseErrorCode: ctx.state.databaseErrorCode }),
+    ...(ctx.path === '/api/v1/inventory/list' && {
+      mode: inventoryModes.has(ctx.query.modelFilter) ? ctx.query.modelFilter : 'default'
+    }),
+    ...((isDashboard || ctx.path === '/api/v1/report/monthly-task-achievement') && {
+      leaderboard,
+      companyWideRank,
+      homeSummary: ctx.query.homeSummary === '1'
+    })
+  }));
+});
 app.use(errorHandler);
 app.use(responseFormatter);
-app.use(cors());
-app.use(bodyParser());
-app.use(static(path.join(__dirname, '../public')));
+// koa-cors 0.0.16 omits PATCH from its default method list; customer reward
+// edits and status changes use PATCH and must pass browser preflight checks.
+app.use(cors({ methods: 'GET,HEAD,PUT,POST,PATCH,DELETE,OPTIONS' }));
+app.use(bodyParser({
+  jsonLimit: '10mb',
+  formLimit: '10mb',
+  textLimit: '10mb'
+}));
 
-// 路由配置
-router.get('/', async (ctx) => {
-  ctx.body = {
-    code: 0,
-    message: 'ANY-ERP API 服务运行中',
-    data: {
-      version: '1.0.0',
-      time: new Date().toISOString()
-    }
-  };
-});
-
-// API 路由组
 const apiRouter = new Router({ prefix: '/api/v1' });
 
-// 公开接口（无需鉴权）
+apiRouter.get('/health/db', databaseHealth);
+apiRouter.use(async (ctx, next) => {
+  if (!schemaInitializationReady) {
+    ctx.status = 503;
+    ctx.body = { code: 503, message: '系统正在检查数据库结构，请稍后重试' };
+    return;
+  }
+  await next();
+});
+apiRouter.use(databaseRecoveryMiddleware);
 apiRouter.use('/auth', authRouter.routes());
 
-// 需要鉴权的接口
 apiRouter.use(authMiddleware);
+apiRouter.use(storeAccessMiddleware);
+apiRouter.use(snNormalization);
+apiRouter.use('/daily-quiz', require('./modules/dailyQuiz/routes').routes());
 apiRouter.use('/sales', salesRouter.routes());
 apiRouter.use('/inventory', inventoryRouter.routes());
 apiRouter.use('/purchase', purchaseRouter.routes());
@@ -65,20 +101,117 @@ apiRouter.use('/product', productRouter.routes());
 apiRouter.use('/store', storeRouter.routes());
 apiRouter.use('/report', reportRouter.routes());
 apiRouter.use('/system', systemRouter.routes());
+apiRouter.use('/dict', dictRouter.routes());
+apiRouter.use('/ocr', ocrRouter.routes());
+apiRouter.use('/approval', approvalRouter.routes());
+apiRouter.use('/storage', storageRouter.routes());
+apiRouter.use('/customer-ops', customerOpsRouters.staff.routes());
 
-app.use(router.routes());
-app.use(router.allowedMethods());
+// A separate router prevents consumer sessions from entering the staff auth chain.
+app.use(customerOpsRouters.customer.routes());
+app.use(customerOpsRouters.customer.allowedMethods());
 app.use(apiRouter.routes());
 app.use(apiRouter.allowedMethods());
 
-// 错误处理
-app.on('error', (err, ctx) => {
+app.use(static(path.join(__dirname, '../public'), {
+  setHeaders(res, filePath) {
+    if (path.basename(filePath) === 'index.html') {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+    }
+  }
+}));
+
+app.use(async (ctx) => {
+  const requestPath = ctx.path;
+  const isApiRequest = requestPath === '/api' || requestPath.startsWith('/api/');
+  const lastPathSegment = requestPath.slice(requestPath.lastIndexOf('/') + 1);
+  const isStaticAssetRequest = Boolean(path.extname(lastPathSegment));
+
+  // Only browser navigation URLs may fall back to the SPA entry point. API
+  // errors and missing assets must remain 404s instead of receiving HTML.
+  if ((ctx.method !== 'GET' && ctx.method !== 'HEAD') || isApiRequest || isStaticAssetRequest) {
+    ctx.status = 404;
+    return;
+  }
+
+  const indexPath = path.join(__dirname, '../public/index.html');
+  if (fs.existsSync(indexPath)) {
+    ctx.type = 'html';
+    ctx.body = fs.createReadStream(indexPath);
+  }
+});
+
+app.on('error', (err) => {
   console.error('Server Error:', err);
 });
 
-app.listen(PORT, () => {
-  console.log(`ANY-ERP 服务已启动: http://localhost:${PORT}`);
-  console.log(`API地址: http://localhost:${PORT}/api/v1`);
-});
+function startBackgroundJobs() {
+  setInterval(async () => {
+    try {
+      const count = await applyPendingProductPriceChanges();
+      if (count > 0) {
+        console.log(`[ProductPrice] applied ${count} pending price changes`);
+      }
+    } catch (error) {
+      console.error('[ProductPrice] pending price job failed:', error.message);
+    }
+  }, 60 * 1000);
+}
+
+function initializeDatabaseInBackground(retryDelayMs = Number(process.env.DB_STARTUP_RECOVERY_RETRY_MS || 60000)) {
+  (async () => {
+    schemaInitializationReady = false;
+    try {
+      await ensureDatabaseReady('startup database activation', { force: true });
+      // Startup checks schema and adds missing approval definitions only.
+      // Historical repairs remain explicit operator actions; never rewrite
+      // business documents, balances, permissions or existing configurations.
+      await runSchemaMigrations();
+      await require('./utils/couponMigration').ensureCouponColumns(require('./models').sequelize);
+      await require('./utils/focusCategoryMigration').ensureFocusCategoryColumn(require('./models').sequelize);
+      // Add missing approval definitions only; never rewrite existing flows or documents.
+      await require('./modules/approval/catalog').seedApprovalFlowCatalog();
+      await ensureDatabaseReady('post-migration database activation', { force: true });
+      schemaInitializationReady = true;
+      try {
+        await recoverExecutingBatchApplications();
+      } catch (error) {
+        console.error('[Startup] inventory batch recovery failed:', error.message);
+      }
+      try {
+        await recoverProductImportTasks();
+      } catch (error) {
+        console.error('[Startup] product import recovery failed:', error.message);
+      }
+      console.log('[Startup] database initialization completed');
+    } catch (error) {
+      schemaInitializationReady = false;
+      markDatabaseUnhealthy(error);
+      console.error('[Startup] database initialization failed, will retry in background:', error.message);
+      setTimeout(() => initializeDatabaseInBackground(retryDelayMs), retryDelayMs).unref?.();
+    }
+  })();
+}
+
+function startServer() {
+  try {
+    require('./modules/approval/businessRuntime').installHooks();
+    app.listen(PORT, () => {
+      console.log(`ANY-ERP server started: http://localhost:${PORT}`);
+      console.log(`API: http://localhost:${PORT}/api/v1`);
+    });
+
+    initializeDatabaseInBackground();
+    startBackgroundJobs();
+    startDatabaseHeartbeat();
+  } catch (error) {
+    console.error('[Startup] failed to initialize server:', error);
+    process.exit(1);
+  }
+}
+
+startServer();
 
 module.exports = app;

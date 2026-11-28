@@ -1,16 +1,16 @@
+# CloudBase GitHub deployment fallback for repositories whose backend lives in
+# the backend/ subdirectory. Prefer configuring CloudBase target directory as
+# backend and using backend/Dockerfile; this file keeps root-directory builds
+# working when the console does not expose that setting.
 FROM node:18-alpine
 
 WORKDIR /app
 
-# 安装依赖
-COPY package*.json ./
+COPY backend/package*.json ./
 RUN npm install --production
 
-# 复制代码
-COPY . .
+COPY backend/ ./
 
-# 暴露端口
 EXPOSE 3000
 
-# 启动命令
 CMD ["node", "src/index.js"]

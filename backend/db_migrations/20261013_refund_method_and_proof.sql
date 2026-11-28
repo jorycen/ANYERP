@@ -1,0 +1,11 @@
+﻿ALTER TABLE T_SALES_RETURN_REQUEST
+  ADD COLUMN refund_choice VARCHAR(16) NOT NULL DEFAULT 'yes',
+  ADD COLUMN refund_method VARCHAR(32) NULL,
+  ADD COLUMN refund_proof_urls TEXT NULL,
+  ADD COLUMN refund_bank_info TEXT NULL;
+
+ALTER TABLE T_DEPOSIT_REFUND
+  ADD COLUMN refund_choice VARCHAR(16) NOT NULL DEFAULT 'yes',
+  ADD COLUMN refund_method VARCHAR(32) NULL,
+  ADD COLUMN refund_proof_urls TEXT NULL,
+  ADD COLUMN refund_bank_info TEXT NULL;

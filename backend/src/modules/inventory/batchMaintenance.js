@@ -1,0 +1,1187 @@
+const { findInboundSnByIdentity } = require('../../utils/snIdentity');
+const { requireInboundPn } = require('../../utils/inboundPn');
+const { assertSnEligible, recordSnReentry } = require('../../utils/snEligibility');
+const { normalizeSnCode } = require('../../utils/snCode');
+const XLSX = require('xlsx');
+const { Op } = require('sequelize');
+const {
+  sequelize, Product, ProductPn, ProductSn, Store, Location, Inventory,
+  InventoryBatchApplication, InventoryBatchApplicationItem, NonSnInventoryBatchRight,
+  InventoryResourceRight, ResourceRightChangeOrder, SnLog
+} = require('../../models');
+const { generateUUID, generateBatchNo, paginate, formatPaginatedResult } = require('../../utils');
+const { assertSingleSnProductPn } = require('../../utils/productPn');
+const { ensureProductPnMaster } = require('../../utils/productPnMaster');
+const { resolveInventoryWriteLocation } = require('../../utils/inventoryLocation');
+const { getUserRoles } = require('../../middleware/permission');
+const {
+  findResourceRule, calculatePreSaleRuleAmount
+} = require('./resourceRights');
+const { syncSerializedInventoryBalance } = require('./serializedInventoryBalance');
+
+const VALID_OPERATION_TYPES = new Set(['INBOUND', 'OUTBOUND', 'ADJUST', 'COST_MODE']);
+const VALID_INVENTORY_TYPES = new Set([
+  'normal_qty',
+  'display_qty',
+  'demo_qty',
+  'unsellable_qty',
+  'pending_qty',
+  'rental_demo_qty'
+]);
+const OPERATION_LABELS = { INBOUND: '批量入库', OUTBOUND: '批量出库', ADJUST: '数量调整', COST_MODE: 'SN计价方式调整' };
+const REUSABLE_INBOUND_SN_STATUSES = new Set(['out_stock', 'sold', 'returned']);
+const scheduledExecutionIds = new Set();
+
+function isReusableInboundSnStatus(status) {
+  return REUSABLE_INBOUND_SN_STATUSES.has(String(status || '').trim());
+}
+
+function roles(user) {
+  return getUserRoles(user);
+}
+
+function canReview(user) {
+  const userRoles = roles(user);
+  return userRoles.includes('boss') || userRoles.includes('admin');
+}
+
+function isBoss(user) {
+  return roles(user).includes('boss');
+}
+
+function normalizeText(value) {
+  return String(value ?? '').trim();
+}
+
+function normalizeSnIdentityValue(value) {
+  return String(value || '').trim().replace(/\s+/g, '').toLowerCase();
+}
+
+// @koa/multer/busboy 在部分请求头编码下会把 UTF-8 文件名按 latin1 交给业务层。
+// 仅对明显的 UTF-8 乱码尝试还原，避免破坏已经正确解码的文件名。
+function normalizeUploadedFilename(value) {
+  const filename = String(value ?? '').trim();
+  if (!filename || !/[ÃÂÐâæåçèéêëìíîïðñòóôõö÷øùúûüýþÿ]/.test(filename)) return filename;
+
+  const decoded = Buffer.from(filename, 'latin1').toString('utf8');
+  return decoded.includes('\uFFFD') ? filename : decoded;
+}
+
+function compactBatchErrors(errors) {
+  return (errors || []).map(({ rowNo, message }) => ({ rowNo, message }));
+}
+
+function numberValue(value, fallback = 0) {
+  if (value === '' || value == null) return fallback;
+  const num = Number(value);
+  return Number.isFinite(num) ? num : fallback;
+}
+
+function intValue(value, fallback = 0) {
+  const num = parseInt(value, 10);
+  return Number.isFinite(num) ? num : fallback;
+}
+
+function parseJsonArray(value) {
+  if (Array.isArray(value)) return value.filter(Boolean);
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function unique(values) {
+  return [...new Set((values || []).map(value => String(value || '').trim()).filter(Boolean))];
+}
+
+function getCell(row, keys) {
+  for (const key of keys) {
+    if (row[key] !== undefined && row[key] !== null && String(row[key]).trim() !== '') return row[key];
+  }
+  return '';
+}
+
+const batchInvoiceTypes = ['收据', '专票13%'];
+const invoiceHeaders = ['采购票种', '采购凭证', '发票类型', 'invoiceType', 'invoice_type'];
+const normalizeInvoiceType = value => require('../sales/purchaseVat').normalizeInvoiceType(normalizeText(value));
+
+function batchRowNumber(row, index) {
+  return Number.isInteger(row.__rowNum__) ? row.__rowNum__ + 1 : index + 2;
+}
+
+function batchInvoice(row, overrides, rowNo) {
+  return normalizeInvoiceType(overrides.has(rowNo) ? overrides.get(rowNo) : getCell(row, invoiceHeaders));
+}
+
+function parseInvoiceOverrides(raw, rows, fail) {
+  if (!raw) return new Map();
+  let entries;
+  try { entries = JSON.parse(raw); } catch (_) { return fail(); }
+  if (!Array.isArray(entries) || entries.length > rows.length) return fail();
+  const rowNumbers = new Set(rows.map(batchRowNumber));
+  const overrides = new Map();
+  for (const entry of entries) {
+    if (!entry || !rowNumbers.has(entry.rowNo) || overrides.has(entry.rowNo) ||
+        typeof entry.invoiceType !== 'string' || !batchInvoiceTypes.includes(entry.invoiceType)) return fail();
+    overrides.set(entry.rowNo, entry.invoiceType);
+  }
+  return overrides;
+}
+
+function batchFoundationReceipt(item, application) {
+  const invoiceType = normalizeInvoiceType(item.invoice_type);
+  return {
+    productId: item.product_id, invoiceType, unitCost: item.unit_price,
+    source: 'batch_inventory_inbound', applicationNo: application.application_no,
+    applicationItemId: item.item_id, rowNo: item.row_no,
+    reason: invoiceType ? '已审批的批量入库明细采购票种' : '历史批量入库单缺少采购票种'
+  };
+}
+
+function normalizeResourceTypes(value) {
+  return unique(String(value || '')
+    .split(/[,，;；\s]+/)
+    .map(item => item.trim()));
+}
+
+function normalizeOperationResources(operationType, resourceTypes) {
+  if (operationType !== 'INBOUND') {
+    return { resourceTypes: [], triggerResourceRights: false };
+  }
+  return { resourceTypes, triggerResourceRights: false };
+}
+
+function parseWorkbook(buffer) {
+  const workbook = XLSX.read(buffer, { type: 'buffer', cellDates: true });
+  const sheetName = workbook.SheetNames[0];
+  if (!sheetName) return [];
+  return XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: '' });
+}
+
+function applicationNo() {
+  return `IBM${generateBatchNo().slice(1)}${generateUUID().slice(-4).toUpperCase()}`;
+}
+
+function businessNo(prefix) {
+  const now = new Date();
+  const stamp = [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, '0'),
+    String(now.getDate()).padStart(2, '0'),
+    String(now.getHours()).padStart(2, '0'),
+    String(now.getMinutes()).padStart(2, '0'),
+    String(now.getSeconds()).padStart(2, '0')
+  ].join('');
+  return `${prefix}${stamp}${generateUUID().slice(-6).toUpperCase()}`;
+}
+
+function assertStoreVisible(ctx, storeId) {
+  const allowed = ctx.state.user.accessibleStoreIds || [];
+  if (!allowed.includes('*') && !allowed.map(String).includes(String(storeId || ''))) {
+    ctx.throw(403, '无权操作该门店库存');
+  }
+}
+
+async function resolveProduct(row, transaction) {
+  const productId = normalizeText(getCell(row, ['商品ID', 'productId', 'product_id']));
+  const productCode = normalizeText(getCell(row, ['商品编码', 'productCode', 'product_code']));
+  const productName = normalizeText(getCell(row, ['商品名称', 'productName', 'product_name']));
+  const pnCode = normalizeText(getCell(row, ['PN', 'pn', 'pnCode', 'pn_code']));
+
+  if (productId) {
+    const product = await Product.findOne({ where: { product_id: productId, is_deleted: 0 }, transaction });
+    if (product) return product;
+  }
+  if (productCode) {
+    const product = await Product.findOne({ where: { product_code: productCode, is_deleted: 0 }, transaction });
+    if (product) return product;
+  }
+  if (pnCode) {
+    const pn = await ProductPn.findOne({ where: { pn_code: pnCode, is_deleted: 0 }, transaction });
+    if (pn) {
+      const product = await Product.findOne({ where: { product_id: pn.product_id, is_deleted: 0 }, transaction });
+      if (product) return product;
+    }
+  }
+  if (productName) {
+    const product = await Product.findOne({ where: { name: productName, is_deleted: 0 }, transaction });
+    if (product) return product;
+  }
+  return null;
+}
+
+async function resolveStoreById(storeId, transaction) {
+  const baseWhere = { is_deleted: 0, status: 1 };
+  const exact = await Store.findOne({
+    where: { ...baseWhere, store_id: storeId },
+    transaction
+  });
+  if (exact) return exact;
+
+  // 兼容历史数据中的门店 ID 尾随空格；新数据统一保存为 trim 后的 ID。
+  const legacyMatches = await Store.findAll({
+    where: {
+      ...baseWhere,
+      [Op.and]: sequelize.where(sequelize.fn('TRIM', sequelize.col('store_id')), storeId)
+    },
+    limit: 2,
+    transaction
+  });
+  return legacyMatches.length === 1 ? legacyMatches[0] : null;
+}
+
+async function resolveStore(row, transaction) {
+  const storeId = normalizeText(getCell(row, ['门店ID', 'storeId', 'store_id']));
+  const storeName = normalizeText(getCell(row, ['门店', '门店名称', 'storeName', 'store_name']));
+  if (storeId) {
+    return resolveStoreById(storeId, transaction);
+  }
+  if (storeName) {
+    return Store.findOne({ where: { name: storeName, is_deleted: 0, status: 1 }, transaction });
+  }
+  return null;
+}
+
+async function resolveLocation(row, storeId, transaction, preferredType = '') {
+  const locationType = normalizeText(preferredType);
+  if (locationType) {
+    return Location.findOne({ where: { store_id: storeId, type: locationType, status: 1 }, transaction });
+  }
+  const locationId = normalizeText(getCell(row, ['库位ID', 'locationId', 'location_id']));
+  const locationName = normalizeText(getCell(row, ['库位', '库位名称', 'locationName', 'location_name']));
+  if (!locationId && !locationName) return null;
+  const where = { store_id: storeId, status: 1 };
+  if (locationId) where.location_id = locationId;
+  if (!locationId && locationName) where.name = locationName;
+  return Location.findOne({ where, transaction });
+}
+
+async function inventoryQty(productId, storeId, inventoryType, locationId, transaction) {
+  const where = { product_id: productId, store_id: storeId, location_id: locationId || '' };
+  const row = await Inventory.findOne({ where, transaction });
+  return row ? Number(row[inventoryType] || 0) : 0;
+}
+
+async function updateInventoryQty(productId, storeId, inventoryType, delta, transaction, locationId = '', context = {}) {
+  const normalizedLocationId = delta > 0
+    ? await resolveInventoryWriteLocation(Location, {
+      storeId, field: inventoryType, locationId, transaction
+    })
+    : (locationId || '');
+  let row = await Inventory.findOne({
+    where: { product_id: productId, store_id: storeId, location_id: normalizedLocationId },
+    transaction,
+    lock: transaction?.LOCK?.UPDATE
+  });
+  if (!row) {
+    row = await Inventory.create({
+      inventory_id: generateUUID(),
+      product_id: productId,
+      store_id: storeId,
+      location_id: normalizedLocationId,
+      normal_qty: 0,
+      regular_qty: 0,
+      subsidy_qty: 0,
+      second_qty: 0,
+      display_qty: 0,
+      demo_qty: 0,
+      unsellable_qty: 0,
+      pending_qty: 0,
+      rental_demo_qty: 0
+    }, { transaction });
+  }
+  const current = Number(row[inventoryType] || 0);
+  const next = current + Number(delta || 0);
+  if (next < 0) {
+    const rowLabel = context.rowNo ? `第 ${context.rowNo} 行` : '当前明细';
+    throw Object.assign(
+      new Error(`${rowLabel}库存不足，不能执行负库存调整（当前可用:${current}，调整数量:${delta}）`),
+      { status: 409 }
+    );
+  }
+  await row.update({ [inventoryType]: next }, { transaction, foundationReceipt: delta > 0 ? context.foundationReceipt || {
+    productId, invoiceType: null, source: 'batch_inventory_adjustment',
+    reason: '批量库存调整未关联采购凭证，请确认本批票税'
+  } : null });
+  return { before: current, after: next };
+}
+
+async function validateRows(ctx, rows, options, transaction) {
+  if(options?.operationType==='COST_MODE')return require('./snCostModeMaintenance').validate(ctx,rows,transaction,assertStoreVisible);
+  if (typeof options === 'string') {
+    options = { operationType: options, triggerResourceRights: arguments[3] };
+    transaction = arguments[4];
+  }
+  const {
+    operationType,
+    triggerResourceRights,
+    importMode = '',
+    inventoryType: batchInventoryType = '',
+    resourceTypes: batchResourceTypes = [],
+    invoiceOverrides = new Map(),
+    previewOnly = false
+  } = options;
+  const validRows = [];
+  const errors = [];
+  const seenSn = new Set();
+  const productCache = new Map();
+  const storeCache = new Map();
+  const locationCache = new Map();
+
+  for (const [index, row] of rows.entries()) {
+    const rowNo = batchRowNumber(row, index);
+    const rowErrors = [];
+    const productKey = ['商品ID', 'productId', 'product_id', '商品编码', 'productCode', 'product_code', '商品名称', 'productName', 'product_name', 'PN', 'pn', 'pnCode', 'pn_code']
+      .map(key => normalizeText(row[key])).join('\u001f');
+    const storeKey = ['门店ID', 'storeId', 'store_id', '门店', '门店名称', 'storeName', 'store_name']
+      .map(key => normalizeText(row[key])).join('\u001f');
+    const product = productCache.has(productKey)
+      ? productCache.get(productKey)
+      : await resolveProduct(row, transaction);
+    const store = storeCache.has(storeKey)
+      ? storeCache.get(storeKey)
+      : await resolveStore(row, transaction);
+    productCache.set(productKey, product);
+    storeCache.set(storeKey, store);
+    const inventoryType = batchInventoryType || normalizeText(getCell(row, ['库存类型', 'inventoryType', 'inventory_type'])) || 'normal_qty';
+    const locationKey = `${store?.store_id || ''}\u001f${batchInventoryType}\u001f${['库位ID', 'locationId', 'location_id', '库位', '库位名称', 'locationName', 'location_name']
+      .map(key => normalizeText(row[key])).join('\u001f')}`;
+    const location = store
+      ? (locationCache.has(locationKey)
+        ? locationCache.get(locationKey)
+        : await resolveLocation(row, store.store_id, transaction, batchInventoryType))
+      : null;
+    locationCache.set(locationKey, location);
+    const snCode = normalizeSnCode(getCell(row, ['SN', '机器号', '序列号', 'sn', 'snCode', 'sn_code']));
+    let pnCode = normalizeText(getCell(row, ['PN', 'pn', 'pnCode', 'pn_code']));
+    const resourceTypes = batchResourceTypes.length > 0
+      ? batchResourceTypes
+      : normalizeResourceTypes(getCell(row, ['资源权益', '资源类型', 'resourceTypes', 'resource_types']));
+    const unitPrice = numberValue(getCell(row, ['提货价', '采购价', '入库单价', '单价', 'unitPrice', 'unit_price']), 0);
+    const originalPickupPrice = numberValue(getCell(row, ['原始提货价', '提货价', '采购价', 'originalPickupPrice', 'original_pickup_price']), unitPrice);
+    const invoiceType = operationType === 'INBOUND' ? batchInvoice(row, invoiceOverrides, rowNo) : null;
+    if (operationType === 'INBOUND' && !invoiceType && !previewOnly) rowErrors.push('请选择采购票种（收据或专票13%）');
+    const quantityRaw = getCell(row, ['数量', '调整数量', 'quantity', 'qty']);
+    const quantity = product && Number(product.need_sn || 0) === 1 ? 1 : intValue(quantityRaw, operationType === 'ADJUST' ? 0 : 1);
+
+    if (!product) rowErrors.push('商品不存在，请填写有效商品ID、商品编码、PN或商品名称');
+    if (product && Number(product.status || 1) !== 1) rowErrors.push('商品已停用');
+    if (product && importMode === 'SN' && Number(product.need_sn || 0) !== 1) rowErrors.push('当前导入模式为SN商品，但该商品不需要SN管理');
+    if (product && importMode === 'NON_SN' && Number(product.need_sn || 0) === 1) rowErrors.push('当前导入模式为非SN商品，但该商品需要SN管理');
+    if (!store) rowErrors.push('门店不存在或已停用');
+    if (store) {
+      try {
+        assertStoreVisible(ctx, store.store_id);
+      } catch (_) {
+        rowErrors.push('无权操作该门店');
+      }
+    }
+    if (!VALID_INVENTORY_TYPES.has(inventoryType)) rowErrors.push('库存类型无效');
+    if ((operationType === 'INBOUND' || operationType === 'OUTBOUND') && quantity <= 0) rowErrors.push('数量必须大于0');
+    if (operationType === 'ADJUST' && quantity === 0) rowErrors.push('调整数量不能为0');
+    if (operationType === 'INBOUND' && resourceTypes.length === 0) {
+      rowErrors.push('入库必须填写资源权益');
+    }
+    if (!location) rowErrors.push(batchInventoryType ? '所选仓位在该门店不存在或已停用' : '库位不存在或不属于该门店');
+
+    if (product && (operationType === 'INBOUND' || (operationType === 'ADJUST' && quantity > 0))) {
+      try { pnCode = await requireInboundPn(product, pnCode, transaction); }
+      catch (error) { rowErrors.push(error.message); }
+    }
+
+    let sn = null;
+    if (product && Number(product.need_sn || 0) === 1) {
+      try {
+        const productPns = await ProductPn.findAll({
+          where: { product_id: product.product_id, status: 1, is_deleted: 0 },
+          attributes: ['pn_code'],
+          transaction
+        });
+        pnCode = assertSingleSnProductPn({
+          needSn: product.need_sn,
+          productCode: product.product_code,
+          configuredCodes: [
+            productPns.map(item => item.pn_code),
+            product.manufacturer_code
+          ],
+          requestedCode: pnCode
+        });
+      } catch (error) {
+        rowErrors.push(error.message);
+      }
+      if (operationType === 'ADJUST') rowErrors.push('SN商品不得通过数量调整维护，请使用SN清单入库或出库');
+      if (!snCode) rowErrors.push('SN商品必须填写SN');
+      const snKey = JSON.stringify([String(pnCode || '').trim().toUpperCase(), normalizeSnCode(snCode).toUpperCase()]);
+      if (snCode && seenSn.has(snKey)) rowErrors.push('导入文件中SN重复');
+      if (snCode) seenSn.add(snKey);
+
+      if (operationType === 'INBOUND') {
+        if (snCode) {
+          const existing = await findInboundSnByIdentity({ pnCode, snCode, transaction, forUpdate: !previewOnly });
+          if (existing
+            && String(existing.product_id || '') !== String(product.product_id || '')) {
+            rowErrors.push(`SN的 PN 已关联其他商品（原PN：${existing.pn_code || '-'}），不能按当前商品重复创建`);
+          }
+          if (existing ) {
+            rowErrors.push(`SN当前状态为${existing.status || '未知'}，不允许重复入库`);
+          }
+        }
+      } else if (snCode) {
+        sn = await ProductSn.findOne({
+          where: { sn_code: snCode, product_id: product.product_id, status: 'in_stock', is_deleted: 0 },
+          transaction
+        });
+        if (!sn) rowErrors.push('SN不存在、未在库或不属于该商品');
+        if (sn && store && String(sn.store_id || '') !== String(store.store_id)) rowErrors.push('SN不在当前门店');
+        if (sn && location && String(sn.location_id || '') !== String(location.location_id || '')) rowErrors.push('SN不在所选仓位');
+        if (sn && String(sn.inventory_type || 'normal_qty') !== inventoryType) rowErrors.push('SN库存类型与所选仓位不一致');
+      }
+    } else if (product && Number(product.need_sn || 0) === 0 && operationType !== 'INBOUND') {
+      const before = store ? await inventoryQty(product.product_id, store.store_id, inventoryType, location?.location_id || '', transaction) : 0;
+      const delta = operationType === 'OUTBOUND' ? -quantity : quantity;
+      if (before + delta < 0) rowErrors.push(`库存不足，当前可用 ${before}`);
+    }
+
+    const normalized = {
+      rowNo,
+      operationType,
+      product,
+      store,
+      location,
+      pnCode,
+      sn,
+      snCode,
+      inventoryType,
+      quantity,
+      unitPrice,
+      originalPickupPrice,
+      invoiceType,
+      resourceTypes,
+      triggerResourceRights,
+      remark: normalizeText(getCell(row, ['备注', 'remark'])),
+      raw: row
+    };
+
+    if (rowErrors.length > 0) {
+      errors.push({ rowNo, message: rowErrors.join('；'), raw: row });
+    } else {
+      validRows.push(normalized);
+    }
+  }
+
+  return { validRows, errors };
+}
+
+async function createBatchApplication(ctx) {
+  const user = ctx.state.user;
+  const operationType = normalizeText(ctx.request.body.operationType || ctx.request.body.operation_type).toUpperCase();
+  const importMode = normalizeText(ctx.request.body.importMode || ctx.request.body.import_mode).toUpperCase();
+  const inventoryType = normalizeText(ctx.request.body.inventoryType || ctx.request.body.inventory_type || ctx.request.body.locationType || ctx.request.body.location_type);
+  const requestedResourceTypes = normalizeResourceTypes(ctx.request.body.resourceTypes || ctx.request.body.resource_types || '');
+
+  if (!VALID_OPERATION_TYPES.has(operationType)) ctx.throw(400, '批量操作类型无效');
+  if (importMode && !['SN', 'NON_SN'].includes(importMode)) ctx.throw(400, '导入模式无效');
+  if (inventoryType && !VALID_INVENTORY_TYPES.has(inventoryType)) ctx.throw(400, '仓位类型无效');
+  if (!ctx.file?.buffer) ctx.throw(400, '请上传Excel文件');
+
+  const { resourceTypes, triggerResourceRights } = normalizeOperationResources(
+    operationType,
+    requestedResourceTypes
+  );
+
+  const rows = parseWorkbook(ctx.file.buffer);
+  if (rows.length === 0) ctx.throw(400, 'Excel没有可导入数据');
+  const previewOnly = String(ctx.request.body.previewOnly || '') === '1';
+  if (previewOnly && operationType !== 'INBOUND') ctx.throw(400, '仅批量入库支持采购票种预览');
+  const invoiceOverrides = operationType === 'INBOUND'
+    ? parseInvoiceOverrides(ctx.request.body.invoiceOverrides, rows, () => ctx.throw(400, '采购票种修改内容无效，请重新预览'))
+    : new Map();
+  const missingTax = operationType === 'INBOUND' ? rows.flatMap((row, index) => {
+    const rowNo = batchRowNumber(row, index);
+    return batchInvoice(row, invoiceOverrides, rowNo) ? [] : [{ rowNo, message: '请选择采购票种（收据或专票13%）', raw: row }];
+  }) : [];
+  if (!previewOnly && missingTax.length) {
+    ctx.status = 400;
+    ctx.body = { code: 400, message: '每行必须填写采购票种', data: { errors: missingTax, totalRows: rows.length } };
+    return;
+  }
+
+  const transaction = await sequelize.transaction({ readOnly: previewOnly });
+  try {
+    const { validRows, errors } = await validateRows(ctx, rows, {
+      operationType,
+      triggerResourceRights,
+      importMode,
+      inventoryType,
+      resourceTypes, invoiceOverrides, previewOnly
+    }, transaction);
+    if (previewOnly) {
+      const validByNo = new Map(validRows.map(row => [row.rowNo, row]));
+      const previewRows = rows.map((raw, index) => {
+        const rowNo = batchRowNumber(raw, index);
+        const valid = validByNo.get(rowNo);
+        return {
+          rowNo, invoiceType: batchInvoice(raw, invoiceOverrides, rowNo),
+          productName: valid?.product.name || normalizeText(getCell(raw, ['商品名称', '商品编码', 'PN'])),
+          storeName: valid?.store.name || normalizeText(getCell(raw, ['门店', '门店名称', '门店ID'])),
+          snCode: valid?.snCode || normalizeText(getCell(raw, ['SN', '机器号', '序列号'])),
+          quantity: valid?.quantity ?? null
+        };
+      });
+      await transaction.rollback();
+      ctx.body = { rows: previewRows, invoiceTypes: batchInvoiceTypes, errors };
+      return;
+    }
+    if (validRows.length === 0) {
+      await transaction.rollback();
+      ctx.status = 400;
+      ctx.body = { code: 400, message: '没有可导入的有效数据', data: { errors, totalRows: rows.length } };
+      return;
+    }
+    const applicationId = generateUUID();
+    const app = await InventoryBatchApplication.create({
+      application_id: applicationId,
+      application_no: applicationNo(),
+      operation_type: operationType,
+      trigger_resource_rights: triggerResourceRights ? 1 : 0,
+      source_file_name: normalizeUploadedFilename(ctx.file.originalname),
+      store_ids: JSON.stringify(unique(validRows.map(row => row.store.store_id))),
+      total_rows: rows.length,
+      valid_rows: validRows.length,
+      error_rows: errors.length,
+      // raw 行数据保留在接口响应中供本次下载；数据库仅保存定位和原因，避免大批量导入超过字段容量。
+      error_json: JSON.stringify(compactBatchErrors(errors)),
+      status: 'pending',
+      applicant_staff_id: user.staffId || null,
+      applicant_name: user.name || '',
+      applicant_distributor_id: user.distributorId || '',
+      remark: ctx.request.body.remark || ''
+    }, { transaction });
+
+    for (const row of validRows) {
+      const beforeQty = row.product.need_sn ? (row.operationType === 'INBOUND' ? 0 : 1) : await inventoryQty(
+        row.product.product_id,
+        row.store.store_id,
+        row.inventoryType,
+        row.location?.location_id || '',
+        transaction
+      );
+      const delta = row.operationType === 'OUTBOUND' ? -row.quantity : row.quantity;
+      const afterQty = row.operationType === 'COST_MODE' ? beforeQty : row.product.need_sn ? (row.operationType === 'INBOUND' ? 1 : 0) : beforeQty + delta;
+      await InventoryBatchApplicationItem.create({
+        application_id: applicationId,
+        row_no: row.rowNo,
+        operation_type: row.operationType,
+        product_id: row.product.product_id,
+        product_code: row.product.product_code,
+        product_name: row.product.name,
+        need_sn: Number(row.product.need_sn || 0),
+        pn_code: row.pnCode,
+        sn_id: row.sn?.sn_id || null,
+        sn_code: row.snCode,
+        store_id: row.store.store_id,
+        location_id: row.location?.location_id || '',
+        inventory_type: row.inventoryType,
+        quantity: row.quantity,
+        before_qty: beforeQty,
+        after_qty: afterQty,
+        unit_price: row.unitPrice,
+        invoice_type: row.invoiceType || null,
+        original_pickup_price: row.originalPickupPrice,
+        resource_types: JSON.stringify(row.resourceTypes),
+        trigger_resource_rights: row.triggerResourceRights ? 1 : 0,
+        validation_status: 'valid',
+        raw_json: JSON.stringify(row.raw),
+        create_time: new Date(),
+        remark: row.remark
+      }, { transaction });
+    }
+
+    await transaction.commit();
+    ctx.body = {
+      application: app,
+      errors,
+      totalRows: rows.length,
+      validRows: validRows.length,
+      errorRows: errors.length,
+      message: errors.length > 0
+        ? `批量维护申请已生成：成功${validRows.length}行，失败${errors.length}行`
+        : '批量维护申请已生成，待经销商审批'
+    };
+  } catch (error) {
+    await transaction.rollback();
+    throw error;
+  }
+}
+
+async function listBatchApplications(ctx) {
+  if (await require('../approval/businessRuntime').reviewList(ctx, 'inventory_batch')) return;
+  const user = ctx.state.user;
+  const where = {};
+  const userRoles = roles(user);
+  if (ctx.query.scope === 'review' && !canReview(user)) {
+    where.application_id = '__NO_BATCH_APPROVAL_ACCESS__';
+  }
+  if (ctx.query.status) where.status = ctx.query.status;
+  if (ctx.query.operationType) where.operation_type = ctx.query.operationType;
+  if (!isBoss(user)) {
+    if (userRoles.includes('admin')) {
+      where.applicant_distributor_id = user.distributorId || '';
+    } else {
+      where.applicant_staff_id = user.staffId || 0;
+    }
+  }
+  const { count, rows } = await InventoryBatchApplication.findAndCountAll({
+    where,
+    order: [
+      [sequelize.literal("CASE WHEN STATUS = 'pending' THEN 0 ELSE 1 END"), 'ASC'],
+      ['create_time', 'DESC']
+    ],
+    ...paginate({}, { page: ctx.query.page || 1, pageSize: ctx.query.pageSize || 20 })
+  });
+  ctx.body = formatPaginatedResult(rows, { page: ctx.query.page || 1, pageSize: ctx.query.pageSize || 20, count });
+}
+
+async function getBatchApplicationDetail(ctx) {
+  const app = await InventoryBatchApplication.findByPk(ctx.params.applicationId);
+  if (!app) ctx.throw(404, '批量维护申请不存在');
+  const user = ctx.state.user;
+  if (!isBoss(user) && String(app.applicant_distributor_id || '') !== String(user.distributorId || '')) {
+    if (String(app.applicant_staff_id || '') !== String(user.staffId || '')) ctx.throw(403, '无权查看该申请');
+  }
+  const items = await InventoryBatchApplicationItem.findAll({
+    where: { application_id: app.application_id },
+    attributes: app.operation_type === 'COST_MODE' ? undefined : { exclude: ['raw_json'] },
+    include: [{ model: Store, attributes: ['store_id', 'name'] }],
+    order: [['row_no', 'ASC']]
+  });
+  ctx.body = { ...app.toJSON(), items };
+}
+
+async function createSnInbound(item, application, transaction) {
+  const existing = await findInboundSnByIdentity({
+    pnCode: item.pn_code,
+    snCode: item.sn_code,
+    transaction
+  });
+  if (existing
+    && String(existing.product_id || '') !== String(item.product_id || '')) {
+    throw Object.assign(
+      new Error(`第 ${item.row_no} 行SN ${item.sn_code} 已关联其他商品，不能按当前商品入库`),
+      { status: 409 }
+    );
+  }
+  if (existing ) {
+    throw Object.assign(
+      new Error(`第 ${item.row_no} 行SN ${item.sn_code} 当前状态为${existing.status || '未知'}，不允许重复入库`),
+      { status: 409 }
+    );
+  }
+  if (existing) {
+    const target = await Location.findByPk(item.location_id, { transaction });
+    if (!target || target.type !== item.inventory_type) throw Object.assign(new Error('批量入库目标库位与仓位类型不一致，请核对后重试'), { status: 409 });
+    await assertSnEligible(existing, { transaction, movement: true, reentry: true, targetLocation: target, targetStoreId: item.store_id });
+  }
+  const pnMaster = await ensureProductPnMaster({
+    productId: item.product_id,
+    pnCode: item.pn_code,
+    transaction
+  });
+  const receiptProduct = await Product.findByPk(item.product_id, { transaction });
+  const pricingMode = receiptProduct?.gross_profit_cost_mode === 'COMPANY_PRICE' ? 1 : 0;
+  const previousSnStatus = existing?.status;
+  const foundationReceipt = item.invoice_type ? batchFoundationReceipt(item, application) : null;
+  const sn = existing || await ProductSn.create({
+    sn_id: generateUUID(),
+    product_id: item.product_id,
+    pn_id: pnMaster.pn_id,
+    pn_code: item.pn_code,
+    sn_code: item.sn_code,
+    status: 'in_stock',
+    inventory_type: item.inventory_type || 'normal_qty',
+     store_id: item.store_id,
+     location_id: item.location_id || '',
+     inbound_time: new Date(),
+     original_inbound_time: new Date(),
+     inbound_price: item.unit_price || 0,
+    original_pickup_price: item.original_pickup_price || item.unit_price || 0,
+    gross_profit_use_standard_price: pricingMode,
+    gross_profit_uplift_amount: 0,
+    batch_no: application.application_no,
+    remark: `批量入库 ${application.application_no}`,
+    is_deleted: 0
+  }, { transaction, foundationReceipt });
+
+  if (existing) {
+    await sn.update({
+      gross_profit_use_standard_price: pricingMode,
+      gross_profit_uplift_amount: 0,
+      product_id: item.product_id,
+      pn_id: pnMaster.pn_id,
+      pn_code: item.pn_code,
+      status: 'in_stock',
+      inventory_type: item.inventory_type || 'normal_qty',
+      store_id: item.store_id,
+      location_id: item.location_id || '',
+      inbound_time: new Date(),
+      ...(existing.status === 'returned' ? { original_inbound_time: new Date() } : {}),
+      inbound_price: item.unit_price || 0,
+      original_pickup_price: item.original_pickup_price || item.unit_price || 0,
+      batch_no: application.application_no,
+      remark: `批量入库 ${application.application_no}`,
+      is_deleted: 0
+    }, { transaction, deferFoundationToReentry: true });
+  }
+
+  await recordSnReentry(sn,previousSnStatus,{transaction,actor:application.applicant_name || application.reviewer_name,document:application.application_no,foundationReceipt});
+
+  const resourceTypes = parseJsonArray(item.resource_types);
+  for (const resourceType of resourceTypes) {
+    const rule = await findResourceRule({ productId: item.product_id, resourceType, transaction });
+    const amount = calculatePreSaleRuleAmount(rule, sn);
+    const [right, wasCreated] = await InventoryResourceRight.findOrCreate({
+      where: { sn_id: sn.sn_id, resource_type: resourceType },
+      defaults: {
+        right_id: generateUUID(),
+        sn_id: sn.sn_id,
+        sn_code: sn.sn_code,
+        product_id: item.product_id,
+        resource_type: resourceType,
+        rule_config_id: rule?.config_id || null,
+        source_inbound_id: application.application_id,
+        initial_status: 'AVAILABLE',
+        current_status: 'AVAILABLE',
+        amount,
+        source: 'BATCH_INBOUND',
+        remark: `批量入库 ${application.application_no} 生成`
+      },
+      transaction
+    });
+    if (wasCreated) {
+      await ResourceRightChangeOrder.create({
+        change_id: generateUUID(),
+        change_order_no: businessNo('RRC'),
+        sn_id: sn.sn_id,
+        sn_code: sn.sn_code,
+        product_id: item.product_id,
+        resource_type: resourceType,
+        before_status: 'NOT_APPLICABLE',
+        after_status: 'AVAILABLE',
+        change_amount: amount,
+        change_reason: 'BATCH_INBOUND',
+        approval_status: 'approved',
+        related_order_id: application.application_id,
+        applicant_staff_id: application.applicant_staff_id,
+        applicant_name: application.applicant_name,
+        reviewer_staff_id: application.reviewer_staff_id,
+        reviewer_name: application.reviewer_name,
+        review_time: application.review_time,
+        remark: `库存批量维护 ${application.application_no}`
+      }, { transaction });
+    }
+  }
+
+  await SnLog.create({
+    log_id: generateUUID(),
+    sn_id: sn.sn_id,
+    sn_code: sn.sn_code,
+    product_id: item.product_id,
+    product_name: item.product_name,
+    store_id: item.store_id,
+    action: 'batch_inbound',
+    remark: `库存批量维护入库 ${application.application_no}`,
+    create_user: application.applicant_name || application.reviewer_name,
+    create_time: new Date()
+  }, { transaction });
+
+  await item.update({ sn_id: sn.sn_id, result_json: JSON.stringify({ snId: sn.sn_id }) }, { transaction });
+  return sn;
+}
+
+async function createNonSnBatchRights(item, application, transaction) {
+  const resourceTypes = parseJsonArray(item.resource_types);
+  for (const resourceType of resourceTypes) {
+    const rule = await findResourceRule({ productId: item.product_id, resourceType, transaction });
+    const amount = calculatePreSaleRuleAmount(rule, { inbound_price: item.unit_price || 0 });
+    await NonSnInventoryBatchRight.create({
+      right_id: generateUUID(),
+      application_id: application.application_id,
+      item_id: item.item_id,
+      product_id: item.product_id,
+      store_id: item.store_id,
+      location_id: item.location_id || '',
+      resource_type: resourceType,
+      rule_config_id: rule?.config_id || null,
+      total_quantity: item.quantity,
+      remaining_quantity: item.quantity,
+      amount_per_unit: amount,
+      source_type: 'BATCH_INBOUND',
+      status: 'AVAILABLE',
+      remark: `批量入库 ${application.application_no}`
+    }, { transaction });
+  }
+}
+
+async function executeApplicationItem(item, application, transaction) {
+  if(item.operation_type==='COST_MODE')return require('./snCostModeMaintenance').execute(item,application,transaction);
+  let pricingSnapshot;
+  if (item.operation_type === 'INBOUND' || (item.operation_type === 'ADJUST' && Number(item.quantity) > 0)) {
+    const pnCode = await requireInboundPn(item.product_id, item.pn_code || '', transaction);
+    await item.update({ pn_code: pnCode }, { transaction });
+    const product = await Product.findByPk(item.product_id, { transaction });
+    pricingSnapshot = { costMode: product?.gross_profit_cost_mode === 'COMPANY_PRICE' ? 'COMPANY_PRICE' : 'PURCHASE_PRICE', uplift: 0 };
+  }
+  let inventoryResult;
+  let snId = item.sn_id || null;
+
+  if (Number(item.need_sn || 0) === 1) {
+    // SN 是库存的最小事实单位，T_INVENTORY 只是按仓位生成的物化投影。
+    // 批量维护有独立执行器，执行前后必须重建投影，不能直接用可能过期的
+    // 聚合数量做扣减，否则会把“SN 在库、投影为 0”误报成负库存。
+    await syncSerializedInventoryBalance({
+      productId: item.product_id,
+      storeId: item.store_id,
+      transaction
+    });
+    const beforeQty = await inventoryQty(
+      item.product_id,
+      item.store_id,
+      item.inventory_type,
+      item.location_id || '',
+      transaction
+    );
+
+    if (item.operation_type === 'INBOUND') {
+      const sn = await createSnInbound(item, application, transaction);
+      snId = sn?.sn_id || item.sn_id || null;
+      await syncSerializedInventoryBalance({
+        productId: item.product_id,
+        storeId: item.store_id,
+        transaction
+      });
+      inventoryResult = {
+        before: beforeQty,
+        after: await inventoryQty(
+          item.product_id,
+          item.store_id,
+          item.inventory_type,
+          item.location_id || '',
+          transaction
+        )
+      };
+    } else {
+      const sn = await ProductSn.findOne({
+        where: { sn_id: item.sn_id || '', is_deleted: 0 },
+        transaction,
+        lock: transaction?.LOCK?.UPDATE
+      });
+      if (!sn || sn.status !== 'in_stock') throw Object.assign(new Error(`第 ${item.row_no} 行SN不在库，无法执行`), { status: 409 });
+      await sn.update({ status: 'out_stock' }, { transaction });
+      await syncSerializedInventoryBalance({
+        productId: item.product_id,
+        storeId: item.store_id,
+        transaction
+      });
+      inventoryResult = {
+        before: beforeQty,
+        after: await inventoryQty(
+          item.product_id,
+          item.store_id,
+          item.inventory_type,
+          item.location_id || '',
+          transaction
+        )
+      };
+      await SnLog.create({
+        log_id: generateUUID(),
+        sn_id: sn.sn_id,
+        sn_code: sn.sn_code,
+        product_id: item.product_id,
+        product_name: item.product_name,
+        store_id: item.store_id,
+        action: 'batch_outbound',
+        remark: `库存批量维护出库 ${application.application_no}`,
+        create_user: application.applicant_name || application.reviewer_name,
+        create_time: new Date()
+      }, { transaction });
+    }
+  } else {
+    const delta = item.operation_type === 'OUTBOUND' ? -Number(item.quantity || 0) : Number(item.quantity || 0);
+    inventoryResult = await updateInventoryQty(
+      item.product_id,
+      item.store_id,
+      item.inventory_type,
+      delta,
+      transaction,
+      item.location_id || '',
+      { rowNo: item.row_no, ...(item.operation_type === 'INBOUND'
+        ? { foundationReceipt: batchFoundationReceipt(item, application) } : {}) }
+    );
+    if (item.operation_type === 'INBOUND') {
+      await createNonSnBatchRights(item, application, transaction);
+    }
+  }
+
+  await item.update({
+    before_qty: inventoryResult.before,
+    after_qty: inventoryResult.after,
+    execute_status: 'success',
+    execute_error: null,
+    execute_time: new Date(),
+    result_json: JSON.stringify({ status: 'success', snId, pricingSnapshot })
+  }, { transaction });
+}
+
+function summarizeBatchExecution(items) {
+  const success = items.filter(item => item.execute_status === 'success').length;
+  const failed = items.filter(item => item.execute_status === 'failed').length;
+  const pending = items.length - success - failed;
+  const status = pending > 0
+    ? 'executing'
+    : success === 0
+      ? 'execute_failed'
+      : failed > 0
+        ? 'partially_executed'
+        : 'executed';
+  return { status, success, failed, pending };
+}
+
+async function markBatchItemFailed(applicationId, itemId, error) {
+  const transaction = await sequelize.transaction();
+  try {
+    const item = await InventoryBatchApplicationItem.findOne({
+      where: { item_id: itemId, application_id: applicationId },
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!item || item.execute_status === 'success') {
+      await transaction.rollback();
+      return;
+    }
+    const message = formatExecutionError(error).slice(0, 1000);
+    await item.update({
+      execute_status: 'failed',
+      execute_error: message,
+      execute_time: new Date(),
+      result_json: JSON.stringify({ status: 'failed', error: message })
+    }, { transaction });
+    await transaction.commit();
+  } catch (markError) {
+    try { await transaction.rollback(); } catch (_) { /* 保留原始错误 */ }
+    throw markError;
+  }
+}
+
+async function executeBatchItem(applicationId, itemId) {
+  const transaction = await sequelize.transaction();
+  let item;
+  try {
+    const application = await InventoryBatchApplication.findByPk(applicationId, {
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    item = await InventoryBatchApplicationItem.findOne({
+      where: { item_id: itemId, application_id: applicationId },
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!application || application.status !== 'executing' || !item) {
+      await transaction.rollback();
+      return 'skipped';
+    }
+    if (item.execute_status === 'success' || item.execute_status === 'failed') {
+      await transaction.rollback();
+      return item.execute_status;
+    }
+
+    await executeApplicationItem(item, application, transaction);
+    await transaction.commit();
+    return 'success';
+  } catch (error) {
+    try { await transaction.rollback(); } catch (_) { /* 保留原始错误 */ }
+    if (!item) throw error;
+    await markBatchItemFailed(applicationId, itemId, error);
+    console.error(`[BatchMaintenance] 明细执行失败 ${applicationId}/${itemId}:`, error.stack || error.message);
+    return 'failed';
+  }
+}
+
+async function finalizeBatchApplication(applicationId) {
+  const transaction = await sequelize.transaction();
+  try {
+    const application = await InventoryBatchApplication.findByPk(applicationId, {
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!application || application.status !== 'executing') {
+      await transaction.rollback();
+      return null;
+    }
+    const items = await InventoryBatchApplicationItem.findAll({
+      where: { application_id: applicationId },
+      transaction,
+      lock: transaction.LOCK.UPDATE,
+      order: [['row_no', 'ASC']]
+    });
+    const summary = summarizeBatchExecution(items);
+    const errorSummary = summary.failed > 0
+      ? `${summary.failed}条明细执行失败，请查看申请详情`
+      : null;
+    await application.update({
+      status: summary.status,
+      execute_time: summary.pending > 0 ? null : new Date(),
+      execute_error: errorSummary,
+      update_time: new Date()
+    }, { transaction });
+    await transaction.commit();
+    return summary;
+  } catch (error) {
+    try { await transaction.rollback(); } catch (_) { /* 保留原始错误 */ }
+    throw error;
+  }
+}
+
+async function executeBatchApplicationInBackground(applicationId) {
+  const startTransaction = await sequelize.transaction();
+  try {
+    const application = await InventoryBatchApplication.findByPk(applicationId, {
+      transaction: startTransaction,
+      lock: startTransaction.LOCK.UPDATE
+    });
+    if (!application || application.status !== 'executing') {
+      await startTransaction.rollback();
+      return;
+    }
+
+    await application.update({
+      execute_attempts: Number(application.execute_attempts || 0) + 1,
+      execute_start_time: new Date(),
+      execute_error: null,
+      update_time: new Date()
+    }, { transaction: startTransaction });
+    await startTransaction.commit();
+
+    const items = await InventoryBatchApplicationItem.findAll({
+      where: { application_id: applicationId },
+      order: [['row_no', 'ASC']]
+    });
+    for (const item of items) {
+      if (item.execute_status === 'success' || item.execute_status === 'failed') continue;
+      await executeBatchItem(applicationId, item.item_id);
+    }
+    await finalizeBatchApplication(applicationId);
+  } catch (error) {
+    try { await startTransaction.rollback(); } catch (_) { /* 保留原始错误 */ }
+    try {
+      await InventoryBatchApplication.update({
+        status: 'execute_failed',
+        execute_error: formatExecutionError(error).slice(0, 1000),
+        update_time: new Date()
+      }, { where: { application_id: applicationId, status: 'executing' } });
+    } catch (markError) {
+      console.error(`[BatchMaintenance] 标记执行失败状态失败 ${applicationId}:`, markError.message);
+    }
+    console.error(`[BatchMaintenance] 后台执行失败 ${applicationId}:`, error.stack || error.message);
+  }
+}
+
+function formatExecutionError(error) {
+  if (error?.name === 'SequelizeUniqueConstraintError') {
+    return '数据唯一性校验失败，请检查SN、PN或其他唯一字段是否已存在';
+  }
+  return String(error?.message || error || '批量执行失败');
+}
+
+function scheduleBatchApplicationExecution(applicationId) {
+  if (!applicationId || scheduledExecutionIds.has(applicationId)) return;
+  scheduledExecutionIds.add(applicationId);
+  setImmediate(() => executeBatchApplicationInBackground(applicationId)
+    .catch(error => console.error(`[BatchMaintenance] 后台任务启动失败 ${applicationId}:`, error.stack || error.message))
+    .finally(() => scheduledExecutionIds.delete(applicationId)));
+}
+
+async function recoverExecutingBatchApplications() {
+  const applications = await InventoryBatchApplication.findAll({
+    where: { status: 'executing' },
+    attributes: ['application_id'],
+    order: [['update_time', 'ASC']]
+  });
+  applications.forEach(application => scheduleBatchApplicationExecution(application.application_id));
+  if (applications.length > 0) {
+    console.log(`[BatchMaintenance] 已恢复 ${applications.length} 个后台执行中的批量申请`);
+  }
+  return applications.length;
+}
+
+async function reviewBatchApplication(ctx) {
+  const user = ctx.state.user;
+  const { action, comment = '' } = ctx.request.body || {};
+
+  if (!['approve', 'reject'].includes(action)) ctx.throw(400, '审批动作无效');
+
+  const transaction = await sequelize.transaction();
+  try {
+    const app = await InventoryBatchApplication.findByPk(ctx.params.applicationId, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!app) ctx.throw(404, '批量维护申请不存在');
+    if (app.status !== 'pending') ctx.throw(409, '该申请已处理');
+    if (!await require('../approval/businessRuntime').advance(ctx, 'inventory_batch', app, transaction, action, comment)) { await transaction.commit(); return; }
+    if (!isBoss(user) && String(app.applicant_distributor_id || '') !== String(user.distributorId || '')) {
+      ctx.throw(403, '只能审批本经销商范围内的批量库存申请');
+    }
+
+    await app.update({
+      reviewer_staff_id: user.staffId || null,
+      reviewer_name: user.name || '',
+      review_comment: comment,
+      review_time: new Date(),
+      status: action === 'approve' ? 'executing' : 'pending',
+      execute_error: null,
+      execute_start_time: null,
+      update_time: new Date()
+    }, { transaction });
+
+    if (action === 'reject') {
+      await app.update({ status: 'rejected' }, { transaction });
+      await transaction.commit();
+      ctx.body = { message: '批量维护申请已拒绝' };
+      return;
+    }
+
+    await transaction.commit();
+    scheduleBatchApplicationExecution(app.application_id);
+    ctx.body = { message: '审批已通过，后台正在执行，请稍后刷新查看', status: 'executing' };
+  } catch (error) {
+    await transaction.rollback();
+    throw error;
+  }
+}
+
+module.exports = {
+  createBatchApplication,
+  listBatchApplications,
+  getBatchApplicationDetail,
+  reviewBatchApplication,
+  recoverExecutingBatchApplications,
+  _test: {
+    executeApplicationItem,
+    parseWorkbook,
+    parseInvoiceOverrides,
+    batchInvoice,
+    batchRowNumber,
+    batchFoundationReceipt,
+    normalizeResourceTypes,
+    normalizeOperationResources,
+    getCell,
+    formatExecutionError,
+    validateRows,
+    normalizeUploadedFilename,
+    compactBatchErrors,
+    summarizeBatchExecution,
+    isValidInventoryType: value => VALID_INVENTORY_TYPES.has(value),
+    isReusableInboundSnStatus,
+    normalizeSnIdentityValue
+  }
+};

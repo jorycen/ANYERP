@@ -2,12 +2,217 @@
  * 财务管理路由
  */
 const Router = require('koa-router');
-const { getDailyStatement, createExpense, getExpenseList } = require('./controller');
+const settlementDraft = require('./settlementDraft');
+const {
+  getPlatforms,
+  createPlatform,
+  updatePlatform,
+  deletePlatform,
+  getRecords: getFreightRecords,
+  exportRecords: exportFreightRecords
+} = require('./freightController');
+const {
+  getDailyDetails, getNationalSubsidyReceivables, exportDailyDetails, exportNationalSubsidyReceivables, getDailyStatement, getDailyStatementDetail,
+  batchSettle, settleNationalSubsidyReceivables, createManualNationalSubsidyReceivable, getSettlementSummary, createExpense, saveExpenseDraft, updateExpenseDraft, deleteExpenseDraft, getExpenseList, exportExpenseList, getExpenseDetail, updateExpenseAttribution,
+  submitExpense, payExpense, reviewExpense, cancelExpense, withdrawExpense, getSettlementAccountsWithBalance, getAccountTransactions, addAccountTransaction,
+  getSubsidyAccountRoutes, saveSubsidyAccountRoute, createSubsidyReceipt, getSubsidyReceipts,
+  allocateSubsidyReceipt, refundSubsidyReceipt, reverseSubsidyReceipt, submitSubsidyAdjustment,
+  getSubsidyAdjustments, reviewSubsidyAdjustment, reverseSubsidyAdjustment
+} = require('./controller');
+const {
+  getPayableList, exportPayableList,
+  getUnpaidBySupplier,
+  getPayableSettlementItems,
+  createSettlement,
+  createExpenseSettlement,
+  getSettlementList, exportSettlementList,
+  getSettlementDetail,
+  updateSettlementRemark,
+  deleteSettlementDraft,
+  submitSettlement,
+  confirmSettlement,
+  rejectSettlement,
+  revokeSettlement,
+  voidSettlement,
+  getPaymentCandidates,
+  exportPaymentCandidates,
+  validatePaymentImport,
+  commitPaymentImport,
+  createBatchPayment,
+  createDirectPayment,
+  registerSupplierRefund,
+  confirmSupplierRefund,
+  getPaymentBatches,
+  exportPaymentBatches,
+  getPaymentBatchDetail,
+  voidPaymentBatch,
+  confirmPayment,
+  cancelPayment
+} = require('./payableController');
+const {
+  addRebate,
+  getRebateList,
+  exportRebateList,
+  getRebateBalance,
+  getRebateSummary,
+  reverseRebate,
+  getRebatePostingOrders,
+  reverseRebatePostingOrder,
+  createManufacturerPolicy,
+  updateManufacturerPolicy,
+  getManufacturerPolicyList,
+  importManufacturerPrices,
+  importManufacturerOperations,
+  getManufacturerPriceHistory,
+  getRebateEstimateList,
+  getCostAdjustmentList
+} = require('./rebateController');
+const { requireRole } = require('../../middleware/permission');
+const { getInvoiceCandidates, exportInvoiceCandidates, listInvoices, exportInvoices, previewInvoice, createInvoice, importInvoices, returnInvoice } = require('./invoiceController');
+const {
+  listExpensePerformanceAllocations,
+  listExpensePerformanceStaffOptions,
+  createExpensePerformanceAllocations,
+  reviewExpensePerformanceAllocation,
+  listExpenseAccountingPeriods,
+  closeExpenseAccountingPeriod,
+  reopenExpenseAccountingPeriod
+} = require('./expenseAccountingController');
 
 const router = new Router();
 
-router.get('/daily', getDailyStatement);
+// 员工费用入口：创建及查看本人/授权门店费用不要求财务角色。
 router.post('/expense', createExpense);
-router.get('/expense', getExpenseList);
+router.post('/expense-draft', saveExpenseDraft);
+router.put('/expense-draft/:id', updateExpenseDraft);
+router.delete('/expense-draft/:id', deleteExpenseDraft);
+router.put('/expense-draft/:id/submit', submitExpense);
+router.get('/expense-list', getExpenseList);
+router.get('/expense-list/export', exportExpenseList);
+router.post('/expense/selection-summary', require('./controller').previewExpenseSelection);
+router.post('/expense/batch-submit', require('./controller').batchSubmitExpenses);
+router.get('/expense/form-options', require('./expenseApplication').options);
+router.get('/expense/profit-deduction-options', require('./expenseProfitDeduction').options);
+// Read-only form preview shares the exact normalizer used when creating expenses.
+router.post('/expense/items-preview', async ctx => {
+  const { normalizedItems, normalizedAmount } = require('./expenseItems').normalizeInput(ctx, ctx.request.body);
+  ctx.body = { code: 0, data: { expenseItems: normalizedItems, amount: normalizedAmount } };
+});
+router.post('/expense/profit-deduction-preview', require('./expenseProfitDeduction').preview);
+router.get('/expense/:id', getExpenseDetail);
+router.put('/expense/:id/attribution', updateExpenseAttribution);
+router.put('/expense/:id/amortization', requireRole('finance'), require('./expenseAmortization').update);
+router.post('/expense/:id/review', reviewExpense);
+router.post('/expense/:id/cancel', cancelExpense);
+router.post('/expense/:id/withdraw', withdrawExpense);
+router.get('/expense/:id/performance-allocations', requireRole('finance'), listExpensePerformanceAllocations);
+router.get('/expense/:id/performance-staff-options', requireRole('finance'), listExpensePerformanceStaffOptions);
+router.post('/expense/:id/performance-allocations', requireRole('finance'), createExpensePerformanceAllocations);
+
+// 采购及调拨录单需要读取启用中的配送平台，配置和记录维护仍受财务角色保护。
+router.get('/freight/platforms', getPlatforms);
+
+router.use(requireRole('finance'));
+
+router.get('/expense-performance-allocations', listExpensePerformanceAllocations);
+router.post('/expense-performance-allocations/:allocationId/review', reviewExpensePerformanceAllocation);
+router.get('/expense-accounting-periods', listExpenseAccountingPeriods);
+router.post('/expense-accounting-periods/:monthKey/close', closeExpenseAccountingPeriod);
+router.post('/expense-accounting-periods/:monthKey/reopen', reopenExpenseAccountingPeriod);
+
+// 运费管理
+router.post('/freight/platforms', createPlatform);
+router.put('/freight/platforms/:id', updatePlatform);
+router.delete('/freight/platforms/:id', deletePlatform);
+router.get('/freight/records', getFreightRecords);
+router.get('/freight/records/export', exportFreightRecords);
+
+router.get('/daily-details', getDailyDetails);
+router.get('/daily-details/export', exportDailyDetails);
+router.get('/national-subsidy-receivables', getNationalSubsidyReceivables);
+router.get('/national-subsidy-receivables/export', exportNationalSubsidyReceivables);
+router.post('/national-subsidy-receivables/manual', createManualNationalSubsidyReceivable);
+router.get('/national-subsidy-account-routes', getSubsidyAccountRoutes);
+router.put('/national-subsidy-account-routes', saveSubsidyAccountRoute);
+router.get('/national-subsidy-receipts', getSubsidyReceipts);
+router.post('/national-subsidy-receipts', createSubsidyReceipt);
+router.post('/national-subsidy-receipts/:id/allocate', allocateSubsidyReceipt);
+router.post('/national-subsidy-receipts/:id/refund', refundSubsidyReceipt);
+router.post('/national-subsidy-receipts/:id/reverse', reverseSubsidyReceipt);
+router.get('/national-subsidy-adjustments', getSubsidyAdjustments);
+router.post('/national-subsidy-adjustments', submitSubsidyAdjustment);
+router.post('/national-subsidy-adjustments/:id/review', reviewSubsidyAdjustment);
+router.post('/national-subsidy-adjustments/:id/reverse', reverseSubsidyAdjustment);
+router.get('/daily-statement', getDailyStatement);
+router.get('/daily-statement/:id', getDailyStatementDetail);
+router.get('/settlement-summary', getSettlementSummary);
+router.post('/batch-settle', batchSettle);
+router.post('/national-subsidy-receivables/settle', settleNationalSubsidyReceivables);
+router.put('/expense/submit/:id', submitExpense);
+router.put('/expense/pay/:id', payExpense);
+
+router.get('/payable-list', getPayableList);
+router.get('/purchase-invoices/candidates', getInvoiceCandidates);
+router.get('/purchase-invoices/candidates/export', exportInvoiceCandidates);
+router.get('/purchase-invoices/export', exportInvoices);
+router.get('/purchase-invoices', listInvoices);
+router.post('/purchase-invoices', createInvoice);
+router.post('/purchase-invoices/preview', previewInvoice);
+router.post('/purchase-invoices/import', importInvoices);
+router.post('/purchase-invoices/:invoiceId/return', returnInvoice);
+router.get('/payable-list/export', exportPayableList);
+router.get('/payable-settlement-items', getPayableSettlementItems);
+router.get('/unpaid-by-supplier', getUnpaidBySupplier);
+router.post('/create-settlement', createSettlement);
+router.post('/create-expense-settlement', createExpenseSettlement);
+router.get('/settlement-list', getSettlementList);
+router.get('/settlement-list/export', exportSettlementList);
+router.get('/settlement/:id', getSettlementDetail);
+router.get('/settlement/:id/edit', settlementDraft.getDraft);
+router.put('/settlement/:id/draft', settlementDraft.updateDraft);
+router.put('/settlement/:id/remark', updateSettlementRemark);
+router.delete('/settlement/:id', deleteSettlementDraft);
+router.post('/settlement/submit', submitSettlement);
+router.post('/settlement/selection-summary', require('./payableController').previewSettlementSelection);
+router.post('/settlement/batch-submit', require('./payableController').batchSubmitSettlements);
+router.post('/settlement/confirm', confirmSettlement);
+router.post('/settlement/reject', rejectSettlement);
+router.post('/settlement/revoke', revokeSettlement);
+router.post('/settlement/void', voidSettlement);
+router.get('/settlement-payment/candidates', getPaymentCandidates);
+router.get('/settlement-payment/export', exportPaymentCandidates);
+router.post('/settlement-payment/import/validate', validatePaymentImport);
+router.post('/settlement-payment/import/commit', commitPaymentImport);
+router.post('/settlement-payment/batch', createBatchPayment);
+router.post('/settlement-payment/direct', createDirectPayment);
+router.post('/settlement/supplier-refund', registerSupplierRefund);
+router.post('/settlement-payment/supplier-refund', confirmSupplierRefund);
+router.get('/settlement-payment/batches', getPaymentBatches);
+router.get('/settlement-payment/batches/export', exportPaymentBatches);
+router.get('/settlement-payment/batch/:id', getPaymentBatchDetail);
+router.post('/settlement-payment/batch/void', voidPaymentBatch);
+router.post('/confirm-payment', confirmPayment);
+router.post('/cancel-payment', cancelPayment);
+
+router.post('/add-rebate', addRebate);
+router.get('/rebate-posting-orders', getRebatePostingOrders);
+router.post('/rebate-posting-orders/:postingId/reverse', reverseRebatePostingOrder);
+router.get('/rebate-list', getRebateList);
+router.get('/rebate-list/export', exportRebateList);
+router.get('/rebate-balance', getRebateBalance);
+router.get('/rebate-summary', getRebateSummary);
+router.post('/rebate/:rebateId/reverse', reverseRebate);
+router.post('/manufacturer-policy', createManufacturerPolicy);
+router.put('/manufacturer-policy/:policyId', updateManufacturerPolicy);
+router.get('/manufacturer-policy-list', getManufacturerPolicyList);
+router.post('/manufacturer-price/import', importManufacturerPrices);
+router.post('/manufacturer-operations/import', importManufacturerOperations);
+router.get('/manufacturer-price-history', getManufacturerPriceHistory);
+router.get('/rebate-estimate-list', getRebateEstimateList);
+router.get('/sales-cost-adjustment-list', getCostAdjustmentList);
+
+router.get('/settlement-accounts/balance', getSettlementAccountsWithBalance);
+router.get('/settlement-account/:accountId/transactions', getAccountTransactions);
+router.post('/settlement-account/transaction', addAccountTransaction);
 
 module.exports = router;

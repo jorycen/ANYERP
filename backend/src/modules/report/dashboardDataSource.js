@@ -1,0 +1,984 @@
+const { PERFORMANCE_SALE_STATUSES } = require('./performanceEvents');
+const commissionDates = require('./commissionDates');
+const { QueryTypes } = require('sequelize');
+const { INTERNAL_TRANSFER_SOURCE, operatingSourceSql } = require('./operatingScope');
+const { sequelize } = require('../../models');
+const { FORMULA_VERSION: CURRENT_GROSS_PROFIT_FORMULA_VERSION } = require('../sales/grossProfit');
+
+// 正向经营统计只纳入已归档销售；整单退货的原订单保留追溯，但不再重复计入正向销售。
+const ARCHIVED_STATUSES = ['已归档', 'completed', 'archived'];
+const VOIDED_STATUSES = ['已作废', 'voided', 'cancelled', 'canceled'];
+const GROSS_PROFIT_FORMULA_VERSION = CURRENT_GROSS_PROFIT_FORMULA_VERSION;
+// 服务额度不属于实物库存；兼容旧CARE卡品牌为空、被导入“其他服务/未归类”的档案。
+const CARE_INVENTORY_EXCLUSION_SQL = `AND NOT (
+  LOWER(TRIM(COALESCE(p.CATEGORY, ''))) = 'care服务'
+  OR ((COALESCE(p.CATEGORY, '') = '售后' OR p.CATEGORY LIKE '售后/%')
+    AND (LOWER(TRIM(COALESCE(p.BRAND, ''))) = 'care服务'
+      OR LOWER(COALESCE(p.NAME, '')) REGEXP 'care[[:space:]]*卡'))
+)`;
+
+function normalizeCategoryPath(value) {
+  return String(value || '')
+    .split('/')
+    .map(part => part.trim())
+    .filter(Boolean)
+    .join('/');
+}
+
+function normalizeCategoryName(value) {
+  return String(value || '')
+    .trim()
+    .replace(/\s+/g, '')
+    .toLocaleLowerCase();
+}
+
+function buildFinanceCategoryIndex(rows) {
+  const byId = new Map(rows.map(row => [String(row.categoryId), {
+    key: String(row.categoryId),
+    categoryId: String(row.categoryId),
+    parentId: row.parentId ? String(row.parentId) : '',
+    name: String(row.name || '').trim(),
+    path: '',
+    level: toNumber(row.level),
+    sortOrder: toNumber(row.sortOrder),
+    showInFinance: Number(row.showInFinance || 0) === 1,
+    isFocusCategory: Number(row.isFocusCategory || 0) === 1,
+    status: row.status === undefined ? 1 : Number(row.status)
+  }]));
+  const resolving = new Set();
+  const resolvePath = node => {
+    if (node.path) return node.path;
+    if (resolving.has(node.categoryId)) return node.name;
+    resolving.add(node.categoryId);
+    const parent = node.parentId ? byId.get(node.parentId) : null;
+    node.path = normalizeCategoryPath(parent ? `${resolvePath(parent)}/${node.name}` : node.name);
+    resolving.delete(node.categoryId);
+    return node.path;
+  };
+
+  const byPath = new Map();
+  byId.forEach(node => {
+    const path = resolvePath(node);
+    if (path) byPath.set(path, node);
+  });
+  const childrenByParent = new Map();
+  byId.forEach(node => {
+    if (!node.parentId) return;
+    const children = childrenByParent.get(node.parentId) || [];
+    children.push(node);
+    childrenByParent.set(node.parentId, children);
+  });
+  return { byId, byPath, childrenByParent, nodes: [...byId.values()] };
+}
+
+function findFinanceCategory(categoryPath, categoryIndex, categoryId) {
+  const exactCategory = categoryId ? categoryIndex.byId.get(String(categoryId)) : null;
+  if (exactCategory) {
+    let current = exactCategory;
+    while (current) {
+      if (current.showInFinance) return current;
+      current = current.parentId ? categoryIndex.byId.get(current.parentId) : null;
+    }
+  }
+  const normalizedPath = normalizeCategoryPath(categoryPath);
+  const parts = normalizedPath ? normalizedPath.split('/') : [];
+  for (let index = parts.length; index > 0; index -= 1) {
+    let current = categoryIndex.byPath.get(parts.slice(0, index).join('/'));
+    while (current) {
+      if (current.showInFinance) return current;
+      current = current.parentId ? categoryIndex.byId.get(current.parentId) : null;
+    }
+  }
+  return null;
+}
+
+function isCategoryDescendant(category, ancestorCategory, categoryIndex) {
+  let current = category;
+  while (current) {
+    if (current.categoryId === ancestorCategory.categoryId) return true;
+    current = current.parentId ? categoryIndex.byId.get(current.parentId) : null;
+  }
+  return false;
+}
+
+function findInventoryRootCategory(row, index) {
+  let category = index.byId.get(String(row.categoryId || ''));
+  const parts = normalizeCategoryPath(row.categoryPath).split('/').filter(Boolean);
+  for (let length = parts.length; !category && length > 0; length -= 1) {
+    category = index.byPath.get(parts.slice(0, length).join('/'));
+  }
+  const visited = new Set();
+  while (category?.parentId && index.byId.has(category.parentId)) {
+    if (visited.has(category.categoryId)) return null;
+    visited.add(category.categoryId);
+    category = index.byId.get(category.parentId);
+  }
+  // 历史导入曾把“笔记本/联想/小新”等完整路径存成 LEVEL=1、无父级的名称。
+  // 按路径首段归回真实一级，不能仅相信 LEVEL 或把这些路径平铺成一级。
+  if (category?.name.includes('/')) {
+    const rootName = normalizeCategoryPath(category.name).split('/')[0];
+    category = index.byPath.get(rootName);
+  }
+  return category?.level === 1 && !category.parentId && !category.name.includes('/') ? category : null;
+}
+
+function findFinanceClassification(row, parentCategory, categoryIndex) {
+  const rowPath = normalizeCategoryPath(row.categoryPath);
+  const exactPathCategory = categoryIndex.byPath.get(rowPath);
+  // 商品记录通常只保存一级根分类（例如“笔记本”），不能因此提前结束分类匹配；
+  // 只有真正命中根分类下的子分类时，才直接使用路径结果，后续再按系列/型号补齐层级。
+  if (exactPathCategory
+    && exactPathCategory.categoryId !== parentCategory.categoryId
+    && isCategoryDescendant(exactPathCategory, parentCategory, categoryIndex)) {
+    return exactPathCategory;
+  }
+  return null;
+}
+
+function ensureFinanceClassification(row, parentCategory, categoryIndex) {
+  const values = [row.brand, row.series, row.model]
+    .map(value => String(value || '').trim())
+    .filter(Boolean);
+  if (!values.length) return null;
+
+  let current = parentCategory;
+  values.forEach(value => {
+    const children = categoryIndex.childrenByParent.get(current.categoryId) || [];
+    let child = children.find(item => normalizeCategoryName(item.name) === normalizeCategoryName(value));
+    if (!child) {
+      child = {
+        key: `finance:${current.categoryId}:${normalizeCategoryName(value)}`,
+        categoryId: `finance:${current.categoryId}:${normalizeCategoryName(value)}`,
+        parentId: current.categoryId,
+        name: value,
+        path: `${current.path}/${value}`,
+        level: Number(current.level || 0) + 1,
+        sortOrder: 0,
+        showInFinance: false
+      };
+      categoryIndex.byId.set(child.categoryId, child);
+      categoryIndex.byPath.set(child.path, child);
+      categoryIndex.childrenByParent.set(current.categoryId, children.concat(child));
+    }
+    current = child;
+  });
+  return current === parentCategory ? null : current;
+}
+
+function createFinanceCategoryNode(category) {
+  return {
+    key: category.categoryId,
+    categoryId: category.categoryId,
+    name: category.name,
+    path: category.path,
+    level: category.level,
+    quantity: 0,
+    amount: 0,
+    overdueQuantity: 0,
+    overdueAmount: 0,
+    children: []
+  };
+}
+
+function addFinanceClassificationAmount(target, parentCategory, leafCategory, categoryIndex, row) {
+  if (!leafCategory || leafCategory.categoryId === parentCategory.categoryId) return;
+
+  const lineage = [];
+  let current = leafCategory;
+  while (current && current.categoryId !== parentCategory.categoryId) {
+    lineage.unshift(current);
+    current = current.parentId ? categoryIndex.byId.get(current.parentId) : null;
+  }
+  if (!current) return;
+
+  let currentTarget = target;
+  lineage.forEach(category => {
+    let childTarget = currentTarget.children.find(child => child.categoryId === category.categoryId);
+    if (!childTarget) {
+      childTarget = createFinanceCategoryNode(category);
+      currentTarget.children.push(childTarget);
+    }
+    childTarget.quantity += row.quantity;
+    childTarget.amount += row.inventoryAmount;
+    childTarget.overdueQuantity += row.overdueQuantity || 0;
+    childTarget.overdueAmount += row.overdueAmount || 0;
+    currentTarget = childTarget;
+  });
+}
+
+function sortFinanceCategoryChildren(children, categoryIndex) {
+  return children
+    .sort((left, right) => {
+      const leftCategory = categoryIndex.byId.get(left.categoryId);
+      const rightCategory = categoryIndex.byId.get(right.categoryId);
+      return (leftCategory?.sortOrder || 0) - (rightCategory?.sortOrder || 0)
+        || left.name.localeCompare(right.name, 'zh-CN');
+    })
+    .map(child => ({
+      ...child,
+      quantity: Number(child.quantity || 0),
+      amount: roundMoney(child.amount),
+      overdueQuantity: Number(child.overdueQuantity || 0),
+      overdueAmount: roundMoney(child.overdueAmount),
+      overdueRate: child.quantity > 0
+        ? roundMoney((child.overdueQuantity / child.quantity) * 100)
+        : 0,
+      children: sortFinanceCategoryChildren(child.children || [], categoryIndex)
+    }));
+}
+
+function toNumber(value) {
+  const number = Number(value || 0);
+  return Number.isFinite(number) ? number : 0;
+}
+
+function roundMoney(value) {
+  return Number(toNumber(value).toFixed(2));
+}
+
+function safeJsonArray(value) {
+  if (Array.isArray(value)) return value;
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function participantKey(staffId, name) {
+  return staffId ? `id:${staffId}` : `name:${String(name || '').trim()}`;
+}
+
+function normalizeParticipants(order) {
+  const participants = [];
+  const seen = new Set();
+  const add = (staffId, name, role, allocation = {}) => {
+    const normalizedId = staffId === null || staffId === undefined || staffId === '' ? '' : String(staffId);
+    const normalizedName = String(name || '').trim() || '未命名员工';
+    const key = participantKey(normalizedId, normalizedName);
+    if (seen.has(key)) return;
+    seen.add(key);
+    participants.push({ key, staffId: normalizedId || null, name: normalizedName, role,
+      profitAmount: allocation.profitAmount ?? allocation.profit_amount ?? '',
+      ratio: allocation.ratio ?? '' });
+  };
+
+  add(order.create_staff_id, order.create_user, 'primary');
+  safeJsonArray(order.auxiliary_sales_list).forEach(item => {
+    if (!item || typeof item !== 'object') return;
+    add(
+      item.staffId ?? item.staff_id ?? item.id,
+      item.name ?? item.staffName ?? item.staff_name ?? item.selected,
+      'auxiliary', item
+    );
+  });
+  return participants;
+}
+
+function grossProfitSql(itemAlias = 'oi', orderAlias = 'o', snapshotAlias = 'gp') {
+  return `CASE
+    WHEN ${snapshotAlias}.GROSS_PROFIT_ID IS NOT NULL
+    THEN COALESCE(${snapshotAlias}.GROSS_PROFIT_AMOUNT, 0)
+      * CASE
+          WHEN COALESCE(oit.ITEM_SUBTOTAL, 0) <> 0
+          THEN COALESCE(${itemAlias}.SUBTOTAL, 0) / oit.ITEM_SUBTOTAL
+          ELSE 1 / GREATEST(oit.ITEM_COUNT, 1)
+        END
+    ELSE COALESCE(${itemAlias}.SALES_GROSS_PROFIT, 0)
+  END`;
+}
+
+function bucketSql(granularity) {
+  if (granularity === 'month') return "DATE_FORMAT(o.CREATE_TIME, '%Y-%m')";
+  if (granularity === 'week') return "DATE_FORMAT(DATE_SUB(DATE(o.CREATE_TIME), INTERVAL WEEKDAY(o.CREATE_TIME) DAY), '%Y-%m-%d')";
+  return "DATE_FORMAT(o.CREATE_TIME, '%Y-%m-%d')";
+}
+
+function buildSalesWhere(filters, range, options = {}) {
+  const clauses = [
+    'o.IS_DELETED = 0',
+    operatingSourceSql('o'),
+    'o.STORE_ID IN (:storeIds)',
+    `${options.dateSql || (options.performance ? commissionDates.saleSql() : 'o.CREATE_TIME')} >= :startAt`,
+    `${options.dateSql || (options.performance ? commissionDates.saleSql() : 'o.CREATE_TIME')} <= :endAt`
+  ];
+  const replacements = {
+    storeIds: filters.storeIds,
+    startAt: range.startAt,
+    endAt: range.endAt,
+    internalTransferSource: `${INTERNAL_TRANSFER_SOURCE}%`
+  };
+  if (filters.archiveScope === 'all') {
+    clauses.splice(1, 0, '(o.ORDER_STATUS IS NULL OR o.ORDER_STATUS NOT IN (:voidedStatuses))');
+    replacements.voidedStatuses = VOIDED_STATUSES;
+  } else {
+    clauses.splice(1, 0, 'o.ORDER_STATUS IN (:archivedStatuses)');
+    replacements.archivedStatuses = options.performance ? PERFORMANCE_SALE_STATUSES : ARCHIVED_STATUSES;
+  }
+
+  if (filters.storeId) {
+    clauses.push('o.STORE_ID = :storeId');
+    replacements.storeId = filters.storeId;
+  }
+  if (filters.productLine && options.includeProduct !== false) {
+    clauses.push("(p.CATEGORY = :productLine OR p.CATEGORY LIKE :productLinePrefix)");
+    replacements.productLine = filters.productLine;
+    replacements.productLinePrefix = `${filters.productLine}/%`;
+  }
+  if (filters.employeeId) {
+    clauses.push(`(
+      CAST(o.CREATE_STAFF_ID AS CHAR) = :employeeId
+      OR JSON_SEARCH(o.AUXILIARY_SALES_LIST, 'one', :employeeId, NULL, '$[*].staffId') IS NOT NULL
+      OR JSON_SEARCH(o.AUXILIARY_SALES_LIST, 'one', :employeeId, NULL, '$[*].staff_id') IS NOT NULL
+      OR JSON_CONTAINS(o.AUXILIARY_SALES_LIST, JSON_OBJECT('staffId', CAST(:employeeId AS UNSIGNED)), '$')
+      OR JSON_CONTAINS(o.AUXILIARY_SALES_LIST, JSON_OBJECT('staff_id', CAST(:employeeId AS UNSIGNED)), '$')
+    )`);
+    replacements.employeeId = String(filters.employeeId);
+  }
+
+  return { sql: clauses.join('\n AND '), replacements };
+}
+
+function allocationSql(filters) {
+  if (!filters.employeeId) return '1';
+  return '(1 / GREATEST(1, 1 + COALESCE(JSON_LENGTH(o.AUXILIARY_SALES_LIST), 0)))';
+}
+
+// 经营销售额以销售单实收总额为准。明细小计仅用于按比例分摊订单级优惠，
+// 防止订单总额与明细小计不一致时，门店和汇总销售额被少算。
+function orderItemSalesAmountSql(itemAlias = 'oi', orderAlias = 'o', totalsAlias = 'oit') {
+  return `CASE
+    WHEN COALESCE(${totalsAlias}.ITEM_SUBTOTAL, 0) <> 0
+    THEN COALESCE(${orderAlias}.TOTAL_AMOUNT, ${totalsAlias}.ITEM_SUBTOTAL)
+      * COALESCE(${itemAlias}.SUBTOTAL, 0) / ${totalsAlias}.ITEM_SUBTOTAL
+    ELSE COALESCE(${itemAlias}.SUBTOTAL, 0)
+  END`;
+}
+
+function orderItemTotalsJoin() {
+  return `INNER JOIN (
+    SELECT ORDER_ID,
+           SUM(COALESCE(SUBTOTAL, 0)) AS ITEM_SUBTOTAL,
+           COUNT(*) AS ITEM_COUNT
+      FROM T_ORDER_ITEM
+     GROUP BY ORDER_ID
+  ) oit ON oit.ORDER_ID = o.ORDER_ID`;
+}
+
+class DashboardDataSource {
+  async getFilters() {
+    throw new Error('数据看板数据源必须实现筛选项查询方法');
+  }
+
+  async getOverview() {
+    throw new Error('数据看板数据源必须实现概览查询方法');
+  }
+}
+
+class RealtimeSqlDashboardDataSource extends DashboardDataSource {
+  async getExpenseDeductions(filters,range,user) {
+    return require('../finance/expenseProfitDeduction').loadMonthly({storeIds:filters.storeId?[filters.storeId]:filters.storeIds,user,startDate:range.startDate,endDate:range.endDate,staffId:filters.employeeId});
+  }
+
+  async query(sql, replacements = {}) {
+    return sequelize.query(sql, { replacements, type: QueryTypes.SELECT });
+  }
+
+  async getFilters(filters) {
+    const storeRows = await this.query(
+      `SELECT STORE_ID AS storeId, NAME AS name, REGION_ID AS regionId
+         FROM T_STORE
+        WHERE IS_DELETED = 0
+          AND STATUS = 1
+          AND STORE_ID IN (:storeIds)
+        ORDER BY NAME ASC`,
+      { storeIds: filters.storeIds }
+    );
+
+    const staffScope = filters.storeIds.includes('*')
+      ? '1 = 1'
+      : '(s.STORE_ID IN (:storeIds) OR s.STAFF_ID IN (SELECT sp.STAFF_ID FROM T_STAFF_STORE_PERMISSION sp WHERE sp.STORE_ID IN (:storeIds)))';
+    const [employeeRows, productLineRows] = await Promise.all([
+      this.query(
+        `SELECT DISTINCT s.STAFF_ID AS staffId, s.NAME AS name
+           FROM T_STAFF s
+          WHERE s.IS_DELETED = 0
+            AND s.STATUS = 1
+            AND ${staffScope}
+          ORDER BY s.NAME ASC`,
+        { storeIds: filters.storeIds }
+      ),
+      this.query(
+        `SELECT DISTINCT SUBSTRING_INDEX(CATEGORY, '/', 1) AS productLine
+           FROM T_PRODUCT
+          WHERE IS_DELETED = 0
+            AND CATEGORY IS NOT NULL
+            AND CATEGORY <> ''
+          ORDER BY productLine ASC`
+      )
+    ]);
+
+    return {
+      stores: storeRows,
+      employees: employeeRows,
+      productLines: productLineRows.map(row => row.productLine).filter(Boolean)
+    };
+  }
+
+  async getTrend(filters, range, granularity) {
+    const result = await require('./operatingProfit').queryOperatingProfit(filters, range, this);
+    const buckets = new Map();
+    for (const row of result.daily) {
+      let key = row.bucket;
+      if (granularity === 'month') key = key.slice(0, 7);
+      if (granularity === 'week') {
+        const day = new Date(`${key}T00:00:00Z`);
+        day.setUTCDate(day.getUTCDate() - ((day.getUTCDay() || 7) - 1));
+        key = day.toISOString().slice(0, 10);
+      }
+      if (!buckets.has(key)) buckets.set(key, { bucket: key, salesAmount: 0, grossProfit: 0, orderCount: 0 });
+      const target = buckets.get(key);
+      for (const field of ['salesAmount', 'grossProfit', 'orderCount']) target[field] = roundMoney(target[field] + row[field]);
+    }
+    return [...buckets.values()].sort((a, b) => a.bucket.localeCompare(b.bucket));
+  }
+
+  async getStoreRanking(filters, range) {
+    const result = await require('./operatingProfit').queryOperatingProfit(filters, range, this);
+    return result.rows.sort((a, b) => b.salesAmount - a.salesAmount);
+  }
+
+  async getStoreProductTypeQuantities(filters, range) {
+    const where = buildSalesWhere(filters, range);
+    const factor = allocationSql(filters);
+    const [rows, categoryRows] = await Promise.all([
+      this.query(
+        `SELECT o.STORE_ID AS storeId,
+                p.CATEGORY_ID AS categoryId,
+                MAX(p.CATEGORY) AS productRootCategory,
+                MAX(p.CATEGORY) AS categoryPath,
+                MAX(COALESCE(p.NAME, oi.PRODUCT_NAME)) AS productName,
+                SUM(COALESCE(oi.QUANTITY, 0) * ${factor}) AS quantity,
+                COUNT(DISTINCT o.ORDER_ID) AS orderCount
+           FROM T_ORDER o
+           INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
+           LEFT JOIN T_PRODUCT p ON p.PRODUCT_ID = oi.PRODUCT_ID
+          WHERE ${where.sql}
+          GROUP BY o.STORE_ID, p.CATEGORY_ID, p.CATEGORY, p.PRODUCT_ID
+          ORDER BY o.STORE_ID ASC`,
+        where.replacements
+      ),
+      this.query(
+        `SELECT CATEGORY_ID AS categoryId, PARENT_ID AS parentId, NAME AS name,
+                LEVEL AS level, SORT_ORDER AS sortOrder, SHOW_IN_FINANCE AS showInFinance
+           FROM T_PRODUCT_CATEGORY
+          WHERE STATUS = 1`
+      )
+    ]);
+    const categoryIndex = buildFinanceCategoryIndex(categoryRows);
+    const byStore = new Map();
+    rows.forEach(row => {
+      const categoryPath = categoryIndex.byId.get(String(row.categoryId || ''))?.path || row.categoryPath || '';
+      const rootCategory = String(row.productRootCategory || '').split('/')[0].trim().toLocaleLowerCase();
+      let key = '';
+      if (/^(售后|after[-_ ]?sales)$/.test(rootCategory)) key = 'serviceOrderCount';
+      else if (/^(平板|tablet)$/.test(rootCategory)) key = 'tabletOrderCount';
+      else if (/^(手机|phone)$/.test(rootCategory)) key = 'phoneOrderCount';
+      else if (/^(台机|台式机|desktop)$/.test(rootCategory)) key = 'desktopOrderCount';
+      else if (/^(笔记本|laptop|notebook)$/.test(rootCategory)) key = 'laptopOrderCount';
+      if (!key) return;
+      const storeId = String(row.storeId || '');
+      const result = byStore.get(storeId) || {
+        laptopQuantity: 0,
+        tabletQuantity: 0,
+        phoneQuantity: 0,
+        desktopQuantity: 0,
+        laptopOrderCount: 0,
+        tabletOrderCount: 0,
+        phoneOrderCount: 0,
+        desktopOrderCount: 0,
+        serviceOrderCount: 0,
+        categoryBreakdown: {
+          laptopQuantity: new Map(),
+          tabletQuantity: new Map(),
+          phoneQuantity: new Map(),
+          desktopQuantity: new Map()
+        }
+      };
+      const quantity = Number(row.quantity || 0);
+      const quantityKey = key.replace('OrderCount', 'Quantity');
+      if (quantityKey in result) result[quantityKey] += quantity;
+      result[key] += Number(row.orderCount || 0);
+      const pathParts = String(categoryPath || '').split('/').map(part => part.trim()).filter(Boolean);
+      const fourthLevelName = pathParts[3] || '未维护四级分类';
+      const categoryMap = result.categoryBreakdown[key];
+      if (categoryMap) categoryMap.set(fourthLevelName, (categoryMap.get(fourthLevelName) || 0) + quantity);
+      byStore.set(storeId, result);
+    });
+    return [...byStore.entries()].map(([storeId, quantities]) => {
+      const { categoryBreakdown, ...totals } = quantities;
+      return {
+        storeId,
+        ...totals,
+        categoryBreakdown: Object.fromEntries(Object.entries(categoryBreakdown).map(([key, categories]) => [
+          key,
+          [...categories.entries()]
+            .map(([name, quantity]) => ({ name, quantity }))
+            .sort((left, right) => right.quantity - left.quantity)
+        ]))
+      };
+    });
+  }
+
+  async getProductRows(filters, range) {
+    const where = buildSalesWhere(filters, range);
+    const factor = allocationSql(filters);
+    return this.query(
+      `SELECT oi.PRODUCT_ID AS productId,
+              MAX(p.CATEGORY_ID) AS categoryId,
+              MAX(COALESCE(p.NAME, oi.PRODUCT_NAME)) AS productName,
+              MAX(COALESCE(p.MANUFACTURER_CODE, '')) AS manufacturerCode,
+              MAX(COALESCE(p.CATEGORY, '')) AS categoryPath,
+              MAX(COALESCE(p.CATEGORY, '')) AS categoryRoot,
+              MAX(COALESCE(p.IS_FOCUS_PRODUCT, 0)) AS isFocusProduct,
+              ROUND(SUM((${orderItemSalesAmountSql()}) * ${factor}), 2) AS salesAmount,
+              ROUND(SUM((${grossProfitSql()}) * ${factor}) + MAX(COALESCE(cpa.grossProfit, 0)), 2) AS grossProfit,
+              ROUND(SUM(oi.QUANTITY * ${factor}), 2) AS quantity
+         FROM T_ORDER o
+         INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
+         ${orderItemTotalsJoin()}
+         LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID
+         LEFT JOIN T_PRODUCT p ON p.PRODUCT_ID = oi.PRODUCT_ID
+         LEFT JOIN T_PRODUCT_SN ps ON ps.SN_ID = oi.SN_ID AND ps.IS_DELETED = 0
+         LEFT JOIN T_PRODUCT_PRICE pp ON pp.PRODUCT_ID = oi.PRODUCT_ID AND pp.STATUS = 1
+         LEFT JOIN (
+           SELECT adj.PRODUCT_ID, SUM(adj.SIGNED_AMOUNT * ${factor}) AS grossProfit
+             FROM T_PERFORMANCE_PROFIT_ADJUSTMENT adj
+             INNER JOIN T_ORDER o ON o.ORDER_ID = adj.ORDER_ID
+             LEFT JOIN T_PRODUCT p ON p.PRODUCT_ID = adj.PRODUCT_ID
+            WHERE ${where.sql} AND adj.STATUS = 'approved' AND adj.PRODUCT_ID IS NOT NULL
+            GROUP BY adj.PRODUCT_ID
+         ) cpa ON cpa.PRODUCT_ID = oi.PRODUCT_ID
+        WHERE ${where.sql}
+        GROUP BY oi.PRODUCT_ID
+        ORDER BY salesAmount DESC`,
+      where.replacements
+    );
+  }
+
+  async getProductLineRows(filters, range) {
+    const where = buildSalesWhere(filters, range);
+    const factor = allocationSql(filters);
+    return this.query(
+      `SELECT COALESCE(NULLIF(SUBSTRING_INDEX(p.CATEGORY, '/', 1), ''), '未分类') AS productLine,
+              ROUND(SUM((${orderItemSalesAmountSql()}) * ${factor}), 2) AS salesAmount,
+              ROUND(SUM(oi.QUANTITY * ${factor}), 2) AS quantity,
+              ROUND(SUM((${grossProfitSql()}) * ${factor}), 2) AS grossProfit
+         FROM T_ORDER o
+         INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
+         ${orderItemTotalsJoin()}
+         LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID
+         LEFT JOIN T_PRODUCT p ON p.PRODUCT_ID = oi.PRODUCT_ID
+         LEFT JOIN T_PRODUCT_SN ps ON ps.SN_ID = oi.SN_ID AND ps.IS_DELETED = 0
+         LEFT JOIN T_PRODUCT_PRICE pp ON pp.PRODUCT_ID = oi.PRODUCT_ID AND pp.STATUS = 1
+        WHERE ${where.sql}
+        GROUP BY COALESCE(NULLIF(SUBSTRING_INDEX(p.CATEGORY, '/', 1), ''), '未分类')
+        ORDER BY salesAmount DESC`,
+      where.replacements
+    );
+  }
+
+  async getProductCategoryRows(filters, range) {
+    const where = buildSalesWhere(filters, range);
+    const factor = allocationSql(filters);
+    return this.query(
+      `SELECT COALESCE(NULLIF(TRIM(p.CATEGORY), ''), '未分类') AS categoryPath,
+              ROUND(SUM((${orderItemSalesAmountSql()}) * ${factor}), 2) AS salesAmount,
+              ROUND(SUM(oi.QUANTITY * ${factor}), 2) AS quantity
+         FROM T_ORDER o
+         INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
+         ${orderItemTotalsJoin()}
+         LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID
+         LEFT JOIN T_PRODUCT p ON p.PRODUCT_ID = oi.PRODUCT_ID
+         LEFT JOIN T_PRODUCT_SN ps ON ps.SN_ID = oi.SN_ID AND ps.IS_DELETED = 0
+         LEFT JOIN T_PRODUCT_PRICE pp ON pp.PRODUCT_ID = oi.PRODUCT_ID AND pp.STATUS = 1
+        WHERE ${where.sql}
+        GROUP BY COALESCE(NULLIF(TRIM(p.CATEGORY), ''), '未分类')
+        ORDER BY salesAmount DESC`,
+      where.replacements
+    );
+  }
+
+  // Use the product category id and the category table to restore the full
+  // four-level path. This intentionally overrides the legacy text-only query
+  // above, which cannot expand products stored with a leaf category id.
+  async getProductCategoryRows(filters, range) {
+    const where = buildSalesWhere(filters, range);
+    const factor = allocationSql(filters);
+    const [rows, categoryRows] = await Promise.all([
+      this.query(
+        `SELECT p.CATEGORY_ID AS categoryId,
+                MAX(p.CATEGORY) AS categoryPath,
+                ROUND(SUM((${orderItemSalesAmountSql()}) * ${factor}), 2) AS salesAmount,
+                ROUND(SUM(oi.QUANTITY * ${factor}), 2) AS quantity,
+                COUNT(DISTINCT o.ORDER_ID) AS orderCount,
+                ROUND(SUM((${grossProfitSql()}) * ${factor}), 2) AS grossProfit
+           FROM T_ORDER o
+           INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
+           ${orderItemTotalsJoin()}
+           LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID
+           LEFT JOIN T_PRODUCT p ON p.PRODUCT_ID = oi.PRODUCT_ID
+           LEFT JOIN T_PRODUCT_SN ps ON ps.SN_ID = oi.SN_ID AND ps.IS_DELETED = 0
+           LEFT JOIN T_PRODUCT_PRICE pp ON pp.PRODUCT_ID = oi.PRODUCT_ID AND pp.STATUS = 1
+          WHERE ${where.sql}
+          GROUP BY p.CATEGORY_ID
+          ORDER BY salesAmount DESC`,
+        where.replacements
+      ),
+      this.query(
+        `SELECT CATEGORY_ID AS categoryId, PARENT_ID AS parentId, NAME AS name,
+                LEVEL AS level, SORT_ORDER AS sortOrder, SHOW_IN_FINANCE AS showInFinance
+           FROM T_PRODUCT_CATEGORY
+          WHERE STATUS = 1`
+      )
+    ]);
+    const categoryIndex = buildFinanceCategoryIndex(categoryRows);
+    return rows.map(row => ({
+      ...row,
+      categoryPath: categoryIndex.byId.get(String(row.categoryId || ''))?.path || row.categoryPath,
+      orderCount: Number(row.orderCount || 0),
+      grossProfit: Number(row.grossProfit || 0)
+    }));
+  }
+
+  async getEmployeeOrderRows(filters, range) {
+    const where = buildSalesWhere(filters, range, { performance: true });
+    const sales = await this.query(
+      `SELECT o.ORDER_ID AS order_id,
+              o.ORDER_NO AS order_no,
+              ${commissionDates.saleSql()} AS create_time,
+              o.CREATE_TIME AS source_create_time,
+              o.STORE_ID AS store_id,
+              MAX(s.NAME) AS store_name,
+              o.CREATE_STAFF_ID AS create_staff_id,
+              o.CREATE_USER AS create_user,
+              o.AUXILIARY_SALES_LIST AS auxiliary_sales_list,
+              o.CUSTOMER_SOURCE AS customer_source,
+              ROUND(MAX(COALESCE(o.TOTAL_AMOUNT, 0)), 2) AS sales_amount,
+              ROUND(SUM(CASE WHEN gp.ORDER_ID IS NOT NULL THEN gp.GROSS_PROFIT_AMOUNT
+                * CASE WHEN COALESCE(oit.ITEM_SUBTOTAL, 0) <> 0 THEN COALESCE(oi.SUBTOTAL, 0) / oit.ITEM_SUBTOTAL ELSE 1 / GREATEST(oit.ITEM_COUNT, 1) END
+                ELSE COALESCE(oi.SALES_GROSS_PROFIT, 0) END), 2) AS base_gross_profit
+         FROM T_ORDER o
+         INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
+         ${orderItemTotalsJoin()}
+         LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID
+         LEFT JOIN T_STORE s ON s.STORE_ID = o.STORE_ID
+         LEFT JOIN T_PRODUCT p ON p.PRODUCT_ID = oi.PRODUCT_ID
+         LEFT JOIN T_PRODUCT_SN ps ON ps.SN_ID = oi.SN_ID AND ps.IS_DELETED = 0
+         LEFT JOIN T_PRODUCT_PRICE pp ON pp.PRODUCT_ID = oi.PRODUCT_ID AND pp.STATUS = 1
+        WHERE ${where.sql}
+        GROUP BY o.ORDER_ID, o.ORDER_NO, o.CREATE_TIME, o.STORE_ID,
+                 o.CREATE_STAFF_ID, o.CREATE_USER, o.AUXILIARY_SALES_LIST, o.CUSTOMER_SOURCE
+        ORDER BY create_time DESC`,
+      where.replacements
+    );
+    const returnWhere = buildSalesWhere(filters,range,{performance:true,dateSql:'rgp.CREATE_TIME'}).sql
+      .replace('o.ORDER_STATUS IN (:archivedStatuses)', '1 = 1');
+    const returns = await this.query(
+      `SELECT DISTINCT CONCAT('return:', rgp.LEDGER_ID) AS order_id,
+              rgp.RETURN_NO AS order_no, rgp.ORDER_NO AS source_order_no,
+              rgp.ORDER_ID AS source_order_id, rgp.RETURN_ID AS return_id, 'return' AS entry_type,
+              o.CUSTOMER_SOURCE AS customer_source, o.CREATE_TIME AS source_create_time,
+              rgp.CREATE_TIME AS create_time, rgp.STORE_ID AS store_id,
+              s.NAME AS store_name, rgp.STAFF_ID AS create_staff_id,
+              rgp.EMPLOYEE_NAME AS create_user, '[]' AS auxiliary_sales_list,
+              rgp.PARTICIPANT_ROLE AS participant_role,
+              rgp.RETURNED_SALES_AMOUNT AS sales_amount,
+              rgp.GROSS_PROFIT_AMOUNT AS base_gross_profit
+         FROM T_SALES_RETURN_GROSS_PROFIT rgp
+         INNER JOIN T_ORDER o ON o.ORDER_ID = rgp.ORDER_ID
+         INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
+         LEFT JOIN T_PRODUCT p ON p.PRODUCT_ID = oi.PRODUCT_ID
+         LEFT JOIN T_STORE s ON s.STORE_ID = rgp.STORE_ID
+        WHERE ${returnWhere}`, where.replacements);
+    const adjustmentWhere = buildSalesWhere(filters,range,{performance:true,dateSql:commissionDates.adjustmentSql()}).sql.replace('o.ORDER_STATUS IN (:archivedStatuses)', '1 = 1');
+    const returnAdjustments = await this.query(
+      `SELECT DISTINCT CONCAT('return-adjustment:', pa.ADJUSTMENT_ID) AS order_id,
+        pa.ADJUSTMENT_NO AS order_no, pa.ORDER_NO AS source_order_no, o.ORDER_ID AS source_order_id, 'return_adjustment' AS entry_type,
+        ${commissionDates.adjustmentSql()} AS create_time, o.STORE_ID AS store_id, s.NAME AS store_name,
+        o.CREATE_STAFF_ID AS create_staff_id, o.CREATE_USER AS create_user,
+        o.AUXILIARY_SALES_LIST AS auxiliary_sales_list, 0 AS sales_amount, 0 AS base_gross_profit,
+        gp.GROSS_PROFIT_AMOUNT AS allocation_gross_profit
+        FROM T_PERFORMANCE_PROFIT_ADJUSTMENT pa
+        INNER JOIN T_ORDER o ON o.ORDER_ID = pa.ORDER_ID
+        LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID=o.ORDER_ID
+        INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
+        LEFT JOIN T_PRODUCT p ON p.PRODUCT_ID = oi.PRODUCT_ID
+        LEFT JOIN T_STORE s ON s.STORE_ID = o.STORE_ID
+        WHERE pa.STATUS = 'approved'
+          AND ${adjustmentWhere}`, where.replacements);
+    const rewards = await require('../customerOps/profitEvents').events(filters, range, this.query.bind(this));
+    return [...sales, ...returns, ...returnAdjustments, ...rewards].sort((a, b) => new Date(b.create_time) - new Date(a.create_time));
+  }
+
+  async getApprovedAdjustments(filters, range) {
+    const where = buildSalesWhere(filters, range, { includeProduct: false, performance: true, dateSql:commissionDates.adjustmentSql() });
+    return this.query(
+      `SELECT CONCAT('return-adjustment:',pa.ADJUSTMENT_ID) AS orderId,
+              NULL AS participantKey,
+              pa.SIGNED_AMOUNT AS signedAmount,
+              pa.REASON AS reason,
+              pa.ADJUSTMENT_TYPE AS adjustmentType,
+              pa.ADJUSTMENT_NO AS adjustmentNo
+         FROM T_PERFORMANCE_PROFIT_ADJUSTMENT pa
+         INNER JOIN T_ORDER o ON o.ORDER_ID = pa.ORDER_ID
+        WHERE pa.STATUS = 'approved'
+          AND ${where.sql.replace('o.ORDER_STATUS IN (:archivedStatuses)', '1 = 1')}
+        ORDER BY orderId, adjustmentNo`,
+      where.replacements
+    );
+  }
+
+  async getInventory(filters) {
+    const groupStores = filters.includeStoreAmounts === true;
+    const allRootCategories = filters.allRootCategories === true;
+    const includeDemo = filters.includeDemo !== false;
+    const storeClause = filters.storeId ? 'AND i.STORE_ID = :storeId' : '';
+    const snStoreClause = filters.storeId ? 'AND ps.STORE_ID = :storeId' : '';
+    const snDemoClause = includeDemo
+      ? ''
+      : "AND COALESCE(ps.INVENTORY_TYPE, 'normal_qty') NOT IN ('demo_qty', 'rental_demo_qty')";
+    const nonSnDemoQuantitySql = includeDemo
+      ? ' + COALESCE(i.DEMO_QTY, 0) + COALESCE(i.RENTAL_DEMO_QTY, 0)'
+      : '';
+    const productLineClause = filters.productLine
+      ? "AND (p.CATEGORY = :productLine OR p.CATEGORY LIKE :productLinePrefix)"
+      : '';
+    const replacements = {
+      storeIds: filters.storeIds,
+      storeId: filters.storeId,
+      productLine: filters.productLine,
+      productLinePrefix: filters.productLine ? `${filters.productLine}/%` : undefined
+    };
+
+    const [snRows, nonSnRows, ageRows, categoryRows] = await Promise.all([
+      this.query(
+        `SELECT ps.PRODUCT_ID AS productId, ${groupStores ? 'ps.STORE_ID AS storeId,' : ''}
+                MAX(p.CATEGORY_ID) AS categoryId,
+                MAX(p.NAME) AS productName,
+                MAX(p.BRAND) AS brand,
+                MAX(p.SERIES) AS series,
+                MAX(p.MODEL) AS model,
+                MAX(p.CATEGORY) AS categoryPath,
+                COUNT(*) AS quantity,
+                ROUND(SUM(COALESCE(NULLIF(ps.INBOUND_PRICE, 0), pp.COST_PRICE, 0)), 2) AS inventoryAmount,
+                SUM(CASE WHEN ps.INBOUND_TIME IS NOT NULL AND DATEDIFF(NOW(), ps.INBOUND_TIME) > 30 THEN 1 ELSE 0 END) AS overdueQuantity,
+                ROUND(SUM(CASE WHEN ps.INBOUND_TIME IS NOT NULL AND DATEDIFF(NOW(), ps.INBOUND_TIME) > 30
+                  THEN COALESCE(NULLIF(ps.INBOUND_PRICE, 0), pp.COST_PRICE, 0) ELSE 0 END), 2) AS overdueAmount,
+                MIN(ps.INBOUND_TIME) AS oldestInboundTime
+           FROM T_PRODUCT_SN ps
+           INNER JOIN T_PRODUCT p ON p.PRODUCT_ID = ps.PRODUCT_ID
+           LEFT JOIN T_PRODUCT_PRICE pp ON pp.PRODUCT_ID = ps.PRODUCT_ID AND pp.STATUS = 1
+          WHERE ps.IS_DELETED = 0
+            AND ps.STATUS = 'in_stock'
+            ${snDemoClause}
+            AND ps.STORE_ID IN (:storeIds)
+            ${snStoreClause}
+            ${productLineClause}
+            ${CARE_INVENTORY_EXCLUSION_SQL}
+          GROUP BY ps.PRODUCT_ID${groupStores ? ', ps.STORE_ID' : ''}`,
+        replacements
+      ),
+      this.query(
+        `SELECT i.PRODUCT_ID AS productId, ${groupStores ? 'i.STORE_ID AS storeId,' : ''}
+                MAX(p.CATEGORY_ID) AS categoryId,
+                MAX(p.NAME) AS productName,
+                MAX(p.BRAND) AS brand,
+                MAX(p.SERIES) AS series,
+                MAX(p.MODEL) AS model,
+                MAX(p.CATEGORY) AS categoryPath,
+                SUM(
+                  GREATEST(COALESCE(i.NORMAL_QTY, 0),
+                    COALESCE(i.REGULAR_QTY, 0) + COALESCE(i.SUBSIDY_QTY, 0) + COALESCE(i.SECOND_QTY, 0))
+                  + COALESCE(i.DISPLAY_QTY, 0)${nonSnDemoQuantitySql}
+                  + COALESCE(i.UNSELLABLE_QTY, 0) + COALESCE(i.PENDING_QTY, 0)
+                ) AS quantity,
+                ROUND(SUM((
+                  GREATEST(COALESCE(i.NORMAL_QTY, 0),
+                    COALESCE(i.REGULAR_QTY, 0) + COALESCE(i.SUBSIDY_QTY, 0) + COALESCE(i.SECOND_QTY, 0))
+                  + COALESCE(i.DISPLAY_QTY, 0)${nonSnDemoQuantitySql}
+                  + COALESCE(i.UNSELLABLE_QTY, 0) + COALESCE(i.PENDING_QTY, 0)
+                ) * COALESCE(pp.COST_PRICE, 0)), 2) AS inventoryAmount,
+                0 AS overdueQuantity,
+                0 AS overdueAmount,
+                NULL AS oldestInboundTime
+           FROM T_INVENTORY i
+           INNER JOIN T_PRODUCT p ON p.PRODUCT_ID = i.PRODUCT_ID AND COALESCE(p.NEED_SN, 0) = 0
+           LEFT JOIN T_PRODUCT_PRICE pp ON pp.PRODUCT_ID = i.PRODUCT_ID AND pp.STATUS = 1
+          WHERE i.STORE_ID IN (:storeIds)
+            ${storeClause}
+            ${productLineClause}
+            ${CARE_INVENTORY_EXCLUSION_SQL}
+          GROUP BY i.PRODUCT_ID${groupStores ? ', i.STORE_ID' : ''}`,
+        replacements
+      ),
+      this.query(
+        `SELECT CASE
+                  WHEN DATEDIFF(NOW(), ps.INBOUND_TIME) <= 7 THEN '0-7天'
+                  WHEN DATEDIFF(NOW(), ps.INBOUND_TIME) <= 15 THEN '8-15天'
+                  WHEN DATEDIFF(NOW(), ps.INBOUND_TIME) <= 30 THEN '16-30天'
+                  WHEN DATEDIFF(NOW(), ps.INBOUND_TIME) <= 60 THEN '31-60天'
+                  ELSE '60天以上'
+                END AS ageBucket,
+                COUNT(*) AS quantity,
+                ROUND(SUM(COALESCE(NULLIF(ps.INBOUND_PRICE, 0), pp.COST_PRICE, 0)), 2) AS inventoryAmount
+           FROM T_PRODUCT_SN ps
+           INNER JOIN T_PRODUCT p ON p.PRODUCT_ID = ps.PRODUCT_ID
+           LEFT JOIN T_PRODUCT_PRICE pp ON pp.PRODUCT_ID = ps.PRODUCT_ID AND pp.STATUS = 1
+          WHERE ps.IS_DELETED = 0
+            AND ps.STATUS = 'in_stock'
+            AND ps.INBOUND_TIME IS NOT NULL
+            ${snDemoClause}
+            AND ps.STORE_ID IN (:storeIds)
+            ${snStoreClause}
+            ${productLineClause}
+            ${CARE_INVENTORY_EXCLUSION_SQL}
+          GROUP BY ageBucket`,
+        replacements
+      ),
+      this.query(
+        `SELECT CATEGORY_ID AS categoryId,
+                PARENT_ID AS parentId,
+                NAME AS name,
+                LEVEL AS level,
+                SORT_ORDER AS sortOrder,
+                SHOW_IN_FINANCE AS showInFinance,
+                STATUS AS status
+           FROM T_PRODUCT_CATEGORY
+          ${allRootCategories ? '' : 'WHERE STATUS = 1'}
+          ORDER BY LEVEL ASC, SORT_ORDER ASC, NAME ASC`
+      )
+    ]);
+
+    const rows = [...snRows, ...nonSnRows]
+      .map(row => ({
+        ...row,
+        quantity: toNumber(row.quantity),
+        inventoryAmount: roundMoney(row.inventoryAmount),
+        overdueQuantity: toNumber(row.overdueQuantity),
+        overdueAmount: roundMoney(row.overdueAmount)
+      }))
+      .filter(row => row.quantity > 0);
+    const inventoryQuantity = rows.reduce((sum, row) => sum + row.quantity, 0);
+    const inventoryAmount = roundMoney(rows.reduce((sum, row) => sum + row.inventoryAmount, 0));
+    const categoryIndex = buildFinanceCategoryIndex(categoryRows);
+    const categoryMap = new Map(categoryIndex.nodes
+      .filter(category => allRootCategories ? category.level === 1 && !category.parentId && !category.name.includes('/') : category.showInFinance)
+      .map(category => [category.categoryId, {
+        key: category.categoryId,
+        categoryId: category.categoryId,
+        name: category.name,
+        path: category.path,
+        level: allRootCategories ? 1 : category.level,
+        quantity: 0,
+        amount: 0,
+        overdueQuantity: 0,
+        overdueAmount: 0,
+        children: []
+      }]));
+    rows.forEach(row => {
+      let category = allRootCategories ? findInventoryRootCategory(row, categoryIndex) : findFinanceCategory(row.categoryPath, categoryIndex, row.categoryId);
+      if (!category && allRootCategories) {
+        category = { categoryId: '__UNCLASSIFIED__', name: '未分类', path: '未分类', level: 1, sortOrder: 999999 };
+        if (!categoryMap.has(category.categoryId)) categoryMap.set(category.categoryId, createFinanceCategoryNode(category));
+      }
+      const target = category ? categoryMap.get(category.categoryId) : null;
+      if (!target) return;
+      target.quantity += row.quantity;
+      target.amount += row.inventoryAmount;
+      target.overdueQuantity += row.overdueQuantity;
+      target.overdueAmount += row.overdueAmount;
+
+      const exactCategory = allRootCategories ? categoryIndex.byId.get(String(row.categoryId || '')) : null;
+      const classification = (exactCategory && isCategoryDescendant(exactCategory, category, categoryIndex) ? exactCategory : null) || findFinanceClassification(row, category, categoryIndex)
+        || ensureFinanceClassification(row, category, categoryIndex);
+      addFinanceClassificationAmount(target, category, classification, categoryIndex, row);
+    });
+    const staleProducts = rows
+      .map(row => {
+        const oldest = row.oldestInboundTime ? new Date(row.oldestInboundTime) : null;
+        const inventoryAgeDays = oldest && !Number.isNaN(oldest.getTime())
+          ? Math.max(0, Math.floor((Date.now() - oldest.getTime()) / 86400000))
+          : null;
+        return { ...row, inventoryAgeDays };
+      })
+      .filter(row => row.inventoryAgeDays === null || row.inventoryAgeDays > 30)
+      .sort((a, b) => (b.inventoryAgeDays || 0) - (a.inventoryAgeDays || 0))
+      .slice(0, 10);
+
+    return {
+      inventoryQuantity,
+      byStore: groupStores ? [...new Set([...snRows, ...nonSnRows].map(row => String(row.storeId)))].map(storeId => ({ storeId,
+        inventoryAmount: roundMoney([...snRows, ...nonSnRows].filter(row => String(row.storeId) === storeId).reduce((sum, row) => sum + Number(row.inventoryAmount || 0), 0)) })) : undefined,
+      skuCount: new Set(rows.map(row => row.productId).filter(Boolean)).size,
+      inventoryAmount,
+      categories: [...categoryMap.values()]
+        .filter(category => normalizeCategoryName(category.name) !== 'care服务')
+        .filter(category => !allRootCategories || categoryIndex.byId.get(category.categoryId)?.status !== 0
+          || category.quantity !== 0 || category.amount !== 0)
+        .sort((left, right) => {
+          const leftCategory = categoryIndex.byId.get(left.categoryId);
+          const rightCategory = categoryIndex.byId.get(right.categoryId);
+          return (leftCategory?.level || 0) - (rightCategory?.level || 0)
+            || (leftCategory?.sortOrder || 0) - (rightCategory?.sortOrder || 0)
+            || left.name.localeCompare(right.name, 'zh-CN');
+        })
+        .map(category => ({
+          ...category,
+          quantity: Number(category.quantity || 0),
+          amount: roundMoney(category.amount),
+          overdueQuantity: Number(category.overdueQuantity || 0),
+          overdueAmount: roundMoney(category.overdueAmount),
+          overdueRate: category.quantity > 0
+            ? roundMoney((category.overdueQuantity / category.quantity) * 100)
+            : 0,
+          children: sortFinanceCategoryChildren(category.children, categoryIndex)
+        })),
+      ageStructure: ageRows.map(row => ({
+        ageBucket: row.ageBucket,
+        quantity: toNumber(row.quantity),
+        inventoryAmount: roundMoney(row.inventoryAmount)
+      })),
+      staleProducts
+    };
+  }
+}
+
+class DailyKpiDashboardDataSource extends DashboardDataSource {
+  async getFilters() {
+    throw new Error('日汇总数据源尚未启用');
+  }
+
+  async getOverview() {
+    throw new Error('日汇总数据源尚未启用');
+  }
+}
+
+module.exports = {
+  buildFinanceCategoryIndex,
+  ARCHIVED_STATUSES,
+  VOIDED_STATUSES,
+  GROSS_PROFIT_FORMULA_VERSION,
+  DashboardDataSource,
+  RealtimeSqlDashboardDataSource,
+  DailyKpiDashboardDataSource,
+  normalizeParticipants,
+  roundMoney,
+  toNumber,
+  grossProfitSql,
+  orderItemSalesAmountSql,
+  orderItemTotalsJoin,
+  _test: { CARE_INVENTORY_EXCLUSION_SQL, buildSalesWhere, orderItemSalesAmountSql, grossProfitSql, orderItemTotalsJoin }
+};

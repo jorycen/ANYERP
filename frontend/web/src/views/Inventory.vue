@@ -3,438 +3,4396 @@
     <el-card>
       <template #header>
         <div class="card-header">
-          <span>库存查询</span>
-          <div>
-            <el-button type="primary" @click="handleInbound">入库</el-button>
-            <el-button type="success" @click="handleOutbound">出库</el-button>
-            <el-button type="warning" @click="handleTransfer">调拨</el-button>
-          </div>
+          <span>{{ mainTab === 'resource-rights' ? '首页' : '库存管理' }}</span>
         </div>
       </template>
 
-      <el-tabs v-model="activeTab">
-        <el-tab-pane label="库存列表" name="list">
-          <div class="filter-bar">
-            <el-input v-model="queryParams.keyword" placeholder="商品名称/PN码/SN码" clearable style="width: 200px" />
-            <el-select v-model="queryParams.storeId" placeholder="选择门店" clearable style="width: 150px">
-              <el-option label="全部门店" :value="''" />
-              <el-option v-for="store in stores" :key="store.store_id" :label="store.name" :value="store.store_id" />
-            </el-select>
-            <el-button type="primary" @click="loadData">搜索</el-button>
+      <el-tabs v-model="mainTab" class="module-tabs" @tab-change="onTabChange">
+        <el-tab-pane label="获赠 / 拆机回收" name="non-purchase" lazy><NonPurchaseReceipts /></el-tab-pane>
+        <!-- 库存汇总 -->
+        <el-tab-pane label="库存汇总" name="summary">
+          <div class="inventory-resource-legend">
+            <span class="legend-title">资源类型提示：</span>
+            <span class="legend-item"><i class="legend-dot full-resource" />全资源货</span>
+            <span class="legend-item"><i class="legend-dot subsidy-resource" />仅国补</span>
+            <span class="legend-item"><i class="legend-dot no-subsidy-resource" />无法国补</span>
+          </div>
+          <div class="filter-bar erp-query-grid">
+            <div v-for="field in inventorySearchFields" :key="field.key" class="erp-query-field"><span class="erp-query-label">{{field.label}}</span><el-input v-model="summaryQuery[field.key]" :placeholder="field.label" clearable style="width:200px" @keyup.enter="querySummary" /></div>
+            <div class="erp-query-field"><span class="erp-query-label">商品类别</span><el-select v-model="summaryQuery.category" placeholder="商品类别" clearable style="width: 150px" @change="querySummary">
+              <el-option v-for="cat in categories" :key="cat" :label="cat" :value="cat" />
+            </el-select></div>
+            <div class="erp-query-field"><span class="erp-query-label">门店</span><el-select v-model="summaryQuery.storeId" placeholder="门店" clearable style="width: 150px" @change="querySummary">
+          <el-option label="全部门店" :value="''" />
+          <el-option v-for="store in summaryStores" :key="store.store_id" :label="`${store.distributor_name || '未知经销商'} / ${store.name}`" :value="store.store_id" />
+            </el-select></div>
+            <el-checkbox v-model="summaryQuery.stockOnly" :true-value="1" :false-value="0" @change="onSummaryStockOnlyChange">只显示有库存商品</el-checkbox>
+            <div class="erp-query-actions"><el-button type="primary" @click="querySummary">查询</el-button>
+            <el-button type="success" :loading="summaryExporting" @click="handleExportSummary">导出</el-button>
+            <el-button type="warning" :loading="summarySimpleExporting" @click="handleExportSummarySimple">导出库存简表</el-button>
+            <el-button :loading="supplierImporting" @click="chooseSupplierFile('changhong')">上传佳华库存</el-button>
+            <el-button :loading="supplierImporting" @click="chooseSupplierFile('tianjin')">上传汇一库存</el-button>
+            <input ref="supplierFileInput" type="file" accept=".xlsx,.xls" style="display:none" @change="handleSupplierFileChange" />
+          </div>
+          </div>
+          <div class="model-filter-panel">
+            <span class="model-filter-label">机型分类</span>
+            <el-button-group>
+              <el-button
+                v-for="item in inventoryProductTypeOptions"
+                :key="item.value"
+                :type="summaryQuery.productType === item.value ? 'primary' : 'default'"
+                @click="selectInventoryProductType(item.value)"
+              >{{ item.label }}</el-button>
+            </el-button-group>
+            <span class="model-filter-label model-filter-label-spaced">机型查询</span>
+            <el-button
+              v-for="item in inventoryModelFilterOptions"
+              :key="item.value"
+              :type="summaryQuery.modelFilter === item.value ? 'primary' : 'default'"
+              :disabled="!summaryQuery.productType"
+              @click="selectInventoryModelFilter(item.value)"
+            >{{ item.label }}</el-button>
           </div>
 
-          <el-table :data="tableData" stripe border>
-            <el-table-column prop="product_name" label="商品名称" min-width="150" />
-            <el-table-column prop="pn_code" label="PN码" width="120" />
-            <el-table-column prop="sn_code" label="SN码" width="150" />
-            <el-table-column prop="store_name" label="门店" width="120" />
-            <el-table-column prop="location_name" label="库位" width="100" />
-            <el-table-column prop="status" label="状态" width="100">
+          <el-empty v-if="!summaryHasSearched" description="请输入商品信息后查询，或选择机型类型" />
+          <el-table v-else :data="summaryData" stripe border v-loading="summaryLoading">
+            <el-table-column prop="category" label="类别" width="100" />
+            <el-table-column prop="product_name" label="商品名称" min-width="140" />
+            <el-table-column prop="spec" label="产品配置" width="130" />
+            <el-table-column prop="pn_code" label="PN" width="140" />
+            <el-table-column label="门店销量（近7天 / 近30天）" min-width="220">
               <template #default="{ row }">
-                <el-tag :type="getStatusType(row.status)">{{ row.status }}</el-tag>
+                <div v-for="store in row.store_sales" :key="store.store_id" class="breakdown-item">
+                  <span>{{ store.store_name || store.store_id }}</span>
+                  <span>{{ store.sales_7_qty }} / {{ store.sales_30_qty }}</span>
+                </div>
+                <span v-if="!row.store_sales?.length" class="summary-metric-secondary">暂无销量</span>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="100">
+            <el-table-column v-if="summaryQuery.modelFilter === 'highMargin7'" label="近7天机型指标" width="150">
               <template #default="{ row }">
-                <el-button link type="primary" @click="handleViewSn(row)">详情</el-button>
+                  <div>平均毛利：¥{{ Number(row.avg_gross_profit_7 || 0).toFixed(2) }}</div>
+                  <div class="summary-metric-secondary">最高毛利：¥{{ Number(row.max_gross_profit_7 || 0).toFixed(2) }}</div>
               </template>
             </el-table-column>
+            <el-table-column prop="standard_price" label="销售定价" width="100">
+              <template #default="{ row }">¥{{ row.standard_price }}</template>
+            </el-table-column>
+            <el-table-column label="销售仓库存">
+              <el-table-column prop="normal_qty" label="合计" width="100">
+                <template #default="{ row }">
+                  <el-popover placement="bottom" :width="420" trigger="hover">
+                    <template #default>
+                      <div class="stock-breakdown">
+                        <div class="breakdown-title">各门店销售仓库存（按资源类型）</div>
+                        <div v-if="getStockBreakdownRows(row, 'normal_qty').length" class="breakdown-locations">
+                          <div v-for="item in getStockBreakdownRows(row, 'normal_qty')" :key="item.key" class="breakdown-item">
+                            <span class="breakdown-label">{{ item.store_name }}</span>
+                            <span v-if="item.resource_breakdown" class="breakdown-resource-values">
+                              <span class="breakdown-resource full-resource-text">全资源 {{ item.full_resource_qty }}</span>
+                              <span class="breakdown-resource subsidy-resource-text">仅国补 {{ item.subsidy_only_qty }}</span>
+                              <span class="breakdown-resource no-subsidy-resource-text">无法国补 {{ item.no_subsidy_qty }}</span>
+                            </span>
+                            <span v-else class="breakdown-value">{{ item.quantity }}</span>
+                          </div>
+                        </div>
+                        <div v-else class="breakdown-empty">暂无库存明细</div>
+                      </div>
+                    </template>
+                    <template #reference><span class="stock-quantity-reference">{{ row.normal_qty || 0 }}</span></template>
+                  </el-popover>
+                </template>
+              </el-table-column>
+              <el-table-column prop="aino_yun_inventory_qty" label="艾诺云" width="100" />
+              <el-table-column prop="aino_zhixing_inventory_qty" label="艾诺志兴" width="110" />
+            </el-table-column>
+            <el-table-column label="总库存（全部仓位）">
+              <el-table-column prop="aino_yun_inventory_qty_total" label="艾诺云" width="100" />
+              <el-table-column prop="aino_zhixing_inventory_qty_total" label="艾诺志兴" width="110" />
+            </el-table-column>
+            <el-table-column prop="display_qty" label="铺货仓库存" width="110">
+              <template #default="{ row }">
+                <el-popover placement="bottom" :width="260" trigger="hover">
+                  <template #default>
+                    <div class="stock-breakdown">
+                      <div class="breakdown-title">各门店铺货仓库存</div>
+                      <div v-if="getStockBreakdownRows(row, 'display_qty').length" class="breakdown-locations">
+                        <div v-for="item in getStockBreakdownRows(row, 'display_qty')" :key="item.key" class="breakdown-item">
+                          <span class="breakdown-label">{{ item.store_name }}</span>
+                          <span class="breakdown-value">{{ item.quantity }}</span>
+                        </div>
+                      </div>
+                      <div v-else class="breakdown-empty">暂无库存明细</div>
+                    </div>
+                  </template>
+                  <template #reference><span class="stock-quantity-reference">{{ row.display_qty || 0 }}</span></template>
+                </el-popover>
+              </template>
+            </el-table-column>
+            <el-table-column prop="demo_qty" label="样品仓库存" width="110">
+              <template #default="{ row }">
+                <el-popover placement="bottom" :width="260" trigger="hover">
+                  <template #default>
+                    <div class="stock-breakdown">
+                      <div class="breakdown-title">各门店样品仓库存</div>
+                      <div v-if="getStockBreakdownRows(row, 'demo_qty').length" class="breakdown-locations">
+                        <div v-for="item in getStockBreakdownRows(row, 'demo_qty')" :key="item.key" class="breakdown-item">
+                          <span class="breakdown-label">{{ item.store_name }}</span>
+                          <span class="breakdown-value">{{ item.quantity }}</span>
+                        </div>
+                      </div>
+                      <div v-else class="breakdown-empty">暂无库存明细</div>
+                    </div>
+                  </template>
+                  <template #reference><span class="stock-quantity-reference">{{ row.demo_qty || 0 }}</span></template>
+                </el-popover>
+              </template>
+            </el-table-column>
+            <el-table-column prop="rental_demo_qty" label="租赁样机仓库存" width="130">
+              <template #default="{ row }">
+                <el-popover placement="bottom" :width="280" trigger="hover">
+                  <template #default>
+                    <div class="stock-breakdown">
+                      <div class="breakdown-title">各门店租赁样机仓库存</div>
+                      <div v-if="getStockBreakdownRows(row, 'rental_demo_qty').length" class="breakdown-locations">
+                        <div v-for="item in getStockBreakdownRows(row, 'rental_demo_qty')" :key="item.key" class="breakdown-item">
+                          <span class="breakdown-label">{{ item.store_name }}</span>
+                          <span class="breakdown-value">{{ item.quantity }}</span>
+                        </div>
+                      </div>
+                      <div v-else class="breakdown-empty">暂无库存明细</div>
+                    </div>
+                  </template>
+                  <template #reference><span class="stock-quantity-reference">{{ row.rental_demo_qty || 0 }}</span></template>
+                </el-popover>
+              </template>
+            </el-table-column>
+            <el-table-column prop="unsellable_qty" label="不可售库存" width="110">
+              <template #default="{ row }">
+                <el-popover placement="bottom" :width="260" trigger="hover">
+                  <template #default>
+                    <div class="stock-breakdown">
+                      <div class="breakdown-title">各门店不可售仓库存</div>
+                      <div v-if="getStockBreakdownRows(row, 'unsellable_qty').length" class="breakdown-locations">
+                        <div v-for="item in getStockBreakdownRows(row, 'unsellable_qty')" :key="item.key" class="breakdown-item">
+                          <span class="breakdown-label">{{ item.store_name }}</span>
+                          <span class="breakdown-value">{{ item.quantity }}</span>
+                        </div>
+                      </div>
+                      <div v-else class="breakdown-empty">暂无库存明细</div>
+                    </div>
+                  </template>
+                  <template #reference><span class="stock-quantity-reference">{{ row.unsellable_qty || 0 }}</span></template>
+                </el-popover>
+              </template>
+            </el-table-column>
+            <el-table-column prop="pending_qty" label="占用仓库存" width="110">
+              <template #default="{ row }">
+                <el-popover placement="bottom" :width="260" trigger="hover">
+                  <template #default>
+                    <div class="stock-breakdown">
+                      <div class="breakdown-title">各门店占用仓库存</div>
+                      <div v-if="getStockBreakdownRows(row, 'pending_qty').length" class="breakdown-locations">
+                        <div v-for="item in getStockBreakdownRows(row, 'pending_qty')" :key="item.key" class="breakdown-item">
+                          <span class="breakdown-label">{{ item.store_name }}</span>
+                          <span class="breakdown-value">{{ item.quantity }}</span>
+                        </div>
+                      </div>
+                      <div v-else class="breakdown-empty">暂无库存明细</div>
+                    </div>
+                  </template>
+                  <template #reference><span class="stock-quantity-reference">{{ row.pending_qty || 0 }}</span></template>
+                </el-popover>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="120">
+              <template #default="{ row }">
+                <el-button v-if="row.need_sn === 1" link type="primary" @click="openSnDialog(row)">查看序列号</el-button>
+                <el-button v-else link type="warning" @click="openProductLocationDialog(row)">调整库位</el-button>
+              </template>
+            </el-table-column>
+            <el-table-column prop="changhong_inventory" label="佳华库存" width="95" />
+            <el-table-column prop="tianjin_inventory" label="汇一库存" width="95" />
           </el-table>
 
+          <div v-if="summaryHasSearched && isSummaryQuickModelFilter" class="summary-continue-query">
+            <span>已显示 {{ summaryData.length }} / {{ summaryTotal }} 条</span>
+            <el-button
+              v-if="summaryData.length < summaryTotal"
+              type="primary"
+              size="small"
+              :loading="summaryLoading"
+              @click="loadMoreSummary"
+            >继续查询</el-button>
+            <span v-else class="summary-complete-text">已全部显示</span>
+          </div>
           <el-pagination
-            v-model:current-page="queryParams.page"
-            v-model:page-size="queryParams.pageSize"
-            :total="total"
-            :page-sizes="[10, 20, 50]"
+            v-else-if="summaryHasSearched"
+            v-model:current-page="summaryQuery.page"
+            v-model:page-size="summaryQuery.pageSize"
+            :total="summaryTotal"
+            :page-sizes="[20, 50, 100]"
             layout="total, sizes, prev, pager, next"
-            @size-change="loadData"
-            @current-change="loadData"
+            @size-change="querySummary"
+            @current-change="loadSummary"
           />
         </el-tab-pane>
 
-        <el-tab-pane label="SN列表" name="sn">
-          <div class="filter-bar">
-            <el-input v-model="snQuery.snCode" placeholder="SN码" clearable style="width: 200px" />
-            <el-select v-model="snQuery.status" placeholder="状态" clearable style="width: 120px">
-              <el-option label="全部" value="" />
+        <!-- SN库存清单 -->
+        <el-tab-pane label="SN库存清单" name="sn-inventory">
+          <div class="filter-bar erp-query-grid">
+            <div v-for="field in inventorySearchFields" :key="field.key" class="erp-query-field"><span class="erp-query-label">{{field.label}}</span><el-input v-model="snInventoryQuery[field.key]" :placeholder="field.label" clearable style="width:200px" @keyup.enter="querySnInventory" /></div>
+            <div class="erp-query-field"><span class="erp-query-label">SN码</span><el-input
+              v-model="snInventoryQuery.snCode"
+              placeholder="SN码"
+              clearable
+              style="width: 230px"
+              @keyup.enter="querySnInventory"
+            /></div>
+            <div class="erp-query-field"><span class="erp-query-label">门店</span><el-select v-model="snInventoryQuery.storeId" placeholder="门店" clearable style="width: 150px" @change="onSnInventoryStoreChange">
+              <el-option label="全部门店" :value="''" />
+              <el-option v-for="store in stores" :key="store.store_id" :label="store.name" :value="store.store_id" />
+            </el-select></div>
+            <div class="erp-query-field"><span class="erp-query-label">库位</span><el-select
+              v-model="snInventoryQuery.locationId"
+              placeholder="库位"
+              clearable
+              :disabled="!snInventoryQuery.storeId"
+              style="width: 140px"
+              @change="querySnInventory"
+            >
+              <el-option v-for="location in snInventoryLocations" :key="location.location_id" :label="location.name" :value="location.location_id" />
+            </el-select></div>
+            <div class="erp-query-field"><span class="erp-query-label">SN状态</span><el-select v-model="snInventoryQuery.status" placeholder="SN状态" clearable style="width: 130px" @change="querySnInventory">
               <el-option label="在库" value="in_stock" />
-              <el-option label="已售" value="sold" />
-            </el-select>
-            <el-button type="primary" @click="loadSnData">搜索</el-button>
+              <el-option label="已占用" value="occupied" />
+              <el-option label="已销售" value="sold" />
+            </el-select></div>
+            <div class="erp-query-field"><span class="erp-query-label">资源类型</span><el-select v-model="snInventoryQuery.resourceType" placeholder="资源类型" clearable style="width: 140px" @change="querySnInventory">
+              <el-option v-for="resource in snInventoryResourceOptions" :key="resource.value" :label="resource.label" :value="resource.value" />
+            </el-select></div>
+            <div class="erp-query-field"><span class="erp-query-label">资源状态</span><el-select v-model="snInventoryQuery.resourceStatus" placeholder="资源状态" clearable style="width: 130px" @change="querySnInventory">
+              <el-option v-for="status in resourceStatusOptions" :key="status.value" :label="status.label" :value="status.value" />
+            </el-select></div>
+            <div class="erp-query-field"><span class="erp-query-label">价格类型</span><el-select v-model="snInventoryQuery.specialOnly" placeholder="价格类型" clearable style="width: 130px" @change="querySnInventory">
+              <el-option label="仅看特价SN" value="1" />
+              <el-option label="全部SN" value="" />
+            </el-select></div>
+            <div class="erp-query-field erp-query-field--range"><span class="erp-query-label">库龄（天）</span><div class="erp-age-range"><el-input-number v-model="snInventoryQuery.minAgeDays" :min="0" :max="9999" controls-position="right" placeholder="最小库龄" style="width: 125px" />
+            <span class="age-separator">至</span>
+            <el-input-number v-model="snInventoryQuery.maxAgeDays" :min="0" :max="9999" controls-position="right" placeholder="最大库龄" style="width: 125px" /></div></div>
+            <div class="erp-query-actions"><el-button type="primary" @click="querySnInventory">查询</el-button>
+            <el-button type="success" :loading="snInventoryExporting" @click="handleExportSnInventory">导出</el-button>
+            <el-button @click="resetSnInventoryQuery">重置</el-button>
+          </div>
           </div>
 
-          <el-table :data="snTableData" stripe border>
-            <el-table-column prop="sn_code" label="SN码" width="180" />
-            <el-table-column prop="product_name" label="商品" min-width="150" />
-            <el-table-column prop="pn_code" label="PN码" width="120" />
-            <el-table-column prop="store_name" label="门店" width="120" />
-            <el-table-column prop="status" label="状态" width="100">
+          <el-table :data="snInventoryData" stripe border v-loading="snInventoryLoading">
+            <el-table-column prop="sn_code" label="SN" min-width="170" fixed />
+            <el-table-column prop="pn_code" label="PN" width="130" />
+            <el-table-column prop="product_name" label="商品名称" min-width="180" show-overflow-tooltip />
+            <el-table-column label="计价方式" width="120">
               <template #default="{ row }">
-                <el-tag :type="getStatusType(row.status)">{{ row.status }}</el-tag>
+                <el-tag :type="row.gross_profit_cost_mode === 'COMPANY_PRICE' ? 'success' : 'warning'" size="small">
+                  {{ row.gross_profit_cost_mode === 'COMPANY_PRICE' ? '按公司定价' : '按采购价' }}
+                </el-tag>
               </template>
             </el-table-column>
-            <el-table-column prop="inbound_time" label="入库时间" width="160" />
+            <el-table-column prop="store_name" label="所在门店" width="130" />
+            <el-table-column prop="location_name" label="库位" width="120" />
+            <el-table-column label="状态" width="100">
+              <template #default="{ row }">
+                <el-tag :type="getStatusType(row.status)">{{ row.status_label || row.statusText || row.status || '未知' }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="状态变更时间" width="170">
+              <template #default="{ row }">{{ formatDate(row.status_change_time) }}</template>
+            </el-table-column>
+            <el-table-column v-if="canViewSnPurchaseCost" label="采购成本" width="115" align="right">
+              <template #default="{ row }">¥{{ formatMoney(row.purchase_cost) }}</template>
+            </el-table-column>
+            <el-table-column v-if="canViewSnPurchaseCost" prop="purchase_supplier_name" label="采购供应商" min-width="140" show-overflow-tooltip />
+            <el-table-column label="资源情况" min-width="220">
+              <template #default="{ row }">
+                <div v-if="row.resource_statuses?.length" class="resource-status-list">
+                  <el-tag
+                    v-for="resource in row.resource_statuses"
+                    :key="`${resource.resource_type}-${resource.current_status}`"
+                    :type="resourceStatusType(resource.current_status)"
+                    size="small"
+                  >{{ resource.resource_name }}：{{ resource.status_name }}</el-tag>
+                </div>
+                <span v-else class="muted">无可用资源</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="统一售价" width="110" align="right">
+              <template #default="{ row }">¥{{ formatMoney(row.unified_sale_price) }}</template>
+            </el-table-column>
+        <el-table-column label="SN特价" width="110" align="right">
+              <template #default="{ row }">
+                <el-tag v-if="row.is_special_price" type="danger">¥{{ formatMoney(row.special_price) }}</el-tag>
+                <span v-else>-</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="当前适用售价" width="125" align="right">
+              <template #default="{ row }">¥{{ formatMoney(row.effective_sale_price) }}</template>
+            </el-table-column>
+            <el-table-column label="库龄" width="90" align="right">
+              <template #default="{ row }">{{ row.stock_age_days == null ? '未知' : `${row.stock_age_days}天` }}</template>
+            </el-table-column>
+            <el-table-column prop="remark" label="备注" min-width="160" show-overflow-tooltip />
+            <el-table-column label="操作" width="420" fixed="right">
+              <template #default="{ row }">
+                <el-button v-if="canViewSnResourceRights" link type="success" @click="openSnResourceDetail(row)">查看权益</el-button>
+                <el-button link type="primary" @click="openSnDialog(row)">修改SN</el-button>
+                <el-button v-if="row.status === 'in_stock'" link type="warning" @click="openSnLocationDialog(row)">调整库位</el-button>
+                <el-button v-if="canStartSnPurchase(row)" link type="success" @click="openSnPurchase(row)">发起采购申请</el-button>
+                <el-button v-if="row.status === 'in_stock'" link type="info" @click="openTransferDialog(row)">调拨</el-button>
+                <el-button v-if="canManageSnPrice" link type="primary" @click="openSnSpecialPrice(row)">{{ row.is_special_price ? '修改特价' : '设为特价' }}</el-button>
+                <el-button v-if="canManageSnPrice && row.is_special_price" link type="danger" @click="cancelSnSpecialPrice(row)">取消特价</el-button>
+                <el-button v-if="canManageSnPrice" link type="info" @click="openSnPriceHistory(row)">记录</el-button>
+              </template>
+            </el-table-column>
           </el-table>
 
           <el-pagination
-            v-model:current-page="snQuery.page"
-            v-model:page-size="snQuery.pageSize"
-            :total="snTotal"
-            :page-sizes="[10, 20, 50]"
+            v-model:current-page="snInventoryQuery.page"
+            v-model:page-size="snInventoryQuery.pageSize"
+            :total="snInventoryTotal"
+            :page-sizes="[20, 50, 100]"
             layout="total, sizes, prev, pager, next"
-            @size-change="loadSnData"
-            @current-change="loadSnData"
+            @size-change="loadSnInventory"
+            @current-change="loadSnInventory"
+          />
+
+          <el-dialog v-model="snPurchaseVisible" title="发起特殊仓SN采购申请" width="620px" @closed="resetSnPurchaseForm">
+            <el-alert title="审批通过后系统将直接把该SN转入目标仓，不再生成待入库单。" type="info" :closable="false" show-icon class="mb-16" />
+            <el-descriptions :column="2" border class="mb-16">
+              <el-descriptions-item label="SN">{{ snPurchaseForm.snCode }}</el-descriptions-item>
+              <el-descriptions-item label="当前库位">{{ snPurchaseForm.sourceLocationName }}</el-descriptions-item>
+              <el-descriptions-item label="商品" :span="2">{{ snPurchaseForm.productName }}</el-descriptions-item>
+              <el-descriptions-item label="PN">{{ snPurchaseForm.pnCode || '-' }}</el-descriptions-item>
+              <el-descriptions-item label="门店">{{ snPurchaseForm.storeName }}</el-descriptions-item>
+            </el-descriptions>
+            <el-form label-width="100px">
+              <el-form-item label="供应商" required>
+                <el-select v-model="snPurchaseForm.supplierId" filterable placeholder="请选择供应商" style="width:100%" @change="onSnPurchaseSupplierChange">
+                  <el-option v-for="item in snPurchaseSuppliers" :key="item.supplier_id" :label="item.name" :value="item.supplier_id" />
+                </el-select>
+              </el-form-item>
+              <el-form-item label="采购价" required>
+                <el-input-number v-model="snPurchaseForm.price" :min="0" :precision="2" :step="100" style="width:100%" />
+              </el-form-item>
+              <el-form-item label="毛利计价方式" required>
+                <el-select v-model="snPurchaseForm.grossProfitCostMode" placeholder="请选择毛利成本口径" style="width:100%">
+                  <el-option label="按采购价" value="PURCHASE_PRICE" :disabled="!snPurchaseCostModes.includes('PURCHASE_PRICE')" />
+                  <el-option label="按公司定价" value="COMPANY_PRICE" :disabled="!snPurchaseCostModes.includes('COMPANY_PRICE')" />
+                </el-select>
+                <div style="color:#909399;font-size:12px">用于后续销售经营毛利核算，采购价仍按上方填写金额提交。</div>
+              </el-form-item>
+              <el-form-item v-if="snPurchaseForm.supplierId && (snPurchaseRebateBalance > 0 || Number(snPurchaseForm.rebateDeduction || 0) > 0)" label="返利抵扣">
+                <div style="width:100%">
+                  <div style="margin-bottom:6px;color:#909399;font-size:13px">供应商返利余额：¥{{ snPurchaseRebateBalance.toFixed(2) }}</div>
+                  <el-input-number v-model="snPurchaseForm.rebateDeduction" :min="0" :max="snPurchaseRebateCap" :precision="2" :step="100" style="width:100%" @change="normalizeSnPurchaseRebate" />
+                </div>
+              </el-form-item>
+              <el-form-item label="货型" required>
+                <el-select v-model="snPurchaseForm.goodsTypeId" placeholder="请选择货型" style="width:100%">
+                  <el-option v-for="item in snPurchaseGoodsTypes" :key="item.goods_type_id" :label="item.name" :value="item.goods_type_id" />
+                </el-select>
+              </el-form-item>
+              <el-form-item label="付款方式" required>
+                <el-radio-group v-model="snPurchaseForm.paymentMethod">
+                  <el-radio value="COMPANY_CREDIT">公司账期</el-radio>
+                  <el-radio value="PERSONAL_ADVANCE">个人垫付</el-radio>
+                </el-radio-group>
+              </el-form-item>
+              <el-form-item label="采购凭证类型" required>
+                <el-select v-model="snPurchaseForm.invoiceType" placeholder="请选择采购凭证类型" style="width:100%">
+                  <el-option label="专票13%" value="专票13%" />
+                  <el-option label="收据" value="收据" />
+                </el-select>
+              </el-form-item>
+              <el-form-item label="目标库位" required>
+                <el-select v-model="snPurchaseForm.targetLocationId" placeholder="请选择销售仓或样品仓" style="width:100%">
+                  <el-option v-for="item in snPurchaseTargetLocations" :key="item.location_id" :label="item.name" :value="item.location_id" />
+                </el-select>
+              </el-form-item>
+              <el-form-item label="备注"><el-input v-model="snPurchaseForm.remark" type="textarea" :rows="2" /></el-form-item>
+            </el-form>
+            <div class="order-summary">
+              <div class="summary-item total">采购原价: <span>¥{{ Number(snPurchaseForm.price || 0).toFixed(2) }}</span></div>
+              <div v-if="snPurchaseRebateDeduction > 0" class="summary-item deduction" style="color:#67c23a">返利抵扣: <span>-¥{{ snPurchaseRebateDeduction.toFixed(2) }}</span></div>
+              <div class="summary-item actual">实际应付: <span style="color:#f56c6c;font-weight:700">¥{{ snPurchaseActualTotal.toFixed(2) }}</span></div>
+            </div>
+            <template #footer>
+              <el-button @click="snPurchaseVisible = false">取消</el-button>
+              <el-button type="primary" :loading="snPurchaseSubmitting" @click="submitSnPurchase">提交采购申请</el-button>
+            </template>
+          </el-dialog>
+        </el-tab-pane>
+
+        <!-- 批量维护 -->
+        <el-tab-pane label="批量维护" name="batch-maintenance">
+          <div class="batch-maintenance-layout">
+            <div class="batch-toolbar">
+              <el-button type="primary" @click="openBatchImportDialog">导入生成申请</el-button>
+            </div>
+
+            <div class="filter-bar">
+              <el-select v-model="batchQuery.status" placeholder="状态" clearable style="width: 130px" @change="loadBatchApplications">
+                <el-option label="待审批" value="pending" />
+                <el-option label="执行中" value="executing" />
+                <el-option label="已执行" value="executed" />
+                <el-option label="部分执行" value="partially_executed" />
+                <el-option label="已拒绝" value="rejected" />
+                <el-option label="执行失败" value="execute_failed" />
+              </el-select>
+              <el-select v-model="batchQuery.operationType" placeholder="操作类型" clearable style="width: 130px" @change="loadBatchApplications">
+                <el-option label="批量入库" value="INBOUND" />
+                <el-option label="批量出库" value="OUTBOUND" />
+                <el-option label="数量调整" value="ADJUST" />
+                <el-option label="SN计价方式调整" value="COST_MODE" />
+              </el-select>
+              <el-button type="primary" @click="loadBatchApplications">查询</el-button>
+            </div>
+
+            <el-table :data="batchApplications" stripe border v-loading="batchLoading">
+              <el-table-column prop="application_no" label="申请单号" width="190" />
+              <el-table-column label="类型" width="100">
+                <template #default="{ row }">{{ batchOperationText(row.operation_type) }}</template>
+              </el-table-column>
+              <el-table-column prop="total_rows" label="行数" width="80" />
+              <el-table-column prop="applicant_name" label="申请人" width="120" />
+              <el-table-column prop="source_file_name" label="来源文件" min-width="180" show-overflow-tooltip />
+              <el-table-column label="状态" width="100">
+                <template #default="{ row }">
+                  <el-tag :type="batchStatusType(row.status)">{{ batchStatusText(row.status) }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="创建时间" width="170">
+                <template #default="{ row }">{{ formatDate(row.create_time) }}</template>
+              </el-table-column>
+              <el-table-column label="操作" width="180" fixed="right">
+                <template #default="{ row }">
+                  <el-button link type="primary" @click="openBatchDetail(row)">详情</el-button>
+                  <el-button v-if="canReviewBatch && row.status === 'pending'" link type="success" @click="reviewBatch(row, 'approve')">通过</el-button>
+                  <el-button v-if="canReviewBatch && row.status === 'pending'" link type="danger" @click="reviewBatch(row, 'reject')">拒绝</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+
+            <el-pagination
+              v-model:current-page="batchQuery.page"
+              v-model:page-size="batchQuery.pageSize"
+              :total="batchTotal"
+              :page-sizes="[20, 50, 100]"
+              layout="total, sizes, prev, pager, next"
+              @size-change="loadBatchApplications"
+              @current-change="loadBatchApplications"
+            />
+          </div>
+        </el-tab-pane>
+
+        <!-- 入库单管理 -->
+        <el-tab-pane label="入库单管理" name="inbound">
+          <div class="filter-bar">
+            <el-input
+              v-model="inboundQuery.inboundNo"
+              placeholder="入库单号"
+              clearable
+              style="width: 180px"
+              @keyup.enter="searchInboundByNo"
+            />
+            <el-input v-model="inboundQuery.sourceNo" placeholder="来源单号" clearable style="width: 180px" @keyup.enter="loadInboundList" />
+            <el-input v-model="inboundQuery.counterpartyName" placeholder="往来单位" clearable style="width: 160px" @keyup.enter="loadInboundList" />
+            <el-select v-model="inboundQuery.status" placeholder="状态" clearable style="width: 120px" @change="loadInboundList">
+              <el-option label="全部" value="" />
+              <el-option label="待入库" value="pending" />
+              <el-option label="部分入库" value="partially_received" />
+              <el-option label="已完成" value="completed" />
+              <el-option label="已取消" value="cancelled" />
+              <el-option label="已退库" value="returned" />
+            </el-select>
+            <el-select v-model="inboundQuery.storeId" placeholder="门店" clearable style="width: 150px" @change="loadInboundList">
+              <el-option label="全部门店" :value="''" />
+              <el-option v-for="store in stores" :key="store.store_id" :label="store.name" :value="store.store_id" />
+            </el-select>
+            <el-button type="primary" @click="loadInboundList">查询</el-button>
+            <el-button type="primary" plain @click="searchInboundByNo">按单号查找</el-button>
+          </div>
+
+          <el-table :data="inboundList" stripe border>
+            <el-table-column prop="inbound_no" label="入库单号" width="180" />
+            <el-table-column prop="store_name" label="门店" width="120" />
+            <el-table-column prop="source_no" label="来源单号" width="150" />
+            <el-table-column prop="counterparty_name" label="往来单位" width="160" show-overflow-tooltip />
+            <el-table-column prop="items_summary" label="商品摘要" min-width="200" show-overflow-tooltip />
+            <el-table-column prop="total_quantity" label="总数量" width="100" />
+            <el-table-column prop="receivedQuantity" label="已入库" width="90" />
+            <el-table-column prop="remainingQuantity" label="待入库" width="90" />
+            <el-table-column prop="status" label="状态" width="100">
+              <template #default="{ row }">
+                <el-tag :type="getInboundStatusType(row.status)">{{ row.statusLabel || getInboundStatusText(row.status) }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="create_time" label="创建时间" width="160">
+              <template #default="{ row }">{{ formatDate(row.create_time) }}</template>
+            </el-table-column>
+            <el-table-column label="操作" width="240">
+              <template #default="{ row }">
+                <el-button link type="primary" @click="viewInboundDetail(row)">查看</el-button>
+                <el-button link type="success" @click="openExecuteDialog(row)" v-if="row.status === 'pending' && !isTransferInboundRow(row)">{{ row.progressStatus === 'partially_received' ? '继续入库' : '入库' }}</el-button>
+                <el-button link type="danger" @click="openReturnRequestDialog(row)" v-if="row.can_request_return === true">申请退供应商</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+
+          <el-pagination
+            v-model:current-page="inboundQuery.page"
+            v-model:page-size="inboundQuery.pageSize"
+            :total="inboundTotal"
+            layout="total, sizes, prev, pager, next"
+            @size-change="loadInboundList"
+            @current-change="loadInboundList"
+          />
+
+          <div class="transfer-section mt-30">
+            <div class="section-title">退库申请</div>
+            <div class="filter-bar">
+              <el-input
+                v-model="returnQuery.returnNo"
+                placeholder="退库单号"
+                clearable
+                style="width: 180px"
+                @keyup.enter="searchReturnByNo"
+              />
+              <el-input v-model="returnQuery.inboundNo" placeholder="原入库单号" clearable style="width: 180px" @keyup.enter="searchReturnByNo" />
+              <el-select v-model="returnQuery.status" placeholder="状态" clearable style="width: 140px" @change="loadReturnList">
+                <el-option label="全部" value="" />
+                <el-option label="待审批" value="pending" />
+                <el-option label="待执行" value="approved" />
+                <el-option label="已拒绝" value="rejected" />
+                <el-option label="已退库" value="completed" />
+              </el-select>
+              <el-button @click="loadReturnList">刷新</el-button>
+              <el-button type="primary" plain @click="searchReturnByNo">按单号查找</el-button>
+            </div>
+            <el-table :data="returnList" stripe border>
+              <el-table-column prop="return_no" label="退库单号" width="190" />
+              <el-table-column prop="inbound_no" label="原入库单" width="180" />
+              <el-table-column prop="store_name" label="门店" width="120" />
+              <el-table-column prop="supplier_name" label="供应商" min-width="150" />
+              <el-table-column prop="total_quantity" label="数量" width="80" />
+              <el-table-column prop="total_amount" label="退库金额" width="120">
+                <template #default="{ row }">¥{{ row.total_amount }}</template>
+              </el-table-column>
+              <el-table-column prop="status" label="状态" width="100">
+                <template #default="{ row }">
+                  <el-tag :type="getReturnStatusType(row.status)">{{ getReturnStatusText(row.status) }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column prop="create_user" label="申请人" width="100" />
+              <el-table-column prop="create_time" label="申请时间" width="160">
+                <template #default="{ row }">{{ formatDate(row.create_time) }}</template>
+              </el-table-column>
+              <el-table-column label="操作" width="190">
+                <template #default="{ row }">
+                  <el-button v-if="row.status === 'pending'" link type="success" @click="approveReturn(row, 'approved')">通过</el-button>
+                  <el-button v-if="row.status === 'pending'" link type="danger" @click="approveReturn(row, 'rejected')">拒绝</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+            <el-pagination
+              v-model:current-page="returnQuery.page"
+              v-model:page-size="returnQuery.pageSize"
+              :total="returnTotal"
+              layout="total, sizes, prev, pager, next"
+              @size-change="loadReturnList"
+              @current-change="loadReturnList"
+            />
+          </div>
+        </el-tab-pane>
+
+        <el-tab-pane label="SN追踪" name="sn-trace">
+          <SnTrace />
+        </el-tab-pane>
+
+        <el-tab-pane v-if="canManageResourceRights" label="库存资源权益" name="resource-rights" lazy>
+          <InventoryResourceRights />
+        </el-tab-pane>
+
+        <el-tab-pane label="调拨管理" name="transfer">
+          <div class="filter-bar">
+            <el-button type="primary" @click="openTransferApplyDialog">发起调拨申请</el-button>
+            <el-button @click="loadTransferLists">刷新</el-button>
+          </div>
+          <div class="transfer-section">
+            <div class="section-title">调拨出库</div>
+            <el-table :data="transferOutList" stripe border>
+              <el-table-column prop="transfer_no" label="调拨单号" width="200" />
+              <el-table-column label="调出门店" width="130">
+                <template #default="{ row }">{{ row.from_store_name }}</template>
+              </el-table-column>
+              <el-table-column label="调入门店" width="130">
+                <template #default="{ row }">{{ row.to_store_name }}</template>
+              </el-table-column>
+              <el-table-column label="调拨商品" min-width="200">
+                <template #default="{ row }">
+                  <span v-for="(item, i) in (row.TransferItems || [])" :key="i">
+                    {{ formatTransferItemLabel(item) }}{{ i < (row.TransferItems || []).length - 1 ? '、' : '' }}
+                  </span>
+                </template>
+              </el-table-column>
+              <el-table-column prop="total_quantity" label="数量" width="80" />
+              <el-table-column prop="remark" label="备注" min-width="160" show-overflow-tooltip />
+              <el-table-column prop="apply_user" label="申请人" width="100" />
+              <el-table-column label="出库确认人" width="110">
+                <template #default="{ row }">{{ row.shipping_user || row.confirm_user || '-' }}</template>
+              </el-table-column>
+              <el-table-column prop="status" label="状态" width="120">
+                <template #default="{ row }">
+                  <el-tag :type="getTransferStatusType(row.status)">{{ getTransferStatusText(row.status) }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column prop="create_time" label="创建时间" width="160">
+                <template #default="{ row }">{{ formatDate(row.create_time) }}</template>
+              </el-table-column>
+              <el-table-column label="操作" width="260">
+                <template #default="{ row }">
+                  <el-button link type="primary" @click="openTransferDetail(row)">查看</el-button>
+                  <el-button v-if="row.status === 'pending'" link type="success" @click="handleConfirmTransferOut(row)">确认出库</el-button>
+                  <el-button v-if="canRevokeTransfer(row)" link type="warning" @click="handleRevokeTransfer(row)">撤销申请</el-button>
+                  <el-button v-if="canRejectTransfer(row)" link type="danger" @click="handleRejectTransfer(row)">拒绝申请</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+          </div>
+
+          <div class="transfer-section mt-30">
+            <div class="section-title">调拨入库</div>
+            <el-table :data="transferInList" stripe border>
+              <el-table-column prop="transfer_no" label="调拨单号" width="200" />
+              <el-table-column label="调出门店" width="130">
+                <template #default="{ row }">{{ row.from_store_name }}</template>
+              </el-table-column>
+              <el-table-column label="调入门店" width="130">
+                <template #default="{ row }">{{ row.to_store_name }}</template>
+              </el-table-column>
+              <el-table-column label="调拨商品" min-width="200">
+                <template #default="{ row }">
+                  <span v-for="(item, i) in (row.TransferItems || [])" :key="i">
+                    {{ formatTransferItemLabel(item) }}{{ i < (row.TransferItems || []).length - 1 ? '、' : '' }}
+                  </span>
+                </template>
+              </el-table-column>
+              <el-table-column prop="total_quantity" label="数量" width="80" />
+              <el-table-column prop="remark" label="备注" min-width="160" show-overflow-tooltip />
+              <el-table-column prop="apply_user" label="申请人" width="100" />
+              <el-table-column label="入库确认人" width="110">
+                <template #default="{ row }">{{ row.receiving_user || row.inbound_confirm_user || '-' }}</template>
+              </el-table-column>
+              <el-table-column prop="status" label="状态" width="120">
+                <template #default="{ row }">
+                  <el-tag :type="getTransferStatusType(row.status)">{{ getTransferStatusText(row.status) }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column prop="create_time" label="创建时间" width="160">
+                <template #default="{ row }">{{ formatDate(row.create_time) }}</template>
+              </el-table-column>
+              <el-table-column label="操作" width="220">
+                <template #default="{ row }">
+                  <el-button link type="primary" @click="openTransferDetail(row)">查看</el-button>
+                  <el-button v-if="row.status === 'out_confirmed'" link type="success" @click="handleConfirmTransferIn(row)">确认入库</el-button>
+                  <el-button v-if="canReturnTransfer(row)" link type="danger" @click="handleReturnTransfer(row)">退回</el-button>
+                </template>
+              </el-table-column>
+              </el-table>
+          </div>
+
+          <div class="transfer-section mt-30">
+            <div class="section-title">历史调拨记录</div>
+            <div class="filter-bar">
+              <el-input v-model="transferHistoryQuery.transferNo" placeholder="调拨单号" clearable style="width: 180px" @keyup.enter="searchTransferHistory" />
+              <el-select v-model="transferHistoryQuery.fromStoreId" placeholder="出库门店" filterable clearable style="width: 170px" @change="searchTransferHistory"><el-option v-for="s in transferStoreOptions" :key="s.store_id" :label="s.name" :value="s.store_id" /></el-select>
+              <el-select v-model="transferHistoryQuery.toStoreId" placeholder="接收门店" filterable clearable style="width: 170px" @change="searchTransferHistory"><el-option v-for="s in transferStoreOptions" :key="s.store_id" :label="s.name" :value="s.store_id" /></el-select>
+              <el-input v-for="field in inventorySearchFields" :key="field.key" v-model="transferHistoryQuery[field.key]" :placeholder="field.label" clearable style="width:200px" @keyup.enter="searchTransferHistory" />
+              <el-select v-model="transferHistoryQuery.status" placeholder="全部状态" clearable style="width: 130px" @change="searchTransferHistory">
+                <el-option label="全部状态" value="" />
+                <el-option label="待出库" value="pending" />
+                <el-option label="发货中" value="shipping" />
+                <el-option label="待入库" value="out_confirmed" />
+                <el-option label="已收货" value="received" />
+                <el-option label="已完成" value="completed" />
+                <el-option label="已取消" value="cancelled" />
+                <el-option label="已退回" value="returned" />
+              </el-select>
+              <el-date-picker v-model="transferHistoryQuery.startDate" type="date" value-format="YYYY-MM-DD" placeholder="开始日期" clearable style="width: 150px" />
+              <el-date-picker v-model="transferHistoryQuery.endDate" type="date" value-format="YYYY-MM-DD" placeholder="结束日期" clearable style="width: 150px" />
+              <el-button type="primary" @click="searchTransferHistory">查询</el-button>
+              <el-button @click="resetTransferHistoryQuery">重置</el-button>
+            </div>
+            <el-table :data="transferHistoryList" stripe border v-loading="transferHistoryLoading">
+              <el-table-column prop="transfer_no" label="调拨单号" width="190" />
+              <el-table-column prop="from_store_name" label="调出门店" width="130" />
+              <el-table-column prop="to_store_name" label="调入门店" width="130" />
+              <el-table-column label="调拨商品" min-width="200">
+                <template #default="{ row }">
+                  <span v-for="(item, i) in (row.TransferItems || [])" :key="i">
+                    {{ formatTransferItemLabel(item) }}{{ i < (row.TransferItems || []).length - 1 ? '、' : '' }}
+                  </span>
+                </template>
+              </el-table-column>
+              <el-table-column prop="total_quantity" label="数量" width="80" />
+              <el-table-column prop="remark" label="备注" min-width="160" show-overflow-tooltip />
+              <el-table-column prop="apply_user" label="申请人" width="100" />
+              <el-table-column label="参与人" width="160">
+                <template #default="{ row }">
+                  {{ [row.shipping_user || row.confirm_user, row.receiving_user || row.inbound_confirm_user].filter(Boolean).join('、') || '-' }}
+                </template>
+              </el-table-column>
+              <el-table-column label="状态" width="110">
+                <template #default="{ row }">
+                  <el-tag :type="getTransferStatusType(row.status)">{{ getTransferStatusText(row.status) }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column prop="create_time" label="创建时间" width="160">
+                <template #default="{ row }">{{ formatDate(row.create_time) }}</template>
+              </el-table-column>
+              <el-table-column label="操作" width="80" fixed="right">
+                <template #default="{ row }">
+                  <el-button link type="primary" @click="openTransferDetail(row)">查看</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+            <el-pagination
+              v-if="transferHistoryTotal > 0"
+              v-model:current-page="transferHistoryQuery.page"
+              v-model:page-size="transferHistoryQuery.pageSize"
+              :total="transferHistoryTotal"
+              layout="total, sizes, prev, pager, next"
+              @size-change="loadTransferHistory"
+              @current-change="loadTransferHistory"
+            />
+          </div>
+        </el-tab-pane>
+
+        <el-tab-pane label="拆装管理" name="conversion">
+          <div class="filter-bar">
+            <el-button type="primary" @click="openConversionDialog('split')">新建拆分</el-button>
+            <el-button type="success" @click="openConversionDialog('assemble')">新建组装</el-button>
+            <el-select v-model="conversionQuery.conversionType" placeholder="类型" clearable style="width: 120px" @change="loadConversionList">
+              <el-option label="全部" value="" />
+              <el-option label="拆分" value="split" />
+              <el-option label="组装" value="assemble" />
+            </el-select>
+            <el-select v-model="conversionQuery.status" placeholder="状态" clearable style="width: 120px" @change="loadConversionList">
+              <el-option label="全部" value="" />
+              <el-option label="已完成" value="completed" />
+              <el-option label="已冲销" value="voided" />
+            </el-select>
+            <el-select v-model="conversionQuery.storeId" placeholder="门店" clearable style="width: 150px" @change="loadConversionList">
+              <el-option label="全部门店" :value="''" />
+              <el-option v-for="store in stores" :key="store.store_id" :label="store.name" :value="store.store_id" />
+            </el-select>
+            <el-button @click="loadConversionList">刷新</el-button>
+          </div>
+
+          <el-table :data="conversionList" stripe border v-loading="conversionLoading">
+            <el-table-column prop="conversion_no" label="单号" width="190" />
+            <el-table-column prop="conversion_type" label="类型" width="90">
+              <template #default="{ row }">
+                <el-tag :type="row.conversion_type === 'assemble' ? 'success' : 'primary'">{{ getConversionTypeText(row.conversion_type) }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="store_name" label="门店" width="130" />
+            <el-table-column prop="source_summary" label="来源商品" min-width="180" show-overflow-tooltip />
+            <el-table-column prop="target_summary" label="目标商品" min-width="180" show-overflow-tooltip />
+            <el-table-column prop="total_source_cost" label="来源成本" width="110">
+              <template #default="{ row }">¥{{ row.total_source_cost || 0 }}</template>
+            </el-table-column>
+            <el-table-column prop="service_cost" label="服务成本" width="110">
+              <template #default="{ row }">¥{{ row.service_cost || 0 }}</template>
+            </el-table-column>
+            <el-table-column prop="total_target_cost" label="目标成本" width="110">
+              <template #default="{ row }">¥{{ row.total_target_cost || 0 }}</template>
+            </el-table-column>
+            <el-table-column prop="status" label="状态" width="90">
+              <template #default="{ row }">
+                <el-tag :type="row.status === 'completed' ? 'success' : 'info'">{{ getConversionStatusText(row.status) }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="create_time" label="创建时间" width="160">
+              <template #default="{ row }">{{ formatDate(row.create_time) }}</template>
+            </el-table-column>
+            <el-table-column label="操作" width="150">
+              <template #default="{ row }">
+                <el-button link type="primary" @click="viewConversionDetail(row)">查看</el-button>
+                <el-button v-if="row.status === 'completed'" link type="danger" @click="handleVoidConversion(row)">冲销</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+
+          <el-pagination
+            v-model:current-page="conversionQuery.page"
+            v-model:page-size="conversionQuery.pageSize"
+            :total="conversionTotal"
+            layout="total, sizes, prev, pager, next"
+            @size-change="loadConversionList"
+            @current-change="loadConversionList"
           />
         </el-tab-pane>
       </el-tabs>
     </el-card>
 
-    <!-- 入库对话框 -->
-    <el-dialog v-model="inboundDialogVisible" title="商品入库" width="600px" @close="handleDialogClose">
-      <el-form :model="inboundForm" label-width="100px">
-        <el-form-item label="入库门店" required>
-          <el-select v-model="inboundForm.storeId" placeholder="请选择门店" style="width: 100%">
-            <el-option v-for="s in stores" :key="s.store_id" :label="s.name" :value="s.store_id" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="商品">
-          <el-select v-model="inboundForm.productId" placeholder="选择商品" filterable style="width: 100%" @change="onProductChange">
-            <el-option v-for="p in products" :key="p.product_id" :label="p.name" :value="p.product_id" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="PN码">
-          <el-input v-model="inboundForm.pnCode" placeholder="PN码" />
-        </el-form-item>
-        <el-form-item label="SN码">
-          <el-input v-model="inboundForm.snCode" placeholder="SN码（多个用逗号分隔）" type="textarea" rows="2" />
-        </el-form-item>
-        <el-form-item label="入库数量">
-          <el-input-number v-model="inboundForm.quantity" :min="1" style="width: 100%" />
-        </el-form-item>
-        <el-form-item label="备注">
-          <el-input v-model="inboundForm.remark" type="textarea" rows="2" />
-        </el-form-item>
-      </el-form>
+    <!-- 入库单详情对话框 -->
+    <el-dialog v-model="inboundDetailVisible" title="入库单详情" width="800px">
+      <div v-if="currentInbound">
+        <el-alert v-if="currentInbound.supplier_return_reason" :title="currentInbound.supplier_return_reason" type="info" :closable="false" />
+        <el-descriptions :column="2" border>
+          <el-descriptions-item label="入库单号">{{ currentInbound.inbound_no }}</el-descriptions-item>
+          <el-descriptions-item label="状态">
+            <el-tag :type="getInboundStatusType(currentInbound.status)">{{ currentInbound.statusLabel || getInboundStatusText(currentInbound.status) }}</el-tag>
+          </el-descriptions-item>
+          <el-descriptions-item label="门店">{{ currentInbound.store_name }}</el-descriptions-item>
+          <el-descriptions-item label="来源单号">{{ currentInbound.source_no || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="采购申请单号">{{ currentInbound.purchase_source?.request_no || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="供应商">{{ currentInbound.purchase_source?.supplier_name || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="总数量">{{ currentInbound.total_quantity }}</el-descriptions-item>
+          <el-descriptions-item label="已入库 / 待入库">{{ currentInbound.receivedQuantity }} / {{ currentInbound.remainingQuantity }}</el-descriptions-item>
+          <el-descriptions-item label="创建时间">{{ formatDate(currentInbound.create_time) }}</el-descriptions-item>
+          <el-descriptions-item label="创建人">{{ currentInbound.create_user }}</el-descriptions-item>
+          <el-descriptions-item label="入库人员">{{ currentInbound.receive_user || '-' }}</el-descriptions-item>
+        </el-descriptions>
+
+        <el-button v-if="currentInbound.receiptHistory?.length" @click="receiptHistoryVisible = true">查看分批收货记录</el-button>
+        <h4 class="mt-20">商品明细</h4>
+        <el-table :data="currentInbound.items || []" stripe border size="small">
+          <el-table-column label="商品名称" min-width="140">
+            <template #default="{ row }">{{ row.product_name }}</template>
+          </el-table-column>
+          <el-table-column label="PN码" width="140">
+            <template #default="{ row }">{{ row.pn_code || '-' }}</template>
+          </el-table-column>
+          <el-table-column label="SN码" min-width="180">
+            <template #default="{ row }">
+              {{ (row.sn_codes || (row.sn_code ? [row.sn_code] : [])).join('、') || '-' }}
+            </template>
+          </el-table-column>
+          <el-table-column prop="quantity" label="应入库" width="80" />
+          <el-table-column prop="received_quantity" label="已入库" width="80" />
+          <el-table-column prop="remaining_quantity" label="待入库" width="80" />
+          <el-table-column label="入库人员" width="120">
+            <template #default="{ row }">{{ row.receive_user || currentInbound.receive_user || '-' }}</template>
+          </el-table-column>
+          <el-table-column label="是否SN管理" width="110">
+            <template #default="{ row }">
+              <el-tag :type="row.need_sn === 1 ? 'warning' : 'info'" size="small">
+                {{ row.need_sn === 1 ? '是' : '否' }}
+              </el-tag>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
+    </el-dialog>
+
+    <el-dialog v-model="receiptHistoryVisible" title="分批收货记录" width="750px">
+      <el-table :data="currentInbound?.receiptHistory || []" border>
+        <el-table-column prop="create_time" label="时间" width="170" />
+        <el-table-column prop="actor_name" label="操作人" width="100" />
+        <el-table-column label="累计已收 / 待收"><template #default="{ row }">{{ row.detail?.response?.data?.receivedQuantity }} / {{ row.detail?.response?.data?.remainingQuantity }}</template></el-table-column>
+        <el-table-column label="本次明细"><template #default="{ row }">{{ (row.detail?.items || []).map(item => `${item.snCode || item.productId} ×${item.quantity}`).join('、') }}</template></el-table-column>
+      </el-table>
+    </el-dialog>
+    <!-- 执行入库对话框 -->
+    <el-dialog v-model="executeInboundVisible" title="执行入库" width="900px" @close="resetInboundForm">
+      <div v-if="currentInbound">
+        <el-descriptions :column="2" border>
+          <el-descriptions-item label="入库单号">{{ currentInbound.inbound_no }}</el-descriptions-item>
+          <el-descriptions-item label="门店">{{ currentInbound.store_name }}</el-descriptions-item>
+          <el-descriptions-item label="应收 / 已收 / 待收">{{ currentInbound.expectedQuantity }} / {{ currentInbound.receivedQuantity }} / {{ currentInbound.remainingQuantity }}</el-descriptions-item>
+        </el-descriptions>
+
+        <div v-for="(item, idx) in executeProducts" :key="idx" class="execute-item-section">
+          <div class="execute-item-header">
+            <span class="item-label">{{ item.productName }}</span>
+            <el-tag :type="item.needSn ? 'warning' : 'info'" size="small">{{ item.needSn ? 'SN管理' : '无SN' }}</el-tag>
+            <span class="item-qty">待入库: {{ item.quantity }}</span>
+            <span class="item-location">库位：{{ item.locationName || '未指定库位' }}</span>
+            <el-button
+              size="small"
+              :type="item.receiveEnabled ? 'primary' : 'warning'"
+              plain
+              @click="item.receiveEnabled = !item.receiveEnabled"
+            >{{ item.receiveEnabled ? '本次入库' : '暂缓入库' }}</el-button>
+          </div>
+
+          <!-- PN厂商编码选择：只允许选择商品主数据中的PN -->
+          <div v-if="item.receiveEnabled" class="pn-select-row">
+            <span class="pn-label">厂商编码：</span>
+            <el-select v-model="item.pnCode" placeholder="选择商品已有厂商编码 / PN" size="small" clearable filterable style="width: 260px">
+              <el-option v-for="pn in (item.pns || [])" :key="pn.pn_id || pn.pn_code" :label="pn.pn_code" :value="pn.pn_code" />
+            </el-select>
+          </div>
+
+          <!-- SN商品：每行一个SN -->
+          <el-table v-if="item.receiveEnabled && item.needSn" :data="item.snRows" stripe border size="small" class="sn-table">
+            <el-table-column label="操作" width="70" align="center">
+              <template #default="{ $index: snIndex }">
+                <el-button v-if="item.snRows.length > 1" size="small" type="danger" link @click="removeSnRow(item, snIndex)">删除</el-button>
+              </template>
+            </el-table-column>
+            <el-table-column prop="rental_demo_qty" label="租赁样机仓库存" width="130">
+              <template #default="{ row }">
+                <el-popover placement="bottom" :width="280" trigger="hover">
+                  <template #default>
+                    <div class="stock-breakdown">
+                      <div class="breakdown-title">各门店租赁样机仓库存</div>
+                      <div v-if="getStockBreakdownRows(row, 'rental_demo_qty').length" class="breakdown-locations">
+                        <div v-for="item in getStockBreakdownRows(row, 'rental_demo_qty')" :key="item.key" class="breakdown-item">
+                          <span class="breakdown-label">{{ item.store_name }}</span>
+                          <span class="breakdown-value">{{ item.quantity }}</span>
+                        </div>
+                      </div>
+                      <div v-else class="breakdown-empty">暂无库存明细</div>
+                    </div>
+                  </template>
+                  <template #reference><span class="stock-quantity-reference">{{ row.rental_demo_qty || 0 }}</span></template>
+                </el-popover>
+              </template>
+            </el-table-column>
+            <el-table-column type="index" label="#" width="50" />
+            <el-table-column label="PN码" width="160">
+              <template #default>
+                <span class="shared-pn">{{ item.pnCode || '—' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="SN码" width="180">
+              <template #default="{ row: r }">
+                <el-input v-model="r.snCode" placeholder="SN码" size="small" :disabled="item.transferInbound && Boolean(r.snCode)" />
+              </template>
+            </el-table-column>
+            <el-table-column v-if="item.needImei" label="IMEI1" width="180">
+              <template #default="{ row: r }"><el-input v-model="r.imei1" placeholder="IMEI1" size="small" /></template>
+            </el-table-column>
+            <el-table-column v-if="item.needImei" label="IMEI2" width="180">
+              <template #default="{ row: r }"><el-input v-model="r.imei2" placeholder="IMEI2" size="small" /></template>
+            </el-table-column>
+            <el-table-column label="入库库位" width="160">
+              <template #default="{ row: r }">
+                <el-select v-model="r.locationId" size="small" style="width: 140px" placeholder="请选择库位">
+                  <el-option v-for="location in inboundLocations" :key="location.location_id" :label="location.name" :value="location.location_id" />
+                </el-select>
+              </template>
+            </el-table-column>
+            <el-table-column label="备注" min-width="140">
+              <template #default="{ row: r }">
+                <el-input v-model="r.remark" placeholder="备注" size="small" />
+              </template>
+            </el-table-column>
+          </el-table>
+
+          <!-- 非SN商品：按入库库位拆分数量 -->
+          <el-table v-else-if="item.receiveEnabled" :data="item.qtyRows" stripe border size="small" class="sn-table">
+            <el-table-column type="index" label="#" width="50" />
+            <el-table-column label="入库库位" width="180">
+              <template #default="{ row: r }">
+                <el-select v-model="r.locationId" size="small" style="width: 160px" placeholder="请选择库位">
+                  <el-option v-for="location in inboundLocations" :key="location.location_id" :label="location.name" :value="location.location_id" />
+                </el-select>
+              </template>
+            </el-table-column>
+            <el-table-column label="入库数量" width="140">
+              <template #default="{ row: r, $index: ri }">
+                <el-input v-model="r.quantity" size="small" style="width: 120px" @change="onQtyChange(item)" />
+              </template>
+            </el-table-column>
+            <el-table-column label="备注" min-width="140">
+              <template #default="{ row: r }">
+                <el-input v-model="r.remark" placeholder="备注" size="small" />
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="70" align="center">
+              <template #default="{ $index: ri }">
+                <el-button v-if="item.qtyRows.length > 1" size="small" type="danger" link @click="item.qtyRows.splice(ri, 1)">删除</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+
+          <!-- 非SN：添加库位分配行 -->
+          <div v-if="item.receiveEnabled && !item.needSn" style="margin-top: 6px">
+            <el-button size="small" type="primary" link @click="addQtyRow(item)">+ 添加库位分配</el-button>
+            <span style="margin-left: 12px; font-size: 12px; color: #909399">
+              已分配 {{ allocatedQty(item) }} / {{ item.quantity }}
+              <span v-if="allocatedQty(item) !== item.quantity" style="color: #f56c6c">（数量不匹配）</span>
+            </span>
+          </div>
+          <el-alert
+            v-if="!item.receiveEnabled"
+            title="该商品本次暂缓入库，数量将继续保留在待入库清单中"
+            type="warning"
+            :closable="false"
+            show-icon
+            style="margin-top: 10px"
+          />
+        </div>
+      </div>
       <template #footer>
-        <el-button @click="inboundDialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="handleInboundSubmit" :loading="submitLoading">确认入库</el-button>
+        <el-button @click="executeInboundVisible = false">取消</el-button>
+        <el-button type="info" @click="saveInboundDraft">保存草稿</el-button>
+        <el-button type="primary" @click="submitInbound" :loading="inboundLoading">确认本次入库</el-button>
       </template>
     </el-dialog>
 
-    <!-- 出库对话框 -->
-    <el-dialog v-model="outboundDialogVisible" title="商品出库" width="600px" @close="handleDialogClose">
-      <el-form :model="outboundForm" label-width="100px">
-        <el-form-item label="出库门店" required>
-          <el-select v-model="outboundForm.storeId" placeholder="请选择门店" style="width: 100%">
-            <el-option v-for="s in stores" :key="s.store_id" :label="s.name" :value="s.store_id" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="商品">
-          <el-select v-model="outboundForm.productId" placeholder="选择商品" filterable style="width: 100%" @change="onOutProductChange">
-            <el-option v-for="p in products" :key="p.product_id" :label="p.name" :value="p.product_id" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="SN码">
-          <el-select v-model="outboundForm.snCode" placeholder="选择SN码" clearable style="width: 100%">
-            <el-option v-for="sn in availableSns" :key="sn.sn_code" :label="sn.sn_code" :value="sn.sn_code" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="出库数量">
-          <el-input-number v-model="outboundForm.quantity" :min="1" :max="maxOutQuantity" style="width: 100%" />
-        </el-form-item>
-        <el-form-item label="出库原因">
-          <el-select v-model="outboundForm.reason" placeholder="请选择" style="width: 100%">
-            <el-option label="销售出库" value="sale" />
-            <el-option label="报废" value="scrapped" />
-            <el-option label="其他" value="other" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="备注">
-          <el-input v-model="outboundForm.remark" type="textarea" rows="2" />
-        </el-form-item>
-      </el-form>
+    <!-- 发起退库申请对话框 -->
+    <el-dialog v-model="executeReturnVisible" title="发起退库申请" width="850px">
+      <div v-if="currentInbound">
+        <el-descriptions :column="1" border>
+          <el-descriptions-item label="入库单号">{{ currentInbound.inbound_no }}</el-descriptions-item>
+          <el-descriptions-item label="门店">{{ currentInbound.store_name }}</el-descriptions-item>
+          <el-descriptions-item label="总数量">{{ currentInbound.total_quantity }}</el-descriptions-item>
+        </el-descriptions>
+        <el-alert title="退库后所选商品回到待入库，可再次入库；需要取消采购时，请返回采购申请办理撤单。" type="info" :closable="false" style="margin-top: 12px" />
+        <el-button style="margin-top: 12px" @click="selectAllReturnItems">选择全部可退商品</el-button>
+        <el-table :data="returnItems" border style="margin-top: 12px">
+          <el-table-column prop="product_name" label="商品" min-width="180" />
+          <el-table-column prop="returnable_quantity" label="可退数量" width="95" />
+          <el-table-column label="本次退库" width="160">
+            <template #default="{ row }"><el-input-number v-model="row.return_quantity" :min="0" :max="row.returnable_quantity" :precision="0" size="small" /></template>
+          </el-table-column>
+          <el-table-column label="选择 SN" min-width="220">
+            <template #default="{ row }">
+              <el-select v-if="Number(row.need_sn) === 1" v-model="row.sn_ids" multiple filterable placeholder="请选择原入库 SN" style="width: 100%">
+                <el-option v-for="sn in row.return_sn_options" :key="sn.sn_id" :label="sn.sn_code" :value="sn.sn_id" />
+              </el-select>
+              <span v-else>无需选择</span>
+            </template>
+          </el-table-column>
+        </el-table>
+
+        <el-form label-width="80px" class="mt-20">
+          <el-form-item label="退库原因">
+            <el-input v-model="returnReason" type="textarea" :rows="3" placeholder="请输入退库原因" />
+          </el-form-item>
+        </el-form>
+      </div>
       <template #footer>
-        <el-button @click="outboundDialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="handleOutboundSubmit" :loading="submitLoading">确认出库</el-button>
+        <el-button @click="executeReturnVisible = false">取消</el-button>
+        <el-button type="danger" @click="submitReturn" :loading="returnLoading">提交申请</el-button>
       </template>
     </el-dialog>
 
-    <!-- 调拨对话框 -->
-    <el-dialog v-model="transferDialogVisible" title="库存调拨" width="600px" @close="handleDialogClose">
-      <el-form :model="transferForm" label-width="100px">
-        <el-form-item label="调出门店" required>
-          <el-select v-model="transferForm.fromStoreId" placeholder="请选择门店" style="width: 100%">
-            <el-option v-for="s in stores" :key="s.store_id" :label="s.name" :value="s.store_id" />
-          </el-select>
+    <!-- SN特价设置 -->
+    <el-dialog v-model="snSpecialPriceVisible" :title="snSpecialPriceForm.isSpecial ? '修改SN特价' : '设置SN特价'" width="520px">
+      <el-descriptions :column="1" border>
+        <el-descriptions-item label="SN">{{ snSpecialPriceForm.snCode }}</el-descriptions-item>
+        <el-descriptions-item label="商品">{{ snSpecialPriceForm.productName }}</el-descriptions-item>
+        <el-descriptions-item label="统一售价">¥{{ formatMoney(snSpecialPriceForm.unifiedSalePrice) }}</el-descriptions-item>
+        <el-descriptions-item label="最低售价">¥{{ formatMoney(snSpecialPriceForm.minSalePrice) }}</el-descriptions-item>
+      </el-descriptions>
+      <el-form label-width="90px" class="mt-20">
+        <el-form-item label="SN特价" required>
+          <el-input-number v-model="snSpecialPriceForm.specialPrice" :min="0.01" :precision="2" :step="100" style="width: 100%" />
         </el-form-item>
-        <el-form-item label="调入门店" required>
-          <el-select v-model="transferForm.toStoreId" placeholder="请选择门店" style="width: 100%">
-            <el-option v-for="s in stores" :key="s.store_id" :label="s.name" :value="s.store_id" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="商品">
-          <el-select v-model="transferForm.productId" placeholder="选择商品" filterable style="width: 100%">
-            <el-option v-for="p in products" :key="p.product_id" :label="p.name" :value="p.product_id" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="调拨数量">
-          <el-input-number v-model="transferForm.quantity" :min="1" style="width: 100%" />
-        </el-form-item>
-        <el-form-item label="备注">
-          <el-input v-model="transferForm.remark" type="textarea" rows="2" />
+        <el-alert
+          v-if="snSpecialPriceBelowMinimum"
+          title="该特价低于最低售价，销售开单时仍会进入现有低价审批。"
+          type="warning"
+          :closable="false"
+          show-icon
+          class="price-warning"
+        />
+        <el-form-item label="调价备注">
+          <el-input v-model="snSpecialPriceForm.remark" type="textarea" :rows="3" maxlength="512" show-word-limit />
         </el-form-item>
       </el-form>
+      <template #footer>
+        <el-button @click="snSpecialPriceVisible = false">取消</el-button>
+        <el-button type="primary" :loading="snSpecialPriceSaving" @click="saveSnSpecialPrice">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- SN特价变更记录 -->
+    <el-dialog v-model="snPriceHistoryVisible" :title="`SN特价记录 - ${snPriceHistorySnCode}`" width="760px">
+      <el-table :data="snPriceHistoryData" border stripe v-loading="snPriceHistoryLoading">
+        <el-table-column label="操作" width="90">
+          <template #default="{ row }">{{ snPriceActionText(row.action) }}</template>
+        </el-table-column>
+        <el-table-column label="调整前" width="110" align="right">
+          <template #default="{ row }">{{ row.old_price == null ? '-' : `¥${formatMoney(row.old_price)}` }}</template>
+        </el-table-column>
+        <el-table-column label="调整后" width="110" align="right">
+          <template #default="{ row }">{{ row.new_price == null ? '-' : `¥${formatMoney(row.new_price)}` }}</template>
+        </el-table-column>
+        <el-table-column prop="remark" label="备注" min-width="160" show-overflow-tooltip />
+        <el-table-column prop="operator_name" label="操作人" width="100" />
+        <el-table-column label="操作时间" width="165">
+          <template #default="{ row }">{{ formatDate(row.create_time) }}</template>
+        </el-table-column>
+      </el-table>
+    </el-dialog>
+
+    <!-- 序列号查看对话框 -->
+    <el-dialog v-model="snResourceDetailVisible" title="SN权益" width="760px">
+      <el-skeleton v-if="snResourceDetailLoading" :rows="4" animated />
+      <template v-else-if="snResourceDetail">
+        <el-descriptions :column="2" border>
+          <el-descriptions-item label="SN">{{ snResourceDetail.sn?.sn_code || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="商品">{{ snResourceDetail.sn?.Product?.name || snResourceDetail.sn?.product_id || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="货品销售标签" :span="2">{{ snResourceDetail.sales_resource_label || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="可用资源">{{ snResourceDetail.available_resource_summary || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="不可用资源">{{ snResourceDetail.unavailable_resource_summary || '-' }}</el-descriptions-item>
+        </el-descriptions>
+        <el-table :data="snResourceDetail.rights || []" border style="margin-top:16px">
+          <el-table-column label="权益类型" min-width="150"><template #default="{row}">{{ row.resource_type === 'OTHER_POLICY' ? '其他政策待获取' : (snInventoryResourceOptions.find(item => item.value === row.resource_type)?.label || row.resource_type) }}</template></el-table-column>
+          <el-table-column label="状态" width="120"><template #default="{row}">{{ resourceStatusOptions.find(item => item.value === row.current_status)?.label || row.current_status || '-' }}</template></el-table-column>
+          <el-table-column label="金额" width="130" align="right"><template #default="{row}">¥{{ formatMoney(row.amount) }}</template></el-table-column>
+          <el-table-column prop="remark" label="备注" min-width="160" show-overflow-tooltip />
+          <el-table-column label="操作" width="100"><template #default="{row}"><el-button v-if="row.resource_type === 'OTHER_POLICY' && row.current_status === 'AVAILABLE'" link type="success" @click="completeOtherPolicyResource(row)">已完成</el-button></template></el-table-column>
+        </el-table>
+      </template>
+      <el-empty v-else description="该SN暂无权益记录" />
+      <template #footer><el-button @click="snResourceDetailVisible=false">关闭</el-button></template>
+    </el-dialog>
+
+    <el-dialog v-model="snDialogVisible" :title="'序列号 - ' + snProductName" width="1100px">
+      <div class="filter-bar">
+        <el-select v-model="snFilter.status" placeholder="状态" clearable style="width: 120px" @change="loadSnData">
+          <el-option label="全部" value="" />
+          <el-option label="在库" value="in_stock" />
+          <el-option label="已售" value="sold" />
+          <el-option label="已退库" value="returned" />
+        </el-select>
+        <el-input v-model="snFilter.snCode" placeholder="搜索SN码" clearable style="width: 180px" @keyup.enter="loadSnData" />
+        <el-button type="primary" @click="loadSnData">查询</el-button>
+        <el-button v-if="!snEditing" type="warning" @click="startSnEdit">发起SN修改申请</el-button>
+        <el-button v-else type="success" @click="finishSnEdit">提交修改申请</el-button>
+        <el-button v-if="snEditing" @click="cancelSnEdit">取消</el-button>
+      </div>
+
+      <el-table :data="snTableData" stripe border v-loading="snLoading">
+        <el-table-column label="SN码" width="180">
+          <template #default="{ row }">
+            <el-input v-if="snEditing && row.status === 'in_stock'" v-model="row.sn_code" size="small" />
+            <span v-else>{{ row.sn_code }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="pn_code" label="PN码" width="130" />
+        <el-table-column prop="store_name" label="门店" width="120" />
+        <el-table-column label="库位" width="120">
+          <template #default="{ row }">{{ row.location_name || '未指定库位' }}</template>
+        </el-table-column>
+        <el-table-column prop="status" label="状态" width="100">
+          <template #default="{ row }">
+            <el-tag :type="getStatusType(row.status)">{{ getStatusText(row.status) }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="inbound_time" label="入库时间" width="160">
+          <template #default="{ row }">{{ formatDate(row.inbound_time) }}</template>
+        </el-table-column>
+            <el-table-column label="操作" width="300">
+              <template #default="{ row }">
+                <el-button v-if="canViewSnResourceRights" size="small" type="success" link @click="openSnResourceDetail(row)">查看权益</el-button>
+                <el-button size="small" type="primary" link @click="openSnDialog(row)">修改SN</el-button>
+                <el-button size="small" type="primary" link @click="openSnTrace(row)">追踪</el-button>
+                <el-button
+              v-if="row.status === 'in_stock'"
+              size="small"
+              type="warning"
+              link
+              @click="openSnLocationDialog(row)"
+                >调整库位</el-button>
+                <el-button
+                  v-if="canStartSnPurchase(row)"
+                  size="small"
+                  type="success"
+                  link
+                  @click="openSnPurchase(row)"
+                >发起采购</el-button>
+            <el-button
+              v-if="row.status === 'in_stock'"
+              size="small"
+              type="warning"
+              link
+              @click="openTransferDialog(row)"
+            >调拨</el-button>
+            <el-button
+              v-if="row.status === 'sold'"
+              size="small"
+              type="success"
+              link
+              @click="goToOrder(row)"
+            >查看订单</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+
+      <el-pagination
+        v-model:current-page="snFilter.page"
+        v-model:page-size="snFilter.pageSize"
+        :total="snTotal"
+        :page-sizes="[10, 20, 50]"
+        layout="total, sizes, prev, pager, next"
+        @size-change="loadSnData"
+        @current-change="loadSnData"
+        small
+        class="mt-20"
+      />
+    </el-dialog>
+
+    <!-- 同门店库位调整对话框 -->
+    <el-dialog v-model="snLocationDialogVisible" title="调整SN库位" width="560px">
+      <el-descriptions :column="2" border>
+        <el-descriptions-item label="商品">{{ snLocationForm.productName || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="SN">{{ snLocationForm.snCode || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="PN">{{ snLocationForm.pnCode || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="门店">{{ snLocationForm.storeName || snLocationForm.storeId || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="当前库位" :span="2">{{ snLocationForm.currentLocationName || '未指定库位' }}</el-descriptions-item>
+      </el-descriptions>
+      <el-form label-width="90px" style="margin-top: 20px">
+        <el-form-item label="目标库位" required>
+          <el-select
+            v-model="snLocationForm.targetLocationId"
+            placeholder="请选择目标库位"
+            filterable
+            style="width: 100%"
+            :loading="snLocationLoading"
+          >
+            <el-option
+              v-for="location in snLocationOptions"
+              :key="location.location_id"
+              :label="location.name"
+              :value="location.location_id"
+            />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="snLocationDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="snLocationSaving" @click="saveSnLocation">确定调整</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="productLocationDialogVisible" title="调整商品库位" width="560px">
+      <el-descriptions :column="2" border>
+        <el-descriptions-item label="商品">{{ productLocationForm.productName || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="PN">{{ productLocationForm.pnCode || '-' }}</el-descriptions-item>
+      </el-descriptions>
+      <el-form label-width="90px" style="margin-top: 20px">
+        <el-form-item label="门店" required>
+          <el-select v-model="productLocationForm.storeId" filterable style="width:100%" @change="loadProductLocationOptions">
+            <el-option v-for="store in stores" :key="store.store_id" :label="store.name" :value="store.store_id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="原库位" required>
+          <el-select v-model="productLocationForm.fromLocationId" filterable style="width:100%">
+            <el-option v-for="item in productLocationSourceOptions" :key="item.location_id" :label="`${item.name}（库存 ${item.quantity}）`" :value="item.location_id" :disabled="Number(item.quantity || 0) <= 0" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="目标库位" required>
+          <el-select v-model="productLocationForm.toLocationId" filterable style="width:100%">
+            <el-option v-for="item in productLocationOptions" :key="item.location_id" :label="item.name" :value="item.location_id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="调整数量" required>
+          <el-input-number v-model="productLocationForm.quantity" :min="1" :precision="0" style="width:100%" />
+        </el-form-item>
+      </el-form>
+      <template #footer><el-button @click="productLocationDialogVisible=false">取消</el-button><el-button type="primary" :loading="productLocationSaving" @click="saveProductLocation">确定调整</el-button></template>
+    </el-dialog>
+
+    <!-- SN追踪对话框 -->
+    <el-dialog v-model="traceCandidateVisible" title="请选择要追踪的SN记录" width="720px">
+      <el-alert title="同一SN编码命中了多条商品/库存记录，请选择具体记录后查看完整轨迹。" type="warning" :closable="false" />
+      <el-table :data="traceCandidates" border stripe style="margin-top:12px" @row-click="selectTraceCandidate">
+        <el-table-column prop="snCode" label="SN" width="150" />
+        <el-table-column prop="productName" label="商品名称" min-width="220" />
+        <el-table-column prop="pnCode" label="PN" width="140" />
+        <el-table-column prop="storeName" label="门店" width="120" />
+        <el-table-column label="状态" width="100"><template #default="{ row }">{{ getStatusText(row.status) }}</template></el-table-column>
+      </el-table>
+    </el-dialog>
+    <el-dialog v-model="traceDialogVisible" :title="'SN追踪 - ' + traceSnCode" width="700px">
+      <div v-if="traceLoading" v-loading="traceLoading" style="min-height:200px" />
+      <div v-else>
+        <div class="trace-info">
+          <el-tag :type="traceCurrentStatus === 'in_stock' ? 'success' : traceCurrentStatus === 'sold' ? 'danger' : 'info'">
+            {{ getStatusText(traceCurrentStatus) }}
+          </el-tag>
+          <span style="margin-left:8px">商品: {{ traceProductName }}</span>
+        </div>
+        <el-timeline style="margin-top:20px">
+          <el-timeline-item
+            v-for="(event, idx) in traceTimeline"
+            :key="idx"
+            :timestamp="formatDate(event.time)"
+            :color="event.type === 'inbound' || event.type === 'purchase_inbound' ? '#67C23A' : event.type === 'transfer_inbound' ? '#3498DB' : event.type === 'sale' ? '#F56C6C' : event.type === 'return' ? '#E6A23C' : event.type === 'modify_sn' ? '#409EFF' : event.type === 'transfer' ? '#9B59B6' : event.type === 'transfer_out' || event.type === 'transfer_out_confirm' ? '#8E44AD' : event.type === 'transfer_in_confirm' ? '#3498DB' : '#909399'"
+            :type="event.type === 'inbound' ? 'success' : event.type === 'sale' ? 'danger' : event.type === 'return' ? 'warning' : event.type === 'modify_sn' ? 'primary' : ''"
+          >
+            <div>
+              <strong>{{ event.label }}</strong>
+              <span style="margin-left:8px;color:#909399">{{ event.description }}</span>
+              <span v-if="event.oldSnCode" style="margin-left:8px;color:#E6A23C">(原: {{ event.oldSnCode }})</span>
+            </div>
+            <div style="font-size:12px;color:#c0c4cc">
+              {{ event.user }}
+              <template v-if="event.can_view_order && event.ref_id && canOpenTraceReference(event)">
+                <el-button size="small" :type="traceReferenceButtonType(event)" link @click="goToTraceReference(event)" style="margin-left:8px">
+                  {{ traceReferenceButtonLabel(event) }}
+                </el-button>
+              </template>
+            </div>
+          </el-timeline-item>
+          <el-timeline-item v-if="traceTimeline.length === 0" timestamp="" color="#909399">
+            <span style="color:#909399">暂无追踪记录</span>
+          </el-timeline-item>
+        </el-timeline>
+      </div>
+    </el-dialog>
+
+    <!-- 新增调拨对话框 -->
+    <el-dialog v-model="transferDialogVisible" title="新增调拨" width="600px" @close="resetTransferForm">
+      <el-form label-width="100px">
+        <el-form-item label="调出门店">
+          <el-select
+            v-model="transferForm.fromStoreId"
+            placeholder="请选择调出门店"
+            style="width: 100%"
+            :disabled="transferFromStoreDisabled"
+            @change="onTransferFromStoreChange"
+          >
+            <el-option v-for="store in transferStoreOptions" :key="store.store_id" :label="store.name" :value="store.store_id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="调入门店">
+          <el-select v-model="transferForm.toStoreId" placeholder="请选择调入门店" style="width: 100%">
+            <el-option v-for="store in availableStores" :key="store.store_id" :label="store.name" :value="store.store_id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="配送平台">
+          <el-select v-model="transferForm.freightPlatformId" clearable placeholder="请选择配送平台" style="width: 100%">
+            <el-option v-for="platform in freightPlatforms" :key="platform.platform_id" :label="platform.platform_name" :value="platform.platform_id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="运费金额">
+          <el-input-number v-model="transferForm.freightAmount" :min="0" :precision="2" :step="1" controls-position="right" style="width: 100%" />
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input v-model="transferForm.remark" type="textarea" :rows="2" maxlength="2000" show-word-limit placeholder="选填，最多2000字" />
+        </el-form-item>
+        <el-form-item label="添加商品">
+          <div class="transfer-add-row">
+            <el-select
+              v-model="transferAddForm.productId"
+              placeholder="搜索调拨商品"
+              filterable
+              remote
+              clearable
+              :remote-method="searchTransferProducts"
+              @change="onTransferProductChange"
+              style="flex: 1"
+              :disabled="!transferForm.fromStoreId"
+            >
+              <el-option
+                v-for="item in transferProductOptions"
+                :key="item.product_id"
+                :label="(item.product_name || item.product_id) + ' / ' + (item.need_sn === 1 ? 'SN' : '\u6570\u91cf') + ' / \u5e93\u5b58 ' + (item.normal_qty || 0)"
+                :value="item.product_id"
+              />
+            </el-select>
+            <el-select v-model="transferAddForm.pnCode" placeholder="&#x9009;&#x62E9; PN" clearable filterable style="width: 220px" :disabled="!transferAddForm.productId || transferPnLoading">
+              <el-option v-for="pn in transferPnOptions" :key="pn.pn_id || pn.pn_code" :label="pn.pn_code" :value="pn.pn_code" />
+            </el-select>
+            <el-input-number v-model="transferAddForm.quantity" :min="1" :precision="0" style="width: 120px" />
+            <el-button type="primary" @click="addTransferProductItem">添加</el-button>
+          </div>
+        </el-form-item>
+      </el-form>
+
+      <h4 class="mt-20">调拨商品</h4>
+      <el-table :data="transferForm.items" stripe border size="small">
+        <el-table-column prop="pnCode" label="PN" min-width="140">
+          <template #default="{ row: item }">{{ item.pnCode || '-' }}</template>
+        </el-table-column>
+        <el-table-column label="商品名称" min-width="140">
+          <template #default="{ row: item }">{{ item.productName }}</template>
+        </el-table-column>
+        <el-table-column label="SN码" width="180">
+          <template #default="{ row: item }">{{ item.snCode || '\u6309\u5546\u54c1\u6570\u91cf\u7533\u8bf7' }}</template>
+        </el-table-column>
+        <el-table-column label="数量" width="100">
+          <template #default="{ row: item }">{{ item.quantity }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="80" align="center">
+          <template #default="{ $index: idx }">
+            <el-button size="small" type="danger" link @click="transferForm.items.splice(idx, 1)">移除</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+
       <template #footer>
         <el-button @click="transferDialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="handleTransferSubmit" :loading="submitLoading">确认调拨</el-button>
+        <el-button type="info" @click="saveTransferDraft">保存草稿</el-button>
+        <el-button type="primary" @click="submitTransfer" :loading="transferLoading">确认调拨</el-button>
       </template>
     </el-dialog>
 
-    <!-- SN详情对话框 -->
-    <el-dialog v-model="snDetailVisible" title="SN详情" width="600px">
-      <div v-if="currentSn">
+    <el-dialog v-model="transferDetailVisible" title="调拨流程详情" width="820px">
+      <div v-if="transferDetailRow">
         <el-descriptions :column="2" border>
-          <el-descriptions-item label="SN码">{{ currentSn.sn_code }}</el-descriptions-item>
-          <el-descriptions-item label="PN码">{{ currentSn.pn_code }}</el-descriptions-item>
-          <el-descriptions-item label="商品名称">{{ currentSn.product_name }}</el-descriptions-item>
+          <el-descriptions-item label="调拨单号">{{ transferDetailRow.transfer_no }}</el-descriptions-item>
           <el-descriptions-item label="状态">
-            <el-tag :type="getStatusType(currentSn.status)">{{ currentSn.status }}</el-tag>
+            <el-tag :type="getTransferStatusType(transferDetailRow.status)">{{ getTransferStatusText(transferDetailRow.status) }}</el-tag>
           </el-descriptions-item>
-          <el-descriptions-item label="所在门店">{{ currentSn.store_name }}</el-descriptions-item>
-          <el-descriptions-item label="库位">{{ currentSn.location_name || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="入库时间">{{ currentSn.inbound_time }}</el-descriptions-item>
-          <el-descriptions-item label="关联订单">{{ currentSn.order_no || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="调出门店">{{ transferDetailRow.from_store_name || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="调入门店">{{ transferDetailRow.to_store_name || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="备注" :span="2">{{ transferDetailRow.remark || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="申请人">{{ transferDetailRow.apply_user || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="申请时间">{{ formatDate(transferDetailRow.create_time) }}</el-descriptions-item>
+          <el-descriptions-item label="调出确认人">{{ transferDetailRow.shipping_user || transferDetailRow.confirm_user || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="调出确认时间">{{ formatDate(transferDetailRow.shipping_time) }}</el-descriptions-item>
+          <el-descriptions-item label="调入确认人">{{ transferDetailRow.receiving_user || transferDetailRow.inbound_confirm_user || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="调入确认时间">{{ formatDate(transferDetailRow.receiving_time) }}</el-descriptions-item>
         </el-descriptions>
+        <h4 class="mt-20">调拨商品</h4>
+        <el-table :data="transferDetailRow.TransferItems || []" border size="small">
+          <el-table-column prop="product_name" label="商品名称" min-width="180" />
+          <el-table-column prop="product_code" label="商品编码" width="140" />
+          <el-table-column prop="pn_code" label="PN" width="120" />
+          <el-table-column prop="sn_code" label="SN" width="150" />
+          <el-table-column prop="quantity" label="数量" width="80" />
+        </el-table>
+        <h4 class="mt-20">流程记录</h4>
+        <el-timeline v-if="transferDetailRow.action_logs?.length">
+          <el-timeline-item v-for="log in transferDetailRow.action_logs" :key="log.log_id" :timestamp="formatDate(log.create_time)">
+            <strong>{{ transferActionLabel(log.action) }}</strong>
+            <span style="margin-left: 10px; color: #606266">{{ log.actor_name || '-' }}</span>
+            <span v-if="log.comment" style="margin-left: 10px; color: #909399">{{ log.comment }}</span>
+          </el-timeline-item>
+        </el-timeline>
+        <el-empty v-else description="暂无流程记录" :image-size="60" />
       </div>
+    </el-dialog>
+
+    <el-dialog v-model="transferOutConfirmVisible" title="确认调拨出库" width="760px" @close="resetTransferOutConfirm">
+      <div v-if="transferOutConfirmRow">
+        <el-descriptions :column="2" border size="small" style="margin-bottom: 14px;">
+          <el-descriptions-item label="调拨单号">{{ transferOutConfirmRow.transfer_no }}</el-descriptions-item>
+          <el-descriptions-item label="调出门店">{{ transferOutConfirmRow.from_store_name }}</el-descriptions-item>
+          <el-descriptions-item label="调入门店">{{ transferOutConfirmRow.to_store_name }}</el-descriptions-item>
+          <el-descriptions-item label="数量">{{ transferOutConfirmRow.total_quantity }}</el-descriptions-item>
+        </el-descriptions>
+
+        <el-table :data="transferOutSnRows" stripe border size="small" v-loading="transferOutSnLoading">
+          <el-table-column label="序号" width="60">
+            <template #default="{ row }">{{ row.unitIndex }}</template>
+          </el-table-column>
+          <el-table-column prop="productName" label="商品名称" min-width="180" />
+          <el-table-column label="选择SN" min-width="240">
+            <template #default="{ row }">
+              <el-select v-model="row.snId" placeholder="请选择SN" filterable clearable style="width: 100%">
+                <el-option
+                  v-for="sn in row.snOptions"
+                  :key="sn.sn_id"
+                  :label="`${sn.sn_code}${sn.pn_code ? ' / PN:' + sn.pn_code : ''}`"
+                  :value="sn.sn_id"
+                  :disabled="isConfirmSnDisabled(sn.sn_id, row)"
+                />
+              </el-select>
+            </template>
+          </el-table-column>
+        </el-table>
+
+        <div class="transfer-out-photo-section">
+          <div class="transfer-out-photo-title">
+            <span>发货照片</span>
+            <el-tag type="danger" size="small">至少1张</el-tag>
+          </div>
+          <el-upload
+            v-model:file-list="transferOutPhotoFiles"
+            class="transfer-out-photo-uploader"
+            list-type="picture-card"
+            :auto-upload="false"
+            accept="image/jpeg,image/png,image/webp"
+            :limit="9"
+            :on-change="handleTransferOutPhotoChange"
+            :on-exceed="handleTransferOutPhotoExceed"
+          >
+            <el-icon><Plus /></el-icon>
+          </el-upload>
+          <div class="transfer-out-photo-tip">支持 JPG、PNG、WEBP，单张不超过10MB，最多9张</div>
+        </div>
+      </div>
+
+      <template #footer>
+        <el-button @click="transferOutConfirmVisible = false">取消</el-button>
+        <el-button type="primary" @click="submitConfirmTransferOut" :loading="transferOutConfirmLoading">确认出库</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="conversionDialogVisible" :title="conversionForm.conversionType === 'assemble' ? '新建组装单' : '新建拆分单'" width="1180px" class="conversion-dialog" @close="resetConversionForm">
+      <template #header>
+        <div class="conversion-heading"><span class="conversion-heading-icon">⇄</span><div><h2>{{ conversionForm.conversionType === 'assemble' ? '新建组装单' : '新建拆分单' }}</h2><p>选择来源商品与目标商品，完成后生成对应出入库记录。</p></div></div>
+      </template>
+      <el-form label-width="76px" class="conversion-meta">
+        <el-form-item label="转换门店">
+          <el-select v-model="conversionForm.storeId" placeholder="请选择门店" style="width: 100%" :disabled="isStoreUser()" @change="onConversionStoreChange">
+            <el-option v-for="store in stores" :key="store.store_id" :label="store.name" :value="store.store_id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="conversionForm.conversionType === 'assemble'" label="服务成本">
+          <el-input-number v-model="conversionForm.serviceCost" :min="0" :precision="2" style="width: 180px" />
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input v-model="conversionForm.remark" type="textarea" :rows="2" placeholder="可填写拆分原因、组装原因等" />
+        </el-form-item>
+      </el-form>
+
+      <div class="conversion-grid">
+        <section class="conversion-panel conversion-panel-source">
+          <div class="conversion-panel-header"><div class="conversion-panel-label"><span class="conversion-panel-icon">−</span><div><h3>{{ conversionForm.conversionType === 'assemble' ? '组件商品（来源商品）' : '被拆商品（来源商品）' }}</h3><p>选择需要转换的原始商品</p></div></div><el-button type="primary" plain size="small" :disabled="!conversionForm.storeId" @click="conversionPicker = 'source'">选择商品</el-button></div>
+          <el-dialog :model-value="conversionPicker === 'source'" @update:model-value="conversionPicker = ''" title="选择来源商品" width="640px" append-to-body>
+          <div class="conversion-add-row">
+            <el-select
+              v-model="conversionSourceAdd.productId"
+              placeholder="搜索来源商品"
+              filterable
+              remote
+              clearable
+              :remote-method="searchConversionSourceProducts"
+              @change="onConversionSourceProductChange"
+              style="flex: 1"
+              :disabled="!conversionForm.storeId"
+            >
+              <el-option
+                v-for="item in conversionSourceOptions"
+                :key="item.product_id"
+                :label="`${item.product_name || item.name || item.product_id} / 库存 ${item.normal_qty || 0}`"
+                :value="item.product_id"
+              />
+            </el-select>
+            <el-select v-if="selectedConversionSourceProduct?.need_sn === 1" v-model="conversionSourceAdd.snId" placeholder="选择SN" filterable clearable style="width: 210px" @change="onConversionSourceSnChange">
+              <el-option v-for="sn in conversionSourceSnOptions" :key="sn.sn_id" :label="`${sn.sn_code}${sn.pn_code ? ' / PN:' + sn.pn_code : ''} / 成本:${displayedConversionSourceCost(sn.inbound_price) ?? '待补'}`" :value="sn.sn_id" />
+            </el-select>
+            <el-input-number v-else v-model="conversionSourceAdd.quantity" :min="1" :precision="0" :disabled="conversionForm.conversionType === 'split'" style="width: 110px" />
+            <el-input-number v-model="conversionSourceAdd.unitCost" :min="0" :precision="2" :controls="false" :disabled="conversionForm.conversionType === 'assemble'" :placeholder="conversionForm.conversionType === 'assemble' ? '原商品成本待补' : '成本'" style="width: 130px" />
+            <el-button type="primary" @click="addConversionSourceItem">添加</el-button>
+          </div>
+
+          </el-dialog>
+          <el-table :data="conversionForm.sourceItems" stripe border size="small" empty-text="点击右上角选择商品，添加来源商品">
+            <el-table-column type="index" label="#" width="34" />
+            <el-table-column prop="productName" label="商品信息" min-width="140">
+              <template #default="{ row }"><div>{{ row.productName }}</div><div class="conversion-item-cost">单价 ¥{{ row.unitCost }} · 合计 ¥{{ row.totalCost }}</div></template>
+            </el-table-column>
+            <el-table-column prop="snCode" label="SN" min-width="85" show-overflow-tooltip>
+              <template #default="{ row }">{{ row.snCode || '-' }}</template>
+            </el-table-column>
+            <el-table-column prop="pnCode" label="PN" min-width="100" show-overflow-tooltip>
+              <template #default="{ row }">{{ row.pnCode || '-' }}</template>
+            </el-table-column>
+            <el-table-column prop="quantity" label="数量" width="50" />
+            <el-table-column label="操作" width="56" fixed="right">
+              <template #default="{ $index }">
+                <el-button link type="danger" @click="conversionForm.sourceItems.splice($index, 1)">移除</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </section>
+
+        <div class="conversion-flow" aria-hidden="true">➜</div>
+        <section class="conversion-panel conversion-panel-target">
+          <div class="conversion-panel-header"><div class="conversion-panel-label"><span class="conversion-panel-icon">+</span><div><h3>{{ conversionForm.conversionType === 'assemble' ? '组装成品（目标商品）' : '拆出商品（目标商品）' }}</h3><p>设置转换后生成的商品</p></div></div><el-button type="primary" plain size="small" @click="conversionPicker = 'target'">选择商品</el-button></div>
+          <el-dialog :model-value="conversionPicker === 'target'" @update:model-value="conversionPicker = ''" title="选择目标商品" width="640px" append-to-body>
+          <div class="conversion-add-row">
+            <el-select
+              v-model="conversionTargetAdd.productId"
+              placeholder="搜索目标商品"
+              filterable
+              remote
+              clearable
+              :remote-method="searchConversionTargetProducts"
+              @change="onConversionTargetProductChange"
+              style="flex: 1"
+            >
+              <el-option v-for="item in conversionTargetOptions" :key="item.product_id" :label="item.name || item.product_name || item.product_id" :value="item.product_id" />
+            </el-select>
+            <el-input v-if="selectedConversionTargetProduct?.need_sn === 1" v-model="conversionTargetAdd.snCode" placeholder="目标SN" style="width: 180px" />
+            <el-select v-model="conversionTargetAdd.pnCode" placeholder="选择目标PN" clearable filterable style="width: 170px">
+              <el-option v-for="pn in (selectedConversionTargetProduct?.manufacturer_codes || [])" :key="pn" :label="pn" :value="pn" />
+            </el-select>
+            <el-input-number v-if="selectedConversionTargetProduct?.need_sn !== 1" v-model="conversionTargetAdd.quantity" :min="1" :precision="0" style="width: 110px" />
+            <span v-if="conversionForm.conversionType === 'assemble' && conversionForm.targetItems.length === 0" class="conversion-item-cost">成品成本由后台自动承接</span>
+            <el-input-number v-else v-model="conversionTargetAdd.unitCost" :min="0" :precision="2" :controls="false" placeholder="请输入商品价格" style="width: 130px" />
+            <el-button type="primary" @click="addConversionTargetItem">添加</el-button>
+          </div>
+
+          </el-dialog>
+          <el-table :data="conversionForm.targetItems" stripe border size="small" empty-text="点击右上角选择商品，添加目标商品">
+            <el-table-column type="index" label="#" width="34" />
+            <el-table-column prop="productName" label="商品信息" min-width="140">
+              <template #default="{ row }"><div>{{ row.productName }}</div><div v-if="conversionAutomaticTarget && !conversionCostPreview" class="conversion-item-cost">{{ conversionPreviewLoading ? '成本核算中…' : '成本待核算' }}</div><div v-else class="conversion-item-cost">单价 ¥{{ row.unitCost }} · 合计 ¥{{ row.totalCost }}<span v-if="conversionAutomaticTarget">（自动承接）</span></div></template>
+            </el-table-column>
+            <el-table-column prop="snCode" label="SN" min-width="85" show-overflow-tooltip>
+              <template #default="{ row }">{{ row.snCode || '-' }}</template>
+            </el-table-column>
+            <el-table-column prop="pnCode" label="PN" min-width="100" show-overflow-tooltip>
+              <template #default="{ row }">{{ row.pnCode || '-' }}</template>
+            </el-table-column>
+            <el-table-column prop="quantity" label="数量" width="50" />
+            <el-table-column label="操作" width="56" fixed="right">
+              <template #default="{ $index }">
+                <el-button link type="danger" @click="conversionForm.targetItems.splice($index, 1)">移除</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </section>
+      </div>
+
+      <div class="conversion-cost-check">
+        <template v-if="conversionForm.conversionType === 'split'">
+          <div class="conversion-metric"><span class="conversion-metric-icon">▤</span><div>来源成本<strong>¥{{ conversionSourceTotal }}</strong></div></div>
+          <div class="conversion-metric"><span class="conversion-metric-icon green">➜</span><div>拆出金额<strong>¥{{ conversionTargetTotal }}</strong></div></div>
+          <div class="conversion-metric"><span class="conversion-metric-icon amber">▣</span><div>拆分后原商品成本<strong>¥{{ conversionSplitRemainingCost }}</strong></div></div>
+        </template>
+        <template v-else>
+          <div class="conversion-metric"><span class="conversion-metric-icon">▤</span><div>来源成本<strong>¥{{ conversionSourceTotal ?? '—' }}</strong></div></div>
+          <div class="conversion-metric"><span class="conversion-metric-icon green">➜</span><div>目标成本<strong>¥{{ conversionTargetTotal ?? '—' }}</strong></div></div>
+          <div class="conversion-metric"><span class="conversion-metric-icon amber">▣</span><div>来源与服务成本合计<strong>¥{{ conversionExpectedTargetTotal ?? '—' }}</strong><small>含服务成本 ¥{{ conversionServiceCost }}</small></div></div>
+        </template>
+      </div>
+      <div v-if="conversionAutomaticTarget && conversionPreviewError" role="alert" style="color: var(--el-color-danger); margin-top: 8px">{{ conversionPreviewError }} <el-button link type="primary" @click="conversionPreviewRefresh += 1">重新核算</el-button></div>
+
+      <template #footer>
+        <div class="conversion-footer"><div class="conversion-notice">ⓘ 完成后自动生成出入库记录，请核对商品、SN、数量与成本。</div><div class="conversion-footer-actions">
+        <el-button @click="conversionDialogVisible = false">取消</el-button>
+        <el-button type="primary" :disabled="!conversionCostMatched" :loading="conversionSubmitLoading" @click="submitConversion">确认执行</el-button>
+        </div></div>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="conversionProductDialogVisible" title="新建目标商品" width="750px" @close="resetConversionProductForm">
+      <el-form :model="conversionProductForm" label-width="100px">
+        <el-row :gutter="20">
+          <el-col :span="12">
+            <el-form-item label="商品编码">
+              <el-input model-value="(系统自动生成)" disabled />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="商品分类">
+              <el-tree-select
+                v-model="conversionProductForm.categoryId"
+                :data="conversionProductCategoryTree"
+                :props="{ label: 'name', value: 'category_id', children: 'children' }"
+                placeholder="请选择分类"
+                clearable
+                check-strictly
+                style="width: 100%"
+                @change="onConversionProductCategoryChange"
+              />
+            </el-form-item>
+          </el-col>
+        </el-row>
+
+        <el-divider content-position="left">商品属性</el-divider>
+        <el-row :gutter="16">
+          <el-col :span="6">
+            <el-form-item label="商品分类" label-width="75px">
+              <el-input v-model="conversionProductForm.category" placeholder="如：笔记本" size="small" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
+            <el-form-item label="品牌" label-width="75px">
+              <el-input v-model="conversionProductForm.brand" placeholder="如：联想" size="small" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
+            <el-form-item label="系列" label-width="75px">
+              <el-input v-model="conversionProductForm.series" placeholder="如：拯救者" size="small" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
+            <el-form-item label="型号" label-width="75px">
+              <el-input v-model="conversionProductForm.model" placeholder="如：Y9000P" size="small" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
+            <el-form-item label="处理器" label-width="75px">
+              <el-input v-model="conversionProductForm.processor" placeholder="如：Ultra9 285" size="small" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
+            <el-form-item label="内存" label-width="75px">
+              <el-input v-model="conversionProductForm.memory" placeholder="如：32GB" size="small" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
+            <el-form-item label="存储" label-width="75px">
+              <el-input v-model="conversionProductForm.storage" placeholder="如：2T" size="small" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
+            <el-form-item label="颜色" label-width="75px">
+              <el-input v-model="conversionProductForm.color" placeholder="如：黑" size="small" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
+            <el-form-item label="显卡" label-width="75px">
+              <el-input v-model="conversionProductForm.gpu" placeholder="如：RTX4090" size="small" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
+            <el-form-item label="配件类别" label-width="75px">
+              <el-input v-model="conversionProductForm.accessory_type" placeholder="如：贴膜/保护壳" size="small" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+
+        <div v-if="conversionProductCategoryFields.length > 0" style="margin-bottom: 12px; padding: 10px; background: #f5f7fa; border-radius: 4px;">
+          <el-divider content-position="left" style="margin: 0 0 10px 0;">{{ conversionProductCategoryFieldName }} 补充字段</el-divider>
+          <el-row :gutter="16">
+            <el-col :span="8" v-for="field in conversionProductExtraFields" :key="field.field_key">
+              <el-form-item :label="field.field_label" :required="field.required" label-width="75px">
+                <el-select
+                  v-if="field.field_type === 'select'"
+                  v-model="conversionProductForm.attributes[field.field_key]"
+                  :placeholder="field.placeholder || ('请选择' + field.field_label)"
+                  size="small"
+                  clearable
+                  style="width: 100%"
+                >
+                  <el-option v-for="opt in field.options" :key="opt" :label="opt" :value="opt" />
+                </el-select>
+                <el-input
+                  v-else
+                  v-model="conversionProductForm.attributes[field.field_key]"
+                  :placeholder="field.placeholder || field.field_label"
+                  size="small"
+                />
+              </el-form-item>
+            </el-col>
+          </el-row>
+        </div>
+
+        <el-form-item label="商品名称">
+          <span style="font-weight: 600; font-size: 14px;">{{ conversionProductName || '（请填写上方属性）' }}</span>
+        </el-form-item>
+        <el-form-item label="商品简称">
+          <el-input v-model="conversionProductForm.customName" placeholder="如需覆盖自动拼装名称，请在此输入" size="small" style="width: 300px;" />
+        </el-form-item>
+        <el-form-item label="厂商编码 / PN" required>
+          <el-input v-model="conversionProductForm.pnCode" placeholder="请输入新商品的厂商编码 / PN" clearable />
+        </el-form-item>
+        <el-form-item label="厂商商品名称">
+          <el-input v-model="conversionProductForm.config" placeholder="厂商商品名称" />
+        </el-form-item>
+        <el-row :gutter="20">
+          <el-col :span="8">
+            <el-form-item label="需要SN码">
+              <el-switch v-model="conversionProductForm.needSn" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
+            <el-form-item label="状态">
+              <el-switch v-model="conversionProductForm.status" :active-value="1" :inactive-value="0" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
+            <el-form-item label="单位">
+              <el-input v-model="conversionProductForm.unit" placeholder="台" size="small" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <el-form-item label="详细配置">
+          <el-input v-model="conversionProductForm.remark" type="textarea" rows="2" placeholder="详细配置信息" />
+        </el-form-item>
+
+        <el-divider content-position="left">69码</el-divider>
+        <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+          <el-input v-model="conversionProductNewBarcode" placeholder="请输入69码" style="width: 310px" @keyup.enter="addConversionProductBarcode" />
+          <el-button type="primary" @click="addConversionProductBarcode">添加69码</el-button>
+        </div>
+        <el-table :data="conversionProductForm.barcodes" stripe border size="small" max-height="200" v-if="conversionProductForm.barcodes.length > 0">
+          <el-table-column label="类型" width="100">
+            <template #default="{ row }">
+              <el-tag type="success" size="small">
+                69码
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="code" label="条码内容" />
+          <el-table-column label="操作" width="60">
+            <template #default="{ $index }">
+              <el-button link type="danger" size="small" @click="conversionProductForm.barcodes.splice($index, 1)">删除</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+        <el-empty v-else description="暂未添加条码" :image-size="40" />
+      </el-form>
+      <template #footer>
+        <el-button @click="conversionProductDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="conversionProductSubmitLoading" @click="submitConversionProduct">确定</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="conversionDetailVisible" title="拆装单详情" width="900px">
+      <div v-if="currentConversion">
+        <el-descriptions :column="2" border>
+          <el-descriptions-item label="单号">{{ currentConversion.conversion_no }}</el-descriptions-item>
+          <el-descriptions-item label="类型">{{ getConversionTypeText(currentConversion.conversion_type) }}</el-descriptions-item>
+          <el-descriptions-item label="门店">{{ currentConversion.store_name }}</el-descriptions-item>
+          <el-descriptions-item label="状态">{{ getConversionStatusText(currentConversion.status) }}</el-descriptions-item>
+          <el-descriptions-item label="来源成本">¥{{ currentConversion.total_source_cost || 0 }}</el-descriptions-item>
+          <el-descriptions-item label="目标成本">¥{{ currentConversion.total_target_cost || 0 }}</el-descriptions-item>
+          <el-descriptions-item label="服务成本">¥{{ currentConversion.service_cost || 0 }}</el-descriptions-item>
+          <el-descriptions-item label="创建时间">{{ formatDate(currentConversion.create_time) }}</el-descriptions-item>
+        </el-descriptions>
+        <h4 class="mt-20">明细</h4>
+
+        <el-table :data="currentConversion.items || []" stripe border size="small">
+          <el-table-column label="行类型" width="90">
+            <template #default="{ row }">{{ getConversionLineRoleText(row.line_role) }}</template>
+          </el-table-column>
+          <el-table-column prop="product_name" label="商品" min-width="160" />
+          <el-table-column prop="pn_code" label="PN" width="130" />
+          <el-table-column prop="sn_code" label="SN" width="150" />
+          <el-table-column prop="source_sn_code" label="来源SN" width="150" />
+          <el-table-column prop="quantity" label="数量" width="70" />
+          <el-table-column prop="unit_cost" label="单位成本" width="110">
+            <template #default="{ row }">¥{{ row.unit_cost || 0 }}</template>
+          </el-table-column>
+          <el-table-column prop="total_cost" label="总成本" width="110">
+            <template #default="{ row }">¥{{ row.total_cost || 0 }}</template>
+          </el-table-column>
+        </el-table>
+      </div>
+    </el-dialog>
+
+    <el-dialog v-model="batchImportDialogVisible" title="批量维护导入" width="760px">
+      <el-form :model="batchForm" label-width="96px">
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item label="操作类型" required>
+              <el-select v-model="batchForm.operationType" style="width: 100%">
+                <el-option label="批量入库" value="INBOUND" />
+                <el-option label="批量出库" value="OUTBOUND" />
+                <el-option label="数量调整" value="ADJUST" />
+                <el-option label="SN计价方式调整" value="COST_MODE" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item v-if="batchForm.operationType !== 'COST_MODE'" label="导入类型" required>
+              <el-radio-group v-model="batchForm.importMode">
+                <el-radio-button v-for="item in batchImportModeOptions" :key="item.value" :label="item.value">{{ item.label }}</el-radio-button>
+              </el-radio-group>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item v-if="batchForm.operationType !== 'COST_MODE'" label="统一仓位" required>
+              <el-select v-model="batchForm.inventoryType" style="width: 100%">
+                <el-option v-for="item in INVENTORY_TYPES" :key="item.value" :label="item.label" :value="item.value" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col v-if="batchForm.operationType === 'INBOUND'" :span="12">
+            <el-form-item label="资源权益" required>
+              <el-select v-model="batchForm.resourceTypes" multiple collapse-tags collapse-tags-tooltip clearable style="width: 100%">
+                <el-option v-for="resource in snInventoryResourceOptions" :key="resource.value" :label="resource.label" :value="resource.value" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="备注">
+              <el-input v-model="batchForm.remark" clearable />
+            </el-form-item>
+          </el-col>
+        </el-row>
+      </el-form>
+
+      <div class="import-tips">
+        <el-button type="primary" size="small" @click="downloadBatchTemplate">下载当前模板</el-button>
+      </div>
+      <div class="upload-area">
+        <el-upload :auto-upload="false" :show-file-list="false" :disabled="batchImportLoading" accept=".xlsx,.xls" :on-change="handleBatchFileChange" drag>
+          <el-icon class="el-icon--upload"><Upload /></el-icon>
+          <div class="el-upload__text">将文件拖到此处，或 <em>点击上传</em></div>
+        </el-upload>
+        <div v-if="batchImportFile" class="selected-file">
+          <el-tag closable @close="clearBatchImportFile">{{ batchImportFile.name }}</el-tag>
+        </div>
+      </div>
+
+      <section v-if="batchPreviewRows.length" class="batch-invoice-preview">
+        <div class="batch-invoice-toolbar">
+          <span>采购票种 · {{ batchPreviewRows.length }} 行<span v-if="missingBatchInvoiceCount">，{{ missingBatchInvoiceCount }} 行待选</span></span>
+          <el-select v-model="batchBulkInvoice" placeholder="选择要批量设置的票种" style="width: 175px" :disabled="batchImportLoading">
+            <el-option v-for="type in batchInvoiceTypes" :key="type" :value="type" :label="batchInvoiceLabel(type)" />
+          </el-select>
+          <el-button :disabled="!batchBulkInvoice || batchImportLoading" @click="fillMissingBatchInvoices">填充未选行</el-button>
+        </div>
+        <el-table :data="batchPreviewRows" row-key="rowNo" size="small" max-height="280">
+          <el-table-column prop="rowNo" label="Excel 行号" width="82" />
+          <el-table-column prop="productName" label="商品" min-width="145" show-overflow-tooltip />
+          <el-table-column prop="snCode" label="SN" min-width="105" show-overflow-tooltip />
+          <el-table-column prop="storeName" label="门店" min-width="100" show-overflow-tooltip />
+          <el-table-column label="采购票种" width="150">
+            <template #default="{ row }">
+              <el-select v-model="row.invoiceType" size="small" placeholder="请选择" :disabled="batchImportLoading" :aria-label="`第 ${row.rowNo} 行采购票种`">
+                <el-option v-for="type in batchInvoiceTypes" :key="type" :value="type" :label="batchInvoiceLabel(type)" />
+              </el-select>
+            </template>
+          </el-table-column>
+        </el-table>
+      </section>
+
+      <el-alert
+        v-if="batchImportResult.visible"
+        :type="batchImportResult.failed > 0 ? 'warning' : 'success'"
+        :closable="false"
+        style="margin-top: 16px;"
+      >
+        导入完成：成功 <strong>{{ batchImportResult.success }}</strong> 行，
+        异常 <strong>{{ batchImportResult.failed }}</strong> 行
+      </el-alert>
+      <el-table
+        v-if="batchImportErrors.length > 0"
+        :data="batchImportErrors"
+        stripe
+        size="small"
+        max-height="240"
+        style="margin-top: 12px;"
+      >
+        <el-table-column prop="rowNo" label="行号" width="90" />
+        <el-table-column prop="message" label="异常原因" min-width="220" />
+      </el-table>
+
+      <template #footer>
+        <el-button @click="batchImportDialogVisible = false">关闭</el-button>
+        <el-button v-if="batchImportErrors.length > 0" @click="downloadBatchImportErrors">下载异常记录</el-button>
+        <el-button
+          v-if="batchImportResult.success > 0 && !batchImportFile"
+          type="primary"
+          @click="finishBatchImport"
+        >完成并查看申请</el-button>
+        <el-button
+          v-else
+          type="primary"
+          :loading="batchImportLoading"
+          :disabled="!batchImportFile || (batchForm.operationType === 'INBOUND' && batchPreviewRows.length > 0 && (missingBatchInvoiceCount > 0 || !batchPreviewHasValidRows))"
+          @click="submitBatchImport"
+        >{{ batchForm.operationType === 'INBOUND' ? (batchPreviewRows.length ? '提交审批' : '预览并选择票种') : '立即导入' }}</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="batchDetailVisible" title="批量维护申请详情" width="980px">
+      <div v-if="currentBatchApplication">
+        <el-descriptions :column="3" border>
+          <el-descriptions-item label="申请单号">{{ currentBatchApplication.application_no }}</el-descriptions-item>
+          <el-descriptions-item label="操作类型">{{ batchOperationText(currentBatchApplication.operation_type) }}</el-descriptions-item>
+          <el-descriptions-item label="状态">{{ batchStatusText(currentBatchApplication.status) }}</el-descriptions-item>
+          <el-descriptions-item label="申请人">{{ currentBatchApplication.applicant_name || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="审批人">{{ currentBatchApplication.reviewer_name || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="创建时间">{{ formatDate(currentBatchApplication.create_time) }}</el-descriptions-item>
+          <el-descriptions-item label="审批意见" :span="3">{{ currentBatchApplication.review_comment || '-' }}</el-descriptions-item>
+          <el-descriptions-item v-if="currentBatchApplication.execute_error" label="执行失败原因" :span="3">{{ currentBatchApplication.execute_error }}</el-descriptions-item>
+        </el-descriptions>
+        <h4 class="mt-20">明细</h4>
+                <el-alert v-if="currentBatchApplication?.operation_type === 'COST_MODE'" title="仅审批通过后调整在库SN计价方式，不修改采购成本及已归档订单。" type="info" :closable="false" />
+        <el-table :data="currentBatchApplication.items || []" stripe border size="small" max-height="420">
+          <el-table-column prop="row_no" label="行号" width="70" />
+          <el-table-column prop="product_code" label="商品编码" width="110" />
+          <el-table-column prop="product_name" label="商品" min-width="160" show-overflow-tooltip />
+          <el-table-column prop="pn_code" label="PN" width="120" />
+          <el-table-column prop="sn_code" label="SN" width="150" show-overflow-tooltip />
+          <el-table-column v-if="currentBatchApplication.operation_type === 'COST_MODE'" label="计价方式调整" min-width="180">
+            <template #default="{ row }">{{ batchCostModeText(row) }}</template>
+          </el-table-column>
+          <el-table-column prop="store_id" label="门店ID" width="110" />
+          <el-table-column prop="location_id" label="库位ID" width="110" />
+          <el-table-column prop="quantity" label="数量" width="80" />
+          <el-table-column v-if="currentBatchApplication.operation_type === 'INBOUND'" label="采购票种" width="130">
+            <template #default="{ row }">{{ row.invoice_type ? batchInvoiceLabel(row.invoice_type) : '待核实' }}</template>
+          </el-table-column>
+          <el-table-column prop="before_qty" label="调整前" width="80" />
+          <el-table-column prop="after_qty" label="调整后" width="80" />
+          <el-table-column label="执行结果" width="100">
+            <template #default="{ row }">
+              <el-tag :type="batchItemStatusType(row.execute_status)">{{ batchItemStatusText(row.execute_status) }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="execute_error" label="执行失败原因" min-width="240" show-overflow-tooltip />
+          <el-table-column label="资源权益" min-width="150">
+            <template #default="{ row }">{{ parseResourceTypesText(row.resource_types) }}</template>
+          </el-table-column>
+          <el-table-column prop="remark" label="备注" min-width="150" show-overflow-tooltip />
+        </el-table>
+      </div>
+      <template #footer>
+        <el-button @click="batchDetailVisible = false">关闭</el-button>
+      </template>
     </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
+import NonPurchaseReceipts from '../components/NonPurchaseReceipts.vue'
+import { ref, reactive, onMounted, computed, watch } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import * as XLSX from 'xlsx'
 import api from '../api'
+import { getStoreId, getUserInfo, hasRole, isDistributorAccount, isStoreUser } from '../utils/user'
+import SnTrace from './SnTrace.vue'
+import InventoryResourceRights from '../components/InventoryResourceRights.vue'
+import { saveDraft, loadDraft, clearDraft, cloneDraft } from '../utils/draft'
 
-const activeTab = ref('list')
+const router = useRouter()
+const route = useRoute()
+const TRANSFER_DRAFT_KEY = 'inventory-transfer-create'
+const inboundDraftKey = () => currentInbound.value?.inbound_id ? `inventory-inbound-execute:${currentInbound.value.inbound_id}` : ''
+const mainTab = ref('summary')
+const syncTabFromRoute = () => {
+  const tab = String(route.meta.tab || 'summary')
+  if (mainTab.value !== tab) mainTab.value = tab
+  onTabChange(tab)
+}
+const canManageResourceRights = computed(() => hasRole(['finance', 'manager', 'admin', 'boss']))
+const canViewSnResourceRights = computed(() => hasRole(['finance', 'manager', 'admin', 'boss']))
+const canManageSnPrice = computed(() => hasRole(['admin']))
+const canViewSnPurchaseCost = computed(() => hasRole(['finance', 'purchaser']))
 const stores = ref([])
-const products = ref([])
-const tableData = ref([])
-const total = ref(0)
-const snTableData = ref([])
-const snTotal = ref(0)
-const availableSns = ref([])
+const storesLoaded = ref(false)
+const summaryStores = ref([])
+const summaryStoresLoaded = ref(false)
+const transferStores = ref([])
+const transferStoresLoaded = ref(false)
+const categories = ref([])
 
-const inboundDialogVisible = ref(false)
-const outboundDialogVisible = ref(false)
-const transferDialogVisible = ref(false)
-const snDetailVisible = ref(false)
-const submitLoading = ref(false)
-const currentSn = ref(null)
-
-const maxOutQuantity = computed(() => {
-  if (!outboundForm.productId || !outboundForm.storeId) return 1
-  const item = snTableData.value.find(s =>
-    s.product_id === outboundForm.productId &&
-    s.store_name === stores.value.find(st => st.store_id === outboundForm.storeId)?.name
-  )
-  return item?.quantity || 1
-})
-
-const queryParams = reactive({
+// 库存汇总
+const summaryData = ref([])
+const supplierFileInput = ref(null)
+const supplierImportVendor = ref('')
+const supplierImporting = ref(false)
+const summaryTotal = ref(0)
+const summaryLoading = ref(false)
+const summaryExporting = ref(false)
+const summarySimpleExporting = ref(false)
+const summaryHasSearched = ref(false)
+const inventoryProductTypeOptions = [
+  { label: '电脑', value: 'computer' },
+  { label: '台机', value: 'desktop' },
+  { label: '手机', value: 'phone' },
+  { label: '平板', value: 'tablet' },
+  { label: '配件', value: 'accessory' },
+  { label: '选件', value: 'option' },
+  { label: '二手', value: 'used' }
+]
+const inventoryModelFilterOptions = [
+  { label: '重点机型', value: 'focus' },
+  { label: '特价机型', value: 'special' },
+  { label: '热卖机型（近7天）', value: 'hot7' },
+  { label: '高毛利机型（近7天）', value: 'highMargin7' }
+]
+const inventorySearchFields = [{key:'manufacturerCode',label:'厂商编码'},{key:'productName',label:'商品名称'},{key:'manufacturerConfig',label:'厂商配置信息'}]
+const summaryQuery = reactive({
   page: 1,
   pageSize: 20,
   keyword: '',
-  storeId: ''
+  productName:'',manufacturerCode:'',manufacturerConfig:'',
+  category: '',
+  storeId: '',
+  productType: '',
+  modelFilter: '',
+  stockOnly: 0
 })
+const isSummaryQuickModelFilter = computed(() => ['hot7', 'highMargin7'].includes(summaryQuery.modelFilter))
+const querySummary = () => {
+  summaryQuery.page = 1
+  return loadSummary()
+}
+const onSummaryStockOnlyChange = () => {
+  return querySummary()
+}
 
-const snQuery = reactive({
+// SN库存清单
+const snInventoryData = ref([])
+const snInventoryTotal = ref(0)
+const snInventoryLoading = ref(false)
+const snInventoryExporting = ref(false)
+const snInventoryLocations = ref([])
+const snInventoryResourceOptions = ref([])
+const snPurchaseVisible = ref(false)
+const snPurchaseSubmitting = ref(false)
+const snPurchaseSuppliers = ref([])
+const snPurchaseGoodsTypes = ref([])
+const snPurchaseTargetLocations = ref([])
+const snPurchaseRebateBalance = ref(0)
+const snPurchaseForm = reactive({
+  grossProfitCostMode: '',
+  snId: '', snCode: '', productId: '', productName: '', productCode: '', pnCode: '',
+  storeId: '', storeName: '', sourceLocationName: '', supplierId: '', price: 0,
+  goodsTypeId: '', paymentMethod: 'COMPANY_CREDIT', invoiceType: '', targetLocationId: '', remark: '', rebateDeduction: 0
+})
+const snPurchaseCostModes = computed(() => {
+  const supplier = snPurchaseSuppliers.value.find(item => item.supplier_id === snPurchaseForm.supplierId)
+  return String(supplier?.purchase_cost_mode_allowed || 'COMPANY_PRICE,PURCHASE_PRICE').split(',').map(mode => mode.trim())
+})
+const snPurchaseRebateCap = computed(() => Math.max(0, Math.min(
+  Number(snPurchaseRebateBalance.value || 0),
+  Number(snPurchaseForm.price || 0)
+)))
+const snPurchaseRebateDeduction = computed(() => Math.min(
+  Math.max(0, Number(snPurchaseForm.rebateDeduction || 0)),
+  snPurchaseRebateCap.value
+))
+const snPurchaseActualTotal = computed(() => Math.max(0,
+  Number(snPurchaseForm.price || 0) - snPurchaseRebateDeduction.value
+))
+const resourceStatusOptions = [
+  { label: '可用', value: 'AVAILABLE' },
+  { label: '已锁定', value: 'LOCKED' },
+  { label: '已核销', value: 'USED' },
+  { label: '已套回', value: 'CLAIMED_BACK' },
+  { label: '异常', value: 'EXCEPTION' }
+]
+const snInventoryQuery = reactive({
   page: 1,
   pageSize: 20,
+  keyword: '',
+  productName:'',manufacturerCode:'',manufacturerConfig:'',snCode:'',
+  storeId: '',
+  locationId: '',
+  status: '',
+  resourceType: '',
+  resourceStatus: '',
+  specialOnly: '',
+  minAgeDays: undefined,
+  maxAgeDays: undefined
+})
+const snSpecialPriceVisible = ref(false)
+const snSpecialPriceSaving = ref(false)
+const snSpecialPriceForm = reactive({
+  snId: '',
   snCode: '',
-  status: ''
+  productName: '',
+  unifiedSalePrice: 0,
+  minSalePrice: 0,
+  specialPrice: 0,
+  remark: '',
+  isSpecial: false
+})
+const snSpecialPriceBelowMinimum = computed(() => (
+  Number(snSpecialPriceForm.minSalePrice || 0) > 0 &&
+  Number(snSpecialPriceForm.specialPrice || 0) < Number(snSpecialPriceForm.minSalePrice || 0)
+))
+const snPriceHistoryVisible = ref(false)
+const snPriceHistoryLoading = ref(false)
+const snPriceHistorySnCode = ref('')
+const snPriceHistoryData = ref([])
+
+// 批量维护
+const canReviewBatch = computed(() => hasRole(['admin']))
+const batchApplications = ref([])
+const batchTotal = ref(0)
+const batchLoading = ref(false)
+const batchImportLoading = ref(false)
+const batchImportDialogVisible = ref(false)
+const batchImportFile = ref(null)
+const batchImportErrors = ref([])
+const batchPreviewRows = ref([])
+const batchInvoiceTypes = ref([])
+const batchBulkInvoice = ref('')
+const batchPreviewHasValidRows = ref(false)
+const missingBatchInvoiceCount = computed(() => batchPreviewRows.value.filter(row => !row.invoiceType).length)
+let batchPreviewSequence = 0
+
+const resetBatchPreview = () => {
+  batchPreviewSequence += 1
+  batchPreviewRows.value = []
+  batchInvoiceTypes.value = []
+  batchBulkInvoice.value = ''
+  batchPreviewHasValidRows.value = false
+}
+
+const batchInvoiceLabel = type => type === '收据' ? '收据（未税）' : type === '专票13%' ? '增值税专票 13%' : type
+
+const fillMissingBatchInvoices = () => {
+  for (const row of batchPreviewRows.value) if (!row.invoiceType) row.invoiceType = batchBulkInvoice.value
+}
+const batchImportResult = reactive({ visible: false, success: 0, failed: 0 })
+const batchDetailVisible = ref(false)
+const currentBatchApplication = ref(null)
+const batchForm = reactive({
+  operationType: 'INBOUND',
+  importMode: 'SN',
+  inventoryType: 'normal_qty',
+  resourceTypes: [],
+  remark: ''
+})
+const batchImportModeOptions = [
+  { label: 'SN商品', value: 'SN' },
+  { label: '非SN商品', value: 'NON_SN' }
+]
+const batchQuery = reactive({
+  page: 1,
+  pageSize: 20,
+  status: '',
+  operationType: ''
 })
 
-const inboundForm = reactive({
+// 入库单
+const inboundList = ref([])
+const inboundTotal = ref(0)
+const inboundQuery = reactive({
+  page: 1,
+  pageSize: 20,
+  inboundNo: '',
+  status: '',
+  storeId: ''
+  ,sourceNo: '',
+  counterpartyName: ''
+})
+
+const returnList = ref([])
+const returnTotal = ref(0)
+const returnQuery = reactive({
+  page: 1,
+  pageSize: 20,
+  status: '',
+  returnNo: '',
+  inboundNo: '',
+  returnId: ''
+})
+
+// 入库单详情
+const inboundDetailVisible = ref(false)
+const receiptHistoryVisible = ref(false)
+const currentInbound = ref(null)
+
+// 执行入库
+const executeInboundVisible = ref(false)
+const inboundLoading = ref(false)
+let inboundReceiptRequest = ''
+let inboundReceiptPayload = ''
+const executeProducts = ref([])
+const inboundLocations = ref([])
+
+const INVENTORY_TYPES = [
+  { value: 'normal_qty', label: '销售仓' },
+  { value: 'demo_qty', label: '样品仓' },
+  { value: 'display_qty', label: '铺货仓' },
+  { value: 'unsellable_qty', label: '不可售仓' },
+  { value: 'pending_qty', label: '占用仓' },
+  { value: 'rental_demo_qty', label: '租赁样机仓' }
+]
+
+// 执行退库
+const executeReturnVisible = ref(false)
+const returnLoading = ref(false)
+const returnReason = ref('')
+const returnItems = ref([])
+
+// SN弹窗
+const snResourceDetailVisible = ref(false)
+const snResourceDetailLoading = ref(false)
+const snResourceDetail = ref(null)
+const snDialogVisible = ref(false)
+const snProductId = ref('')
+const snProductName = ref('')
+const snTableData = ref([])
+const snTotal = ref(0)
+const snLoading = ref(false)
+const snFilter = reactive({
+  page: 1,
+  pageSize: 20,
+  status: '',
+  snCode: ''
+})
+
+const snEditing = ref(false)
+const snOriginalCodes = ref({})
+const snLocationDialogVisible = ref(false)
+const snLocationLoading = ref(false)
+const snLocationSaving = ref(false)
+const snLocationOptions = ref([])
+const snLocationForm = reactive({
+  snId: '',
+  snCode: '',
+  pnCode: '',
+  productName: '',
   storeId: '',
+  storeName: '',
+  currentLocationId: '',
+  currentLocationName: '',
+  targetLocationId: ''
+})
+const productLocationDialogVisible = ref(false)
+const productLocationSaving = ref(false)
+const productLocationOptions = ref([])
+const productLocationSourceOptions = ref([])
+const productLocationForm = reactive({ productId: '', productName: '', pnCode: '', storeId: '', fromLocationId: '', toLocationId: '', quantity: 1 })
+// SN追踪对话框
+const traceDialogVisible = ref(false)
+const traceSnCode = ref('')
+const traceLoading = ref(false)
+const traceTimeline = ref([])
+const traceCandidateVisible = ref(false)
+const traceCandidates = ref([])
+const traceCurrentStatus = ref('')
+const traceProductName = ref('')
+
+// 调拨
+const transferDialogVisible = ref(false)
+const transferDetailVisible = ref(false)
+const transferDetailRow = ref(null)
+const transferLoading = ref(false)
+const transferOutList = ref([])
+const transferInList = ref([])
+const transferHistoryList = ref([])
+const transferHistoryTotal = ref(0)
+const transferHistoryLoading = ref(false)
+const transferHistoryQuery = reactive({
+  page: 1,
+  pageSize: 20,
+  transferNo: '',
+  fromStoreId: '',
+  toStoreId: '',
+  productKeyword: '',
+  productName:'',manufacturerCode:'',manufacturerConfig:'',
+  status: '',
+  startDate: '',
+  endDate: ''
+})
+const transferProductOptions = ref([])
+const transferPnOptions = ref([])
+const transferPnLoading = ref(false)
+const transferSnOptions = ref([])
+const transferOutConfirmVisible = ref(false)
+const transferOutConfirmLoading = ref(false)
+const transferOutSnLoading = ref(false)
+const transferOutConfirmRow = ref(null)
+const transferOutSnRows = ref([])
+const transferOutPhotoFiles = ref([])
+const transferForm = reactive({
+  fromStoreId: '',
+  fromStoreName: '',
+  toStoreId: '',
+  freightPlatformId: '',
+  freightAmount: 0,
+  remark: '',
+  items: []
+})
+const freightPlatforms = ref([])
+const transferAddForm = reactive({
+  productId: '',
+  snId: '',
+  pnCode: '',
+  quantity: 1
+})
+
+const availableStores = computed(() => {
+  return transferStoreOptions.value.filter(s => s.store_id !== transferForm.fromStoreId)
+})
+
+const transferStoreOptions = computed(() => {
+  return transferStoresLoaded.value ? transferStores.value : stores.value
+})
+
+const transferFromStoreDisabled = computed(() => {
+  return transferForm.items.length > 0
+})
+
+const selectedTransferProduct = computed(() => {
+  return transferProductOptions.value.find(item => item.product_id === transferAddForm.productId) || null
+})
+
+// 拆分/组装
+const conversionLoading = ref(false)
+const conversionSubmitLoading = ref(false)
+const conversionPicker = ref('')
+const conversionDialogVisible = ref(false)
+const conversionDetailVisible = ref(false)
+const conversionList = ref([])
+const conversionTotal = ref(0)
+const currentConversion = ref(null)
+const conversionSourceOptions = ref([])
+const conversionTargetOptions = ref([])
+const conversionSourceSnOptions = ref([])
+const conversionProductDialogVisible = ref(false)
+const conversionProductSubmitLoading = ref(false)
+const conversionProductCategoryTree = ref([])
+const conversionProductCategoryFields = ref([])
+const conversionProductCategoryFieldName = ref('')
+const conversionProductCategoryNameParts = ref([])
+const conversionProductNewBarcode = ref('')
+const conversionQuery = reactive({
+  page: 1,
+  pageSize: 20,
+  conversionType: '',
+  status: '',
+  storeId: ''
+})
+const conversionForm = reactive({
+  conversionType: 'split',
+  storeId: '',
+  serviceCost: 0,
+  remark: '',
+  sourceItems: [],
+  targetItems: []
+})
+const conversionSourceAdd = reactive({
+  productId: '',
+  snId: '',
+  quantity: 1,
+  unitCost: 0
+})
+const conversionTargetAdd = reactive({
   productId: '',
   pnCode: '',
   snCode: '',
   quantity: 1,
-  remark: ''
+  unitCost: 0
+})
+const conversionProductForm = reactive({
+  categoryId: '',
+  category: '',
+  config: '',
+  brand: '',
+  series: '',
+  model: '',
+  processor: '',
+  memory: '',
+  storage: '',
+  color: '',
+  gpu: '',
+  accessory_type: '',
+  unit: '台',
+  needSn: false,
+  needImei: false,
+  remark: '',
+  status: 1,
+  pnCode: '',
+  barcodes: [],
+  attributes: {},
+  customName: ''
+})
+const selectedConversionSourceProduct = computed(() => {
+  return conversionSourceOptions.value.find(item => item.product_id === conversionSourceAdd.productId) || null
+})
+const selectedConversionTargetProduct = computed(() => {
+  return conversionTargetOptions.value.find(item => item.product_id === conversionTargetAdd.productId) || null
+})
+const conversionAutomaticTarget = computed(() => conversionForm.conversionType === 'assemble' && conversionForm.targetItems.length === 1)
+const conversionCostPreview = ref(null)
+const conversionPreviewLoading = ref(false)
+const conversionPreviewError = ref('')
+const conversionPreviewRefresh = ref(0)
+let conversionPreviewSequence = 0
+const conversionSourceTotal = computed(() => conversionAutomaticTarget.value ? conversionCostPreview.value?.sourceTotal : roundMoney(conversionForm.sourceItems.reduce((sum, item) => sum + Number(item.totalCost || 0), 0)))
+const conversionTargetTotal = computed(() => conversionAutomaticTarget.value ? conversionCostPreview.value?.targetTotal : roundMoney(conversionForm.targetItems.reduce((sum, item) => sum + Number(item.totalCost || 0), 0)))
+const conversionServiceCost = computed(() => conversionForm.conversionType === 'assemble' ? roundMoney(conversionForm.serviceCost || 0) : 0)
+const conversionExpectedTargetTotal = computed(() => conversionAutomaticTarget.value ? conversionCostPreview.value?.expectedTargetTotal : roundMoney(conversionSourceTotal.value + conversionServiceCost.value))
+const conversionSplitRemainingCost = computed(() => roundMoney(conversionSourceTotal.value - conversionTargetTotal.value))
+const conversionProductStandardFields = ['brand', 'series', 'model', 'processor', 'memory', 'storage', 'color', 'gpu', 'accessory_type']
+const conversionProductExtraFields = computed(() => {
+  return conversionProductCategoryFields.value.filter(field => !conversionProductStandardFields.includes(field.field_key))
+})
+const conversionProductName = computed(() => {
+  if (conversionProductForm.customName) return conversionProductForm.customName
+  const parts = [conversionProductForm.brand, conversionProductForm.series, conversionProductForm.model].filter(Boolean)
+  for (const field of conversionProductStandardFields) {
+    if (conversionProductForm[field]) parts.push(conversionProductForm[field])
+  }
+  for (const field of conversionProductCategoryFields.value) {
+    if (!conversionProductStandardFields.includes(field.field_key) && conversionProductForm.attributes[field.field_key]) {
+      parts.push(conversionProductForm.attributes[field.field_key])
+    }
+  }
+  return parts.join(' ')
+})
+const conversionCostMatched = computed(() => {
+  if (conversionForm.sourceItems.length === 0 || conversionForm.targetItems.length === 0) return false
+  if (conversionAutomaticTarget.value) return Boolean(conversionCostPreview.value) && !conversionPreviewLoading.value && !conversionPreviewError.value
+  if (conversionForm.conversionType === 'split') {
+    return conversionForm.sourceItems.length === 1 &&
+      conversionTargetTotal.value > 0 &&
+      conversionTargetTotal.value <= conversionSourceTotal.value &&
+      conversionSplitRemainingCost.value >= 0
+  }
+  return Math.abs(conversionTargetTotal.value - conversionExpectedTargetTotal.value) <= 0.01
 })
 
-const outboundForm = reactive({
-  storeId: '',
-  productId: '',
-  snCode: '',
-  quantity: 1,
-  reason: 'sale',
-  remark: ''
-})
+watch(() => JSON.stringify({
+  visible: conversionDialogVisible.value, storeId: conversionForm.storeId, type: conversionForm.conversionType,
+  refresh: conversionPreviewRefresh.value,
+  serviceCost: conversionForm.serviceCost,
+  source: conversionForm.sourceItems.map(({ productId, pnCode, snId, snCode, quantity, inventoryType, locationId }) => ({ productId, pnCode, snId, snCode, quantity, inventoryType, locationId })),
+  target: conversionForm.targetItems.map(({ productId, pnCode, snCode, quantity, inventoryType, locationId }) => ({ productId, pnCode, snCode, quantity, inventoryType, locationId }))
+}), async (_, __, onCleanup) => {
+  const sequence = ++conversionPreviewSequence
+  conversionCostPreview.value = null
+  conversionPreviewError.value = ''
+  conversionPreviewLoading.value = false
+  if (!conversionDialogVisible.value || !conversionAutomaticTarget.value || !conversionForm.storeId || !conversionForm.sourceItems.length) return
+  let cancelled = false
+  onCleanup(() => { cancelled = true })
+  conversionPreviewLoading.value = true
+  const payload = JSON.parse(JSON.stringify({
+    conversionType: 'assemble', storeId: conversionForm.storeId, serviceCost: conversionForm.serviceCost,
+    sourceItems: conversionForm.sourceItems, targetItems: conversionForm.targetItems
+  }))
+  try {
+    const res = await api.previewConversion(payload)
+    if (cancelled || sequence !== conversionPreviewSequence) return
+    if (res.code !== 0 || !res.data?.automaticTargetCost || !res.data?.targetItems?.length) throw new Error(res.message || '成本核算失败')
+    conversionCostPreview.value = res.data
+    res.data.sourceItems.forEach((cost, index) => Object.assign(conversionForm.sourceItems[index], cost))
+    res.data.targetItems.forEach((cost, index) => Object.assign(conversionForm.targetItems[index], cost))
+  } catch (err) {
+    if (!cancelled && sequence === conversionPreviewSequence) conversionPreviewError.value = err.response?.data?.message || err.message || '成本核算失败，请重试'
+  } finally {
+    if (!cancelled && sequence === conversionPreviewSequence) conversionPreviewLoading.value = false
+  }
+}, { flush: 'sync' })
 
-const transferForm = reactive({
-  fromStoreId: '',
-  toStoreId: '',
-  productId: '',
-  quantity: 1,
-  remark: ''
-})
-
-onMounted(() => {
-  loadData()
+onMounted(async () => {
+  mainTab.value = String(route.meta.tab || 'summary')
+  if (isStoreUser()) {
+    inboundQuery.storeId = getStoreId()
+    conversionQuery.storeId = getStoreId()
+    conversionForm.storeId = getStoreId()
+  }
   loadStores()
-  loadProducts()
-  loadSnData()
+  loadSummaryStores()
+  loadFreightPlatforms()
+  loadCategories()
+  const inboundIdFromQuery = String(route.query.inboundId || '').trim()
+  const inboundActionFromQuery = String(route.query.action || '').trim().toLowerCase()
+  const transferIdFromQuery = String(route.query.transferId || '').trim()
+  const returnIdFromQuery = String(route.query.returnId || '').trim()
+  if (inboundIdFromQuery) {
+    mainTab.value = 'inbound'
+    await loadInboundList()
+    if (inboundActionFromQuery === 'execute') {
+      await openExecuteDialog({ inbound_id: inboundIdFromQuery })
+    } else {
+      await viewInboundDetail({ inbound_id: inboundIdFromQuery }, { snTrace: true })
+    }
+    await router.replace({ name: 'Inventory', query: {} })
+  } else if (transferIdFromQuery) {
+    await openTransferDetail({ transfer_id: transferIdFromQuery }, { trace: String(route.query.trace || '') === '1' })
+    await router.replace({ name: 'Inventory', query: {} })
+  } else if (returnIdFromQuery) {
+    mainTab.value = 'inbound'
+    returnQuery.returnId = returnIdFromQuery
+    await loadReturnList({ trace: String(route.query.trace || '') === '1' })
+    await router.replace({ name: 'Inventory', query: {} })
+  } else if (mainTab.value === 'summary') {
+    // 库存汇总进入页面后等待用户输入条件或选择机型筛选。
+  } else if (mainTab.value === 'inbound') {
+    loadInboundList()
+    loadReturnList()
+  } else {
+    onTabChange(mainTab.value)
+  }
 })
 
-const loadData = async () => {
-  try {
-    const res = await api.getInventoryList(queryParams)
-    if (res.code === 0) {
-      tableData.value = res.data?.list || []
-      total.value = res.data?.total || 0
-    }
-  } catch (err) {
-    ElMessage.error('加载数据失败')
-  }
-}
+watch(() => route.path, () => {
+  if (route.query.inboundId || route.query.transferId || route.query.returnId) return
+  syncTabFromRoute()
+})
 
-const loadSnData = async () => {
-  try {
-    const res = await api.getSnList(snQuery)
-    if (res.code === 0) {
-      snTableData.value = res.data?.list || []
-      snTotal.value = res.data?.total || 0
+const onTabChange = (tabName) => {
+  if (tabName === 'summary') {
+    // 库存汇总不自动查询，避免进入页面就加载全量库存。
+  } else if (tabName === 'inbound') {
+    if (inboundList.value.length === 0) {
+      loadInboundList()
     }
-  } catch (err) {
-    ElMessage.error('加载数据失败')
+    if (returnList.value.length === 0) {
+      loadReturnList()
+    }
+  } else if (tabName === 'sn-inventory') {
+    if (snInventoryResourceOptions.value.length === 0) {
+      loadSnInventoryResourceOptions()
+    }
+    if (snInventoryQuery.storeId && snInventoryLocations.value.length === 0) {
+      loadSnInventoryLocations()
+    }
+    if (snInventoryData.value.length === 0) {
+      loadSnInventory()
+    }
+  } else if (tabName === 'batch-maintenance') {
+    if (batchApplications.value.length === 0) {
+      loadBatchApplications()
+    }
+  } else if (tabName === 'transfer') {
+    if (transferOutList.value.length === 0 && transferInList.value.length === 0 && transferHistoryList.value.length === 0) {
+      loadTransferLists()
+    }
+  } else if (tabName === 'conversion') {
+    if (conversionList.value.length === 0) {
+      loadConversionList()
+    }
   }
+  // sn-trace tab does not need preloading
 }
 
 const loadStores = async () => {
+  if (storesLoaded.value) return
   try {
-    const res = await api.getStoreList()
-    if (res.code === 0) {
-      stores.value = res.data || []
+    const res = await api.getInventoryReadableStoreList()
+    if (res && res.code === 0 && Array.isArray(res.data)) {
+      stores.value = res.data
+      storesLoaded.value = true
+    } else {
+      stores.value = []
     }
   } catch (err) {
-    console.error('Failed to load stores')
+    stores.value = []
   }
 }
 
-const loadProducts = async () => {
+const loadCategories = async () => {
   try {
-    const res = await api.getProductList({ page: 1, pageSize: 1000 })
+    const res = await api.getProductList({ activeOnly: 1, page: 1, pageSize: 500 })
     if (res.code === 0) {
-      products.value = res.data?.list || []
+      const cats = new Set()
+      ;(res.data?.list || []).forEach(p => { if (p.category) cats.add(p.category) })
+      categories.value = [...cats].sort()
     }
   } catch (err) {
-    console.error('Failed to load products')
+    console.error('Failed to load categories')
   }
 }
 
-const handleInbound = () => {
-  resetForms()
-  inboundDialogVisible.value = true
-}
+// 库存汇总
+const getStockBreakdownRows = (row, field) => {
+  const source = Array.isArray(row?.store_stock_info) ? row.store_stock_info : []
+  const grouped = new Map()
 
-const handleOutbound = () => {
-  resetForms()
-  outboundDialogVisible.value = true
-}
-
-const handleTransfer = () => {
-  resetForms()
-  transferDialogVisible.value = true
-}
-
-const handleViewSn = (row) => {
-  currentSn.value = row
-  snDetailVisible.value = true
-}
-
-const onProductChange = () => {
-  inboundForm.quantity = 1
-}
-
-const onOutProductChange = () => {
-  outboundForm.snCode = ''
-  outboundForm.quantity = 1
-}
-
-const handleInboundSubmit = async () => {
-  if (!inboundForm.storeId) {
-    ElMessage.warning('请选择入库门店')
-    return
-  }
-  if (!inboundForm.productId) {
-    ElMessage.warning('请选择商品')
-    return
-  }
-
-  submitLoading.value = true
-  try {
-    const data = {
-      storeId: inboundForm.storeId,
-      productId: inboundForm.productId,
-      pnCode: inboundForm.pnCode,
-      snCode: inboundForm.snCode,
-      quantity: inboundForm.quantity,
-      remark: inboundForm.remark
+  source.forEach(item => {
+    const quantity = Number(item?.[field] || 0)
+    if (quantity <= 0) return
+    const key = `${item.store_id || item.store_name || 'unknown'}|${item.location_id || 'none'}`
+    if (!grouped.has(key)) {
+      grouped.set(key, {
+        key,
+        store_name: [item.store_name || item.store_id || '未知门店', item.location_name || '未指定仓位'].filter(Boolean).join(' / '),
+        quantity: 0,
+        resource_breakdown: field === 'normal_qty',
+        full_resource_qty: 0,
+        subsidy_only_qty: 0,
+        no_subsidy_qty: 0
+      })
     }
-    const res = await api.inbound(data)
+    const target = grouped.get(key)
+    target.quantity += quantity
+    if (field === 'normal_qty') {
+      target.full_resource_qty += Number(item?.full_resource_qty || 0)
+      target.subsidy_only_qty += Number(item?.subsidy_only_qty || 0)
+      target.no_subsidy_qty += Number(item?.no_subsidy_qty || 0)
+    }
+  })
+
+  return [...grouped.values()].sort((a, b) => b.quantity - a.quantity)
+}
+
+const loadSummary = async ({ append = false } = {}) => {
+  summaryHasSearched.value = true
+  summaryLoading.value = true
+  try {
+    const res = await api.getInventoryList(summaryQuery)
     if (res.code === 0) {
-      ElMessage.success('入库成功')
-      inboundDialogVisible.value = false
-      loadData()
-      loadSnData()
+      const rows = res.data?.list || []
+      summaryData.value = append ? [...summaryData.value, ...rows] : rows
+      summaryTotal.value = res.data?.pagination?.total || res.data?.total || 0
+    }
+  } catch (err) {
+    ElMessage.error('加载库存数据失败')
+  } finally {
+    summaryLoading.value = false
+  }
+}
+
+const loadMoreSummary = async () => {
+  if (!isSummaryQuickModelFilter.value || summaryLoading.value || summaryData.value.length >= summaryTotal.value) return
+  summaryQuery.page += 1
+  await loadSummary({ append: true })
+}
+
+const loadTransferStores = async () => {
+  if (transferStoresLoaded.value) return
+  try {
+    const res = await api.getTransferStores()
+    if (res && res.code === 0 && Array.isArray(res.data)) {
+      transferStores.value = res.data
+      transferStoresLoaded.value = true
+    }
+  } catch (err) {
+    ElMessage.error('加载调拨门店失败')
+  }
+}
+
+const loadFreightPlatforms = async () => {
+  try {
+    const res = await api.getFreightPlatforms()
+    if (res.code === 0) freightPlatforms.value = res.data || []
+  } catch (err) {
+    freightPlatforms.value = []
+  }
+}
+
+const selectInventoryProductType = (productType) => {
+  summaryQuery.productType = summaryQuery.productType === productType ? '' : productType
+  summaryQuery.category = ''
+  summaryQuery.page = 1
+  if (!summaryQuery.productType) summaryQuery.modelFilter = ''
+  summaryQuery.pageSize = ['hot7', 'highMargin7'].includes(summaryQuery.modelFilter) ? 10 : 20
+  loadSummary()
+}
+
+const selectInventoryModelFilter = (modelFilter) => {
+  if (!summaryQuery.productType) return
+  summaryQuery.modelFilter = summaryQuery.modelFilter === modelFilter ? '' : modelFilter
+  summaryQuery.page = 1
+  summaryQuery.pageSize = ['hot7', 'highMargin7'].includes(summaryQuery.modelFilter) ? 10 : 20
+  loadSummary()
+}
+
+const loadSummaryStores = async () => {
+  if (summaryStoresLoaded.value) return
+  try {
+    const res = await api.getInventorySummaryStoreList()
+    if (res && res.code === 0 && Array.isArray(res.data)) {
+      summaryStores.value = res.data
+      summaryStoresLoaded.value = true
+    } else {
+      summaryStores.value = []
+    }
+  } catch (err) {
+    summaryStores.value = []
+  }
+}
+
+const chooseSupplierFile = (vendor) => {
+  supplierImportVendor.value = vendor
+  if (supplierFileInput.value) {
+    supplierFileInput.value.value = ''
+    supplierFileInput.value.click()
+  }
+}
+
+const handleSupplierFileChange = async (event) => {
+  const file = event.target.files?.[0]
+  if (!file) return
+  supplierImporting.value = true
+  try {
+    const res = await api.importSupplierInventory(file, supplierImportVendor.value)
+    ElMessage.success(res.message || `${supplierImportVendor.value === 'changhong' ? '佳华' : '汇一'}库存导入成功`)
+    await loadSummary()
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || err.message || '服务商库存导入失败')
+  } finally {
+    supplierImporting.value = false
+  }
+}
+
+const handleExportSummary = async () => {
+  summaryExporting.value = true
+  try {
+    await api.exportInventoryList({ ...summaryQuery })
+    ElMessage.success('库存汇总导出成功')
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '库存汇总导出失败')
+  } finally {
+    summaryExporting.value = false
+  }
+}
+
+const loadSnInventoryResourceOptions = async () => {
+  try {
+    const res = await api.getResourceCategories({ activeOnly: 1 })
+    snInventoryResourceOptions.value = (res.data || []).map(row => ({
+      label: row.short_name || row.name,
+      value: row.category_code
+    }))
+  } catch (err) {
+    snInventoryResourceOptions.value = []
+  }
+}
+
+const loadSnInventoryLocations = async () => {
+  snInventoryLocations.value = []
+  if (!snInventoryQuery.storeId) return
+  try {
+    const res = await api.getLocationsByStore(snInventoryQuery.storeId)
+    snInventoryLocations.value = Array.isArray(res.data) ? res.data : []
+  } catch (err) {
+    ElMessage.error('加载库位失败')
+  }
+}
+
+const canStartSnPurchase = row => (
+  row?.status === 'in_stock' && ['display_qty', 'rental_demo_qty'].includes(String(row.location_type || row.inventory_type || ''))
+)
+
+const resetSnPurchaseForm = () => {
+  Object.assign(snPurchaseForm, {
+    grossProfitCostMode: '',
+    snId: '', snCode: '', productId: '', productName: '', productCode: '', pnCode: '',
+    storeId: '', storeName: '', sourceLocationName: '', supplierId: '', price: 0,
+    goodsTypeId: '', paymentMethod: 'COMPANY_CREDIT', invoiceType: '', targetLocationId: '', remark: '', rebateDeduction: 0
+  })
+  snPurchaseRebateBalance.value = 0
+  snPurchaseTargetLocations.value = []
+}
+
+const normalizeSnPurchaseRebate = () => {
+  snPurchaseForm.rebateDeduction = Math.min(
+    Math.max(0, Number(snPurchaseForm.rebateDeduction || 0)),
+    snPurchaseRebateCap.value
+  )
+}
+
+const onSnPurchaseSupplierChange = async supplierId => {
+  const supplier = snPurchaseSuppliers.value.find(item => item.supplier_id === supplierId)
+  snPurchaseForm.grossProfitCostMode = supplier?.purchase_cost_mode_default || (snPurchaseCostModes.value.length === 1 ? snPurchaseCostModes.value[0] : '')
+  snPurchaseForm.rebateDeduction = 0
+  snPurchaseRebateBalance.value = 0
+  if (!supplierId) return
+  try {
+    const res = await api.getRebateBalance({ supplierId })
+    snPurchaseRebateBalance.value = res.code === 0 ? Number(res.data?.balance || 0) : 0
+  } catch (_) {
+    ElMessage.warning('未能读取供应商返利余额')
+  }
+}
+
+const openSnPurchase = async row => {
+  resetSnPurchaseForm()
+  Object.assign(snPurchaseForm, {
+    snId: row.sn_id,
+    snCode: row.sn_code,
+    productId: row.product_id,
+    productName: row.product_name,
+    productCode: row.product_code || '',
+    pnCode: row.pn_code || '',
+    storeId: row.store_id,
+    storeName: row.store_name,
+    sourceLocationName: row.location_name
+  })
+  snPurchaseVisible.value = true
+  try {
+    const [supplierRes, goodsTypeRes, locationRes] = await Promise.all([
+      api.getAllSuppliers(),
+      api.getGoodsTypes({ activeOnly: 1 }),
+      api.getLocationsByStore(row.store_id)
+    ])
+    snPurchaseSuppliers.value = supplierRes.data || []
+    snPurchaseGoodsTypes.value = goodsTypeRes.data || []
+    snPurchaseTargetLocations.value = (locationRes.data || []).filter(location => ['normal_qty', 'demo_qty'].includes(location.type))
+    if (snPurchaseGoodsTypes.value.length === 1) snPurchaseForm.goodsTypeId = snPurchaseGoodsTypes.value[0].goods_type_id
+    if (snPurchaseTargetLocations.value.length === 1) snPurchaseForm.targetLocationId = snPurchaseTargetLocations.value[0].location_id
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '加载采购申请选项失败')
+  }
+}
+
+const submitSnPurchase = async () => {
+  if (!snPurchaseForm.supplierId) return ElMessage.warning('请选择供应商')
+  if (!snPurchaseCostModes.value.includes(snPurchaseForm.grossProfitCostMode)) return ElMessage.warning('请选择供应商允许的毛利计价方式')
+  if (!['专票13%', '收据'].includes(snPurchaseForm.invoiceType)) return ElMessage.warning('请选择采购凭证类型')
+  if (!snPurchaseForm.goodsTypeId) return ElMessage.warning('请选择货型')
+  if (!snPurchaseForm.targetLocationId) return ElMessage.warning('请选择目标库位')
+  if (Number(snPurchaseForm.price) < 0) return ElMessage.warning('采购价不能小于0')
+  normalizeSnPurchaseRebate()
+  if (Number(snPurchaseForm.rebateDeduction || 0) > snPurchaseRebateBalance.value) {
+    return ElMessage.warning('返利抵扣不能超过供应商返利余额')
+  }
+  const goodsType = snPurchaseGoodsTypes.value.find(item => item.goods_type_id === snPurchaseForm.goodsTypeId)
+  snPurchaseSubmitting.value = true
+  try {
+    const res = await api.createPurchaseRequest({
+      supplierId: snPurchaseForm.supplierId,
+      storeId: snPurchaseForm.storeId,
+      invoiceType: snPurchaseForm.invoiceType,
+      paymentMethod: snPurchaseForm.paymentMethod,
+      goodsTypeId: snPurchaseForm.goodsTypeId,
+      productType: goodsType?.name || '',
+      remark: snPurchaseForm.remark || `特殊仓SN采购：${snPurchaseForm.snCode}`,
+      rebateDeduction: Number(snPurchaseForm.rebateDeduction || 0),
+      items: [{
+        productId: snPurchaseForm.productId,
+        productName: snPurchaseForm.productName,
+        productCode: snPurchaseForm.productCode,
+        pnCode: snPurchaseForm.pnCode,
+        quantity: 1,
+        price: Number(snPurchaseForm.price || 0),
+        rebateDeduction: Number(snPurchaseForm.rebateDeduction || 0),
+        goodsTypeId: snPurchaseForm.goodsTypeId,
+        productType: goodsType?.name || '',
+        sourceSnId: snPurchaseForm.snId,
+        grossProfitCostMode: snPurchaseForm.grossProfitCostMode,
+        targetLocationId: snPurchaseForm.targetLocationId,
+        storeAllocations: [{
+          storeId: snPurchaseForm.storeId,
+          quantity: 1,
+          locationAllocations: [{ locationId: snPurchaseForm.targetLocationId, quantity: 1 }]
+        }]
+      }]
+    })
+    ElMessage.success(res.message || '采购申请提交成功')
+    snPurchaseVisible.value = false
+    await loadSnInventory()
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '提交采购申请失败')
+  } finally {
+    snPurchaseSubmitting.value = false
+  }
+}
+
+const loadInboundLocations = async (storeId, { required = false, transfer = false } = {}) => {
+  const normalizedStoreId = String(storeId || '').trim()
+  inboundLocations.value = []
+  if (!normalizedStoreId) {
+    if (required) ElMessage.warning('入库单未关联有效门店，无法加载库位')
+    return []
+  }
+  try {
+    const res = await api.getLocationsByStore(normalizedStoreId, transfer ? { scope: 'transfer' } : undefined)
+    const locations = Array.isArray(res.data) ? res.data : []
+    inboundLocations.value = locations
+    if (required && locations.length === 0) {
+      ElMessage.warning('当前门店没有启用库位，请先在系统设置中启用库位')
+    }
+    return locations
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '加载库位失败')
+    return []
+  }
+}
+
+const loadSnInventory = async () => {
+  snInventoryLoading.value = true
+  try {
+    const params = {
+      ...snInventoryQuery,
+      minAgeDays: snInventoryQuery.minAgeDays ?? '',
+      maxAgeDays: snInventoryQuery.maxAgeDays ?? ''
+    }
+    const res = await api.getSnInventoryList(params)
+    if (res.code === 0) {
+      snInventoryData.value = res.data?.list || []
+      snInventoryTotal.value = res.data?.pagination?.total || res.data?.total || 0
+    }
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '加载SN库存清单失败')
+  } finally {
+    snInventoryLoading.value = false
+  }
+}
+
+const handleExportSnInventory = async () => {
+  snInventoryExporting.value = true
+  try {
+    await api.exportSnInventoryList({
+      ...snInventoryQuery,
+      minAgeDays: snInventoryQuery.minAgeDays ?? '',
+      maxAgeDays: snInventoryQuery.maxAgeDays ?? ''
+    })
+    ElMessage.success('SN库存清单导出成功')
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || 'SN库存清单导出失败')
+  } finally {
+    snInventoryExporting.value = false
+  }
+}
+
+const batchCostModeText = row => {
+  try { const data = typeof row.raw_json === 'string' ? JSON.parse(row.raw_json) : row.raw_json
+    const label = mode => ({ COMPANY_PRICE: '按公司定价', PURCHASE_PRICE: '按采购价' }[mode] || '未设置')
+    return label(data?._costMode?.before) + ' → ' + label(data?._costMode?.target)
+  } catch { return '数据不可用' }
+}
+const batchOperationText = (type) => ({
+  INBOUND: '批量入库',
+  OUTBOUND: '批量出库',
+  ADJUST: '数量调整', COST_MODE: 'SN计价方式调整'
+})[type] || type || '-'
+
+const batchStatusText = (status) => ({
+  pending: '待审批',
+  executing: '执行中',
+  executed: '已执行',
+  partially_executed: '部分执行',
+  rejected: '已拒绝',
+  execute_failed: '执行失败'
+})[status] || status || '-'
+
+const batchStatusType = (status) => ({
+  pending: 'warning',
+  executing: 'primary',
+  executed: 'success',
+  partially_executed: 'warning',
+  rejected: 'info',
+  execute_failed: 'danger'
+})[status] || ''
+
+const batchItemStatusText = (status) => ({
+  pending: '待执行',
+  success: '已执行',
+  failed: '执行失败'
+})[status] || '待执行'
+
+const batchItemStatusType = (status) => ({
+  pending: 'info',
+  success: 'success',
+  failed: 'danger'
+})[status] || 'info'
+
+const parseResourceTypesText = (value) => {
+  if (!value) return '-'
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) && parsed.length ? parsed.join('、') : '-'
+  } catch (err) {
+    return String(value)
+  }
+}
+
+const loadBatchApplications = async () => {
+  batchLoading.value = true
+  try {
+    const res = await api.getInventoryBatchApplications(batchQuery)
+    if (res.code === 0) {
+      batchApplications.value = res.data?.list || []
+      batchTotal.value = res.data?.pagination?.total || res.data?.total || 0
+    }
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '加载批量维护申请失败')
+  } finally {
+    batchLoading.value = false
+  }
+}
+
+const openBatchImportDialog = async () => {
+  resetBatchPreview()
+  batchImportDialogVisible.value = true
+  batchImportFile.value = null
+  batchImportErrors.value = []
+  batchImportResult.visible = false
+  batchImportResult.success = 0
+  batchImportResult.failed = 0
+  if (snInventoryResourceOptions.value.length === 0) {
+    await loadSnInventoryResourceOptions()
+  }
+}
+
+watch([() => batchForm.operationType, () => batchForm.importMode, () => batchForm.inventoryType, () => batchForm.resourceTypes.join(',')], () => {
+  if (batchPreviewRows.value.length || batchImportLoading.value) {
+    resetBatchPreview()
+    batchImportErrors.value = []
+  }
+}, { flush: 'sync' })
+
+const downloadBatchTemplate = () => {
+  if (batchForm.operationType === 'COST_MODE') {
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([{ SN: '', 计价方式: '按公司定价', 调整原因: '' }]), 'SN计价方式调整')
+    XLSX.writeFile(wb, 'SN计价方式调整模板.xlsx')
+    return
+  }
+  const isSn = batchForm.importMode === 'SN'
+  const baseHeaders = isSn
+    ? ['门店ID', '商品编码', 'PN', 'SN', '提货价', '备注']
+    : ['门店ID', '商品编码', 'PN', '数量', '提货价', '备注']
+  const example = isSn ? {
+    门店ID: stores.value[0]?.store_id || '',
+    商品编码: '',
+    PN: '',
+    SN: 'SN商品必填',
+    提货价: batchForm.operationType === 'INBOUND' ? 0 : '',
+    备注: ''
+  } : {
+    门店ID: stores.value[0]?.store_id || '',
+    商品编码: '',
+    PN: '',
+    数量: batchForm.operationType === 'ADJUST' ? '正数增加，负数减少' : 1,
+    提货价: batchForm.operationType === 'INBOUND' ? 0 : '',
+    备注: ''
+  }
+  if (batchForm.operationType === 'INBOUND') {
+    baseHeaders.splice(-1, 0, '采购票种')
+    example.采购票种 = ''
+  }
+  const ws = XLSX.utils.json_to_sheet([example], { header: baseHeaders })
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, '批量维护')
+  if (batchForm.operationType === 'INBOUND') {
+    const types = XLSX.utils.aoa_to_sheet([['采购票种可填值'], ['收据'], ['专票13%']])
+    XLSX.utils.book_append_sheet(wb, types, '采购票种说明')
+  }
+  XLSX.writeFile(wb, `${batchOperationText(batchForm.operationType)}_${isSn ? 'SN商品' : '非SN商品'}模板.xlsx`)
+}
+
+const handleBatchFileChange = async (uploadFile) => {
+  if (batchImportLoading.value) return
+  resetBatchPreview()
+  batchImportFile.value = uploadFile.raw || null
+  batchImportErrors.value = []
+  batchImportResult.visible = false
+}
+
+const clearBatchImportFile = () => {
+  if (batchImportLoading.value) return
+  resetBatchPreview()
+  batchImportFile.value = null
+  batchImportErrors.value = []
+  batchImportResult.visible = false
+}
+
+const validateBatchImportForm = () => {
+  if (!batchForm.operationType) return '请选择操作类型'
+  if (batchForm.operationType !== 'COST_MODE' && !batchForm.importMode) return '请选择导入类型'
+  if (batchForm.operationType !== 'COST_MODE' && !batchForm.inventoryType) return '请选择统一仓位'
+  if (batchForm.operationType === 'INBOUND' && batchForm.resourceTypes.length === 0) {
+    return '请选择资源权益'
+  }
+  if (!batchImportFile.value) return '请选择导入文件'
+  return ''
+}
+
+const submitBatchImport = async () => {
+  const message = validateBatchImportForm()
+  if (message) {
+    ElMessage.warning(message)
+    return
+  }
+  const inbound = batchForm.operationType === 'INBOUND'
+  const previewOnly = inbound && batchPreviewRows.value.length === 0
+  if (inbound && !previewOnly && (missingBatchInvoiceCount.value || !batchPreviewHasValidRows.value)) return
+  const sequence = batchPreviewSequence
+  batchImportLoading.value = true
+  try {
+    const res = await api.importInventoryBatchApplication(batchImportFile.value, {
+      operationType: batchForm.operationType,
+      importMode: batchForm.operationType === 'COST_MODE' ? 'SN' : batchForm.importMode,
+      inventoryType: batchForm.operationType === 'COST_MODE' ? '' : batchForm.inventoryType,
+      resourceTypes: batchForm.operationType === 'INBOUND' ? batchForm.resourceTypes.join(',') : '',
+      triggerResourceRights: 0,
+      remark: batchForm.remark || '',
+      ...(previewOnly ? { previewOnly: '1' } : inbound ? {
+        invoiceOverrides: JSON.stringify(batchPreviewRows.value.map(({ rowNo, invoiceType }) => ({ rowNo, invoiceType })))
+      } : {})
+    })
+    if (res.code === 0) {
+      const data = res.data || {}
+      if (previewOnly) {
+        if (sequence !== batchPreviewSequence) return
+        batchPreviewRows.value = data.rows || []
+        batchInvoiceTypes.value = data.invoiceTypes || []
+        batchImportErrors.value = data.errors || []
+        batchPreviewHasValidRows.value = batchPreviewRows.value.length > batchImportErrors.value.length
+        return
+      }
+      batchImportErrors.value = data.errors || []
+      resetBatchPreview()
+      batchImportResult.visible = true
+      batchImportResult.success = data.validRows || 0
+      batchImportResult.failed = data.errorRows || 0
+      ElMessage.success(data.message || res.message || '批量维护申请已生成')
+      if (batchImportResult.failed === 0) batchImportDialogVisible.value = false
+      batchImportFile.value = null
+      loadBatchApplications()
+    }
+  } catch (err) {
+    const data = err.response?.data?.data
+    batchImportErrors.value = data?.errors || []
+    batchImportResult.visible = batchImportErrors.value.length > 0
+    batchImportResult.success = 0
+    batchImportResult.failed = batchImportErrors.value.length
+    const first = batchImportErrors.value.slice(0, 3).map(item => `第${item.rowNo}行：${item.message}`).join('；')
+    const isTimeout = err.code === 'ECONNABORTED' || err.code === 'ETIMEDOUT' || String(err.message || '').includes('timeout')
+    ElMessage.error(first || err.response?.data?.message || (isTimeout ? '导入处理时间较长，请先刷新申请列表确认结果，勿重复提交' : '导入失败'))
+  } finally {
+    batchImportLoading.value = false
+  }
+}
+
+const downloadBatchImportErrors = () => {
+  if (batchImportErrors.value.length === 0) return
+  const rows = batchImportErrors.value.map(item => ({
+    行号: item.rowNo,
+    异常原因: item.message,
+    ...(item.raw || {})
+  }))
+  const ws = XLSX.utils.json_to_sheet(rows)
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, '异常记录')
+  XLSX.writeFile(wb, '批量维护导入异常记录.xlsx')
+}
+
+const openBatchDetail = async (row) => {
+  try {
+    const res = await api.getInventoryBatchApplicationDetail(row.application_id)
+    if (res.code === 0) {
+      currentBatchApplication.value = res.data
+      batchDetailVisible.value = true
+    }
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '加载批量维护详情失败')
+  }
+}
+
+const reviewBatch = async (row, action) => {
+  const title = action === 'approve' ? '通过批量维护申请' : '拒绝批量维护申请'
+  try {
+    const { value } = await ElMessageBox.prompt('审批意见', title, {
+      confirmButtonText: action === 'approve' ? '确认通过并执行' : '确认拒绝',
+      cancelButtonText: '取消',
+      inputType: 'textarea',
+      inputPlaceholder: action === 'approve' ? '可选' : '请输入拒绝原因'
+    })
+    if (action === 'reject' && !String(value || '').trim()) {
+      ElMessage.warning('拒绝时必须填写原因')
+      return
+    }
+    const res = await api.reviewInventoryBatchApplication(row.application_id, { action, comment: value || '' })
+    if (res.code === 0) {
+      ElMessage.success(res.data?.message || res.message || '审批完成')
+      loadBatchApplications()
+      if (batchDetailVisible.value && currentBatchApplication.value?.application_id === row.application_id) {
+        batchDetailVisible.value = false
+      }
+    }
+  } catch (err) {
+    if (err === 'cancel' || err === 'close') return
+    ElMessage.error(err.response?.data?.message || '审批失败')
+  }
+}
+
+const querySnInventory = () => {
+  snInventoryQuery.page = 1
+  loadSnInventory()
+}
+
+const onSnInventoryStoreChange = async () => {
+  snInventoryQuery.locationId = ''
+  await loadSnInventoryLocations()
+  querySnInventory()
+}
+
+const resetSnInventoryQuery = async () => {
+  Object.assign(snInventoryQuery, {
+    page: 1,
+    keyword: '',
+    productName:'',manufacturerCode:'',manufacturerConfig:'',snCode:'',
+    storeId: '',
+    locationId: '',
+    status: '',
+    resourceType: '',
+    resourceStatus: '',
+    specialOnly: '',
+    minAgeDays: undefined,
+    maxAgeDays: undefined
+  })
+  await loadSnInventoryLocations()
+  loadSnInventory()
+}
+
+const openSnSpecialPrice = (row) => {
+  Object.assign(snSpecialPriceForm, {
+    snId: row.sn_id,
+    snCode: row.sn_code,
+    productName: row.product_name,
+    unifiedSalePrice: Number(row.unified_sale_price || 0),
+    minSalePrice: Number(row.min_sale_price || 0),
+    specialPrice: Number(row.special_price || row.effective_sale_price || 0),
+    remark: row.special_price_remark || '',
+    isSpecial: Boolean(row.is_special_price)
+  })
+  snSpecialPriceVisible.value = true
+}
+
+const saveSnSpecialPrice = async () => {
+  if (!Number(snSpecialPriceForm.specialPrice) || Number(snSpecialPriceForm.specialPrice) <= 0) {
+    ElMessage.warning('请输入大于0的SN特价')
+    return
+  }
+  snSpecialPriceSaving.value = true
+  try {
+    const res = await api.setSnSpecialPrice(snSpecialPriceForm.snId, {
+      specialPrice: snSpecialPriceForm.specialPrice,
+      remark: snSpecialPriceForm.remark
+    })
+    ElMessage.success(res.data?.requiresPriceApproval ? '特价已保存；销售时将进入低价审批' : 'SN特价已保存')
+    snSpecialPriceVisible.value = false
+    loadSnInventory()
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '保存SN特价失败')
+  } finally {
+    snSpecialPriceSaving.value = false
+  }
+}
+
+const cancelSnSpecialPrice = async (row) => {
+  try {
+    const { value } = await ElMessageBox.prompt(
+      `取消 ${row.sn_code} 的SN特价后，将立即回退为最新统一售价。`,
+      '取消SN特价',
+      { inputPlaceholder: '可填写取消原因', confirmButtonText: '确认取消', cancelButtonText: '返回' }
+    )
+    await api.cancelSnSpecialPrice(row.sn_id, { remark: value || '' })
+    ElMessage.success('SN特价已取消')
+    loadSnInventory()
+  } catch (err) {
+    if (err !== 'cancel') ElMessage.error(err.response?.data?.message || '取消SN特价失败')
+  }
+}
+
+const openSnPriceHistory = async (row) => {
+  snPriceHistoryVisible.value = true
+  snPriceHistoryLoading.value = true
+  snPriceHistorySnCode.value = row.sn_code
+  snPriceHistoryData.value = []
+  try {
+    const res = await api.getSnSpecialPriceHistory(row.sn_id)
+    snPriceHistoryData.value = res.data || []
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '加载SN特价记录失败')
+  } finally {
+    snPriceHistoryLoading.value = false
+  }
+}
+
+const formatMoney = value => Number(value || 0).toFixed(2)
+const resourceStatusType = status => ({
+  AVAILABLE: 'success',
+  LOCKED: 'warning',
+  USED: 'info',
+  CLAIMED_BACK: 'danger',
+  EXCEPTION: 'danger'
+}[status] || 'info')
+const snPriceActionText = action => ({ SET: '设置', UPDATE: '修改', CANCEL: '取消' }[action] || action)
+
+// 入库单列表
+const loadInboundList = async () => {
+  try {
+    const res = await api.getInboundList(inboundQuery)
+    if (res.code === 0) {
+      inboundList.value = res.data?.list || []
+      inboundTotal.value = res.data?.pagination?.total || res.data?.total || 0
+    }
+  } catch (err) {
+    ElMessage.error('加载入库单列表失败')
+  }
+}
+
+const searchInboundByNo = () => {
+  inboundQuery.page = 1
+  loadInboundList()
+}
+
+const isTransferInboundRow = row => String(row?.source_type || '').trim().toUpperCase() === 'TRANSFER'
+
+const loadReturnList = async ({ trace = false } = {}) => {
+  try {
+    const res = await api.getReturnList({ ...returnQuery, ...(trace ? { trace: '1' } : {}) })
+    if (res.code === 0) {
+      returnList.value = res.data?.list || []
+      returnTotal.value = res.data?.pagination?.total || res.data?.total || 0
+    }
+  } catch (err) {
+    ElMessage.error('加载退库申请失败')
+  }
+}
+
+const searchReturnByNo = () => {
+  returnQuery.page = 1
+  loadReturnList()
+}
+
+const viewInboundDetail = async (row, { snTrace = false } = {}) => {
+  try {
+    const res = snTrace
+      ? await api.getSnTraceInboundDetail(row.inbound_id)
+      : await api.getInboundDetail(row.inbound_id)
+    if (res.code === 0) {
+      currentInbound.value = res.data
+      await loadInboundLocations(res.data.store_id || res.data.storeId || res.data.Store?.store_id)
+      inboundDetailVisible.value = true
+    }
+  } catch (err) {
+    ElMessage.error('获取详情失败')
+  }
+}
+
+// 打开执行入库对话框
+const openExecuteDialog = async (row) => {
+  try {
+    const res = await api.getInboundDetail(row.inbound_id)
+    if (res.code === 0) {
+      currentInbound.value = res.data
+      const inboundStoreId = res.data.store_id || res.data.storeId || res.data.Store?.store_id
+      const isTransferInbound = String(res.data.source_type || '').toUpperCase() === 'TRANSFER'
+      const locations = await loadInboundLocations(inboundStoreId, { required: true, transfer: isTransferInbound })
+      if (locations.length === 0) return
+
+      const pnMap = res.data.product_pns || {}
+      const defaultTransferLocation = isTransferInbound
+        ? (inboundLocations.value.find(location => location.type === 'normal_qty')
+          || inboundLocations.value.find(location => Number(location.is_sellable) === 1)
+          || inboundLocations.value[0])
+        : null
+      const defaultTransferLocationId = defaultTransferLocation?.location_id || ''
+
+      const productGroups = []
+      for (const item of (res.data.items || [])) {
+        const needSn = Number(item.need_sn) === 1
+        const needImei = Number(item.need_imei) === 1
+        const rawRemainingQuantity = item.remaining_quantity ?? item.remainingQuantity ?? item.quantity
+        const qty = Math.max(0, Number(rawRemainingQuantity) || 0)
+        if (qty <= 0) continue
+        const pns = pnMap[item.product_id] || []
+
+        const group = {
+          inboundItemId: item.item_id,
+          productId: item.product_id,
+          productName: item.product_name,
+          needSn,
+          needImei,
+          transferInbound: isTransferInbound,
+          receiveEnabled: true,
+          quantity: qty,
+          locationId: item.location_id || defaultTransferLocationId,
+          locationName: item.location_name || defaultTransferLocation?.name || '',
+          pnCode: item.pn_code || (pns.length > 0 ? pns[0].pn_code : ''),
+          pns: pns,
+          snRows: [],
+          qtyRows: []
+        }
+
+        if (needSn) {
+          for (let i = 0; i < qty; i++) {
+            group.snRows.push({
+              snId: isTransferInbound ? (item.sn_id || item.snId || '') : '',
+              snCode: isTransferInbound
+                ? (item.sn_code || item.snCode || '')
+                : (qty > 0 && Number(item.remaining_quantity ?? item.remainingQuantity ?? 0) > 0
+                  ? ''
+                  : (item.sn_code || item.snCode || '')),
+              locationId: item.location_id || defaultTransferLocationId,
+              imei1: '',
+              imei2: '',
+              remark: ''
+            })
+          }
+        } else {
+          group.qtyRows.push({
+            locationId: item.location_id || defaultTransferLocationId,
+            quantity: qty,
+            remark: ''
+          })
+        }
+
+        productGroups.push(group)
+      }
+
+      if (productGroups.length === 0) {
+        ElMessage.info('当前入库单没有待入库商品')
+        return
+      }
+
+      executeProducts.value = productGroups
+      restoreInboundDraft()
+      if (isTransferInbound && defaultTransferLocationId) {
+        for (const group of executeProducts.value) {
+          if (!group.locationId) group.locationId = defaultTransferLocationId
+          if (!group.locationName) group.locationName = defaultTransferLocation?.name || ''
+          for (const row of group.snRows || []) {
+            if (!row.locationId) row.locationId = defaultTransferLocationId
+          }
+          for (const row of group.qtyRows || []) {
+            if (!row.locationId) row.locationId = defaultTransferLocationId
+          }
+        }
+      }
+      executeInboundVisible.value = true
+    }
+  } catch (err) {
+    ElMessage.error('获取详情失败')
+  }
+}
+
+const removeSnRow = (item, index) => {
+  if (!item?.snRows?.length) return
+  item.snRows.splice(index, 1)
+}
+
+const addQtyRow = (item) => {
+  const remaining = item.quantity - allocatedQty(item)
+  item.qtyRows.push({
+    locationId: '',
+    quantity: Math.max(1, remaining),
+    remark: ''
+  })
+}
+
+const onQtyChange = (item) => {
+  // Vue reactivity handles this; computed allocation shown in template
+}
+
+const allocatedQty = (item) => {
+  return (item.qtyRows || []).reduce((sum, r) => sum + (parseInt(r.quantity) || 0), 0)
+}
+
+const submitInbound = async () => {
+  const items = []
+  const seenSn = new Set()
+  const deferredItemIds = []
+
+  for (const product of executeProducts.value) {
+    if (product.receiveEnabled === false) {
+      deferredItemIds.push(product.inboundItemId)
+      continue
+    }
+    if (product.needSn) {
+      const snRows = product.snRows || []
+      const maxQuantity = Number(product.quantity || 0)
+      if (snRows.length > maxQuantity) {
+        ElMessage.warning(`商品 ${product.productName} 的SN行数超过待入库数量，请刷新后重试`)
+        return
+      }
+      for (const snRow of snRows) {
+        const snCode = String(snRow.snCode || '').trim()
+        if (!snCode) continue
+        if (!snRow.locationId) {
+          ElMessage.warning(`商品 ${product.productName} 请选择入库库位`)
+          return
+        }
+        if (product.needImei && (!String(snRow.imei1 || '').trim() || !String(snRow.imei2 || '').trim())) {
+          ElMessage.warning(`手机商品 ${product.productName} 必须填写IMEI1和IMEI2`)
+          return
+        }
+        const snKey = `${product.productId}|${product.pnCode || ''}|${snCode}`.toLowerCase()
+        if (seenSn.has(snKey)) {
+          ElMessage.warning(`SN码 ${snCode} 重复，请检查`)
+          return
+        }
+        seenSn.add(snKey)
+        items.push({
+          inboundItemId: product.inboundItemId,
+          productId: product.productId,
+          pnCode: product.pnCode || '',
+          snId: snRow.snId || '',
+          snCode,
+          imei1: String(snRow.imei1 || '').trim(),
+          imei2: String(snRow.imei2 || '').trim(),
+          quantity: 1,
+          locationId: snRow.locationId || '',
+          remark: snRow.remark
+        })
+      }
+      const receivedSnCount = snRows.filter(row => String(row.snCode || '').trim()).length
+      if (receivedSnCount === 0) {
+        ElMessage.warning(`商品 ${product.productName} 尚未填写任何SN；如未到货，请切换为“暂缓入库”`)
+        return
+      }
+      if (receivedSnCount < maxQuantity) deferredItemIds.push(product.inboundItemId)
+    } else {
+      for (const qtyRow of product.qtyRows) {
+        const qty = parseInt(qtyRow.quantity) || 0
+        if (qty <= 0) continue
+        if (!qtyRow.locationId) {
+          ElMessage.warning(`商品 ${product.productName} 请选择入库库位`)
+          return
+        }
+        items.push({
+          inboundItemId: product.inboundItemId,
+          productId: product.productId,
+          pnCode: product.pnCode || '',
+          snCode: '',
+          quantity: qty,
+          locationId: qtyRow.locationId || '',
+          remark: qtyRow.remark
+        })
+      }
+
+      const totalAllocated = allocatedQty(product)
+      if (totalAllocated <= 0 || totalAllocated > product.quantity) {
+        ElMessage.warning(`商品 ${product.productName} 本次入库数量应为 1-${product.quantity}`)
+        return
+      }
+      if (totalAllocated < Number(product.quantity || 0)) deferredItemIds.push(product.inboundItemId)
+    }
+  }
+
+  if (items.length === 0) {
+    ElMessage.warning('请至少选择一个已到货商品进行入库')
+    return
+  }
+
+  inboundLoading.value = true
+  try {
+    const signature = JSON.stringify({ inboundId: currentInbound.value.inbound_id, items })
+    if (signature !== inboundReceiptPayload) {
+      inboundReceiptPayload = signature
+      inboundReceiptRequest = `receipt-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    }
+    const res = await api.executeInbound({
+      inboundId: currentInbound.value.inbound_id,
+      requestId: inboundReceiptRequest,
+      items,
+      deferredItemIds: [...new Set(deferredItemIds.filter(Boolean))]
+    })
+
+    if (res.code === 0) {
+      ElMessage.success(res.message || '入库提交成功')
+      clearDraft(inboundDraftKey())
+      executeInboundVisible.value = false
+      loadInboundList()
     } else {
       ElMessage.error(res.message || '入库失败')
     }
   } catch (err) {
-    ElMessage.error('入库失败')
+    const msg = err.response?.data?.message || err.message || '入库失败'
+    ElMessage.error(msg)
   } finally {
-    submitLoading.value = false
+    inboundLoading.value = false
   }
 }
 
-const handleOutboundSubmit = async () => {
-  if (!outboundForm.storeId) {
-    ElMessage.warning('请选择出库门店')
-    return
-  }
-  if (!outboundForm.productId) {
-    ElMessage.warning('请选择商品')
-    return
-  }
+const resetInboundForm = () => {
+  executeProducts.value = []
+  inboundLocations.value = []
+}
 
-  submitLoading.value = true
-  try {
-    const data = {
-      storeId: outboundForm.storeId,
-      productId: outboundForm.productId,
-      snCode: outboundForm.snCode,
-      quantity: outboundForm.quantity,
-      reason: outboundForm.reason,
-      remark: outboundForm.remark
+const saveInboundDraft = () => {
+  const key = inboundDraftKey()
+  if (!key) return
+  saveDraft(key, cloneDraft(executeProducts.value))
+  ElMessage.success('草稿已保存')
+}
+
+const restoreInboundDraft = () => {
+  const key = inboundDraftKey()
+  if (!key) return
+  const draft = loadDraft(key)
+  if (!draft) return
+
+  if (!Array.isArray(draft)) return
+  const draftByItemId = new Map(draft
+    .filter(item => item?.inboundItemId)
+    .map(item => [String(item.inboundItemId), item]))
+  let changed = false
+
+  executeProducts.value = executeProducts.value.map(product => {
+    const saved = draftByItemId.get(String(product.inboundItemId))
+    if (!saved || String(saved.productId || '') !== String(product.productId || '')) return product
+
+    if (product.needSn) {
+      const expectedRows = Math.max(Number(product.quantity || 0), 0)
+      const savedRows = Array.isArray(saved.snRows) ? saved.snRows.slice(0, expectedRows) : []
+      if (savedRows.length !== expectedRows) changed = true
+      while (savedRows.length < expectedRows) {
+        savedRows.push({
+          snId: '',
+          snCode: '',
+          locationId: product.locationId || '',
+          remark: ''
+        })
+      }
+      return {
+        ...product,
+        receiveEnabled: saved.receiveEnabled !== false,
+        pnCode: saved.pnCode || product.pnCode,
+        snRows: savedRows
+      }
     }
-    const res = await api.outbound(data)
+
+    const savedRows = Array.isArray(saved.qtyRows) && saved.qtyRows.length > 0
+      ? saved.qtyRows
+      : product.qtyRows
+    return {
+      ...product,
+      receiveEnabled: saved.receiveEnabled !== false,
+      pnCode: saved.pnCode || product.pnCode,
+      qtyRows: savedRows
+    }
+  })
+
+  if (changed) {
+    ElMessage.warning('历史入库草稿行数与当前待入库数量不一致，已自动补齐输入行')
+  } else {
+    ElMessage.success('已恢复上次草稿')
+  }
+}
+
+const handleExportSummarySimple = async () => {
+  summarySimpleExporting.value = true
+  try {
+    await api.exportInventorySummary({ ...summaryQuery })
+    ElMessage.success('库存简表导出成功')
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '库存简表导出失败')
+  } finally {
+    summarySimpleExporting.value = false
+  }
+}
+
+const openReturnRequestDialog = async (row) => {
+  try {
+    const res = await api.getInboundDetail(row.inbound_id)
+    if (res.code !== 0) throw new Error(res.message || '加载入库单失败')
+    if (res.data.can_request_return !== true) throw new Error(res.data.supplier_return_reason || '该入库单当前不能申请退供应商')
+    currentInbound.value = res.data
+    returnItems.value = (res.data.items || []).map(item => ({ ...item, return_quantity: 0, sn_ids: [] }))
+    returnReason.value = ''
+    executeReturnVisible.value = true
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || err.message || '加载入库单失败')
+  }
+}
+
+const selectAllReturnItems = () => {
+  returnItems.value.forEach(item => {
+    item.return_quantity = Number(item.returnable_quantity || 0)
+    item.sn_ids = Number(item.need_sn) === 1
+      ? (item.return_sn_options || []).slice(0, item.return_quantity).map(sn => sn.sn_id)
+      : []
+  })
+}
+
+const submitReturn = async () => {
+  const selected = returnItems.value.filter(item => Number(item.return_quantity) > 0)
+  if (!selected.length) return ElMessage.warning('请选择需要退库的商品和数量')
+  if (selected.some(item => Number(item.need_sn) === 1 && item.sn_ids.length !== Number(item.return_quantity))) {
+    return ElMessage.warning('SN 商品请选择与退库数量一致的原入库 SN')
+  }
+  returnLoading.value = true
+  try {
+    const res = await api.requestReturn({
+      inboundId: currentInbound.value.inbound_id,
+      reason: returnReason.value,
+      items: selected.map(item => ({ inboundItemId: item.item_id, quantity: item.return_quantity, snIds: item.sn_ids }))
+    })
+
     if (res.code === 0) {
-      ElMessage.success('出库成功')
-      outboundDialogVisible.value = false
-      loadData()
-      loadSnData()
+      ElMessage.success(res.message || '退库申请已提交')
+      executeReturnVisible.value = false
+      loadInboundList()
+      loadReturnList()
     } else {
-      ElMessage.error(res.message || '出库失败')
+      ElMessage.error(res.message || '退库申请失败')
     }
   } catch (err) {
-    ElMessage.error('出库失败')
+    const msg = err.response?.data?.message || err.message || '退库申请失败'
+    ElMessage.error(msg)
   } finally {
-    submitLoading.value = false
+    returnLoading.value = false
   }
 }
 
-const handleTransferSubmit = async () => {
+const approveReturn = async (row, action) => {
+  const isReject = action === 'rejected'
+  try {
+    const result = await ElMessageBox.prompt(
+      isReject ? '请输入拒绝原因' : '可填写审批备注',
+      isReject ? '拒绝退库申请' : '审批退库申请',
+      {
+        confirmButtonText: isReject ? '确认拒绝' : '确认通过',
+        cancelButtonText: '取消',
+        inputType: 'textarea',
+        inputPlaceholder: '审批备注'
+      }
+    )
+    const res = await api.approveReturn({
+      returnId: row.return_id,
+      action,
+      comment: result.value || ''
+    })
+    if (res.code === 0) {
+      ElMessage.success(res.message || '审批成功')
+      loadReturnList()
+    } else {
+      ElMessage.error(res.message || '审批失败')
+    }
+  } catch (err) {
+    if (err !== 'cancel') {
+      const msg = err.response?.data?.message || err.message || '审批失败'
+      ElMessage.error(msg)
+    }
+  }
+}
+
+const executeApprovedReturn = async (row) => {
+  try {
+    await ElMessageBox.confirm(
+      `确认执行退库申请 ${row.return_no} 吗？执行后将扣减库存，所选商品回到待入库；此时不生成负向应付。`,
+      '执行退库',
+      { confirmButtonText: '确认执行', cancelButtonText: '取消', type: 'warning' }
+    )
+    returnLoading.value = true
+    const res = await api.executeReturn({ returnId: row.return_id })
+    if (res.code === 0) {
+      ElMessage.success(res.message || '退库执行成功')
+      loadReturnList()
+      loadInboundList()
+      loadSummary()
+    } else {
+      ElMessage.error(res.message || '退库执行失败')
+    }
+  } catch (err) {
+    if (err !== 'cancel') {
+      const msg = err.response?.data?.message || err.message || '退库执行失败'
+      ElMessage.error(msg)
+    }
+  } finally {
+    returnLoading.value = false
+  }
+}
+
+// 查看序列号
+const openSnResourceDetail = async (row) => {
+  const snId = row.sn_id || row.snId
+  if (!snId) return ElMessage.warning('未找到SN编号，无法查看权益')
+  snResourceDetailVisible.value = true
+  snResourceDetailLoading.value = true
+  snResourceDetail.value = null
+  try {
+    const res = await api.getSnResourceRights(snId)
+    snResourceDetail.value = res.data || res
+  } catch (err) {
+    snResourceDetailVisible.value = false
+    ElMessage.error(err.response?.data?.message || '加载SN权益失败')
+  } finally {
+    snResourceDetailLoading.value = false
+  }
+}
+
+const completeOtherPolicyResource = async (right) => {
+  try {
+    await ElMessageBox.confirm(`确认 SN ${right.sn_code} 的其他政策已获取完成？`, '完成政策资源', { type: 'warning' })
+    await api.completeOtherPolicyResource(right.sn_id)
+    const res = await api.getSnResourceRights(right.sn_id)
+    snResourceDetail.value = res.data?.data || res.data || res
+    ElMessage.success('已标记完成')
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') ElMessage.error(error.response?.data?.message || '标记失败')
+  }
+}
+
+const openSnDialog = (row) => {
+  snProductId.value = row.product_id
+  snProductName.value = row.product_name
+  snFilter.page = 1
+  snFilter.status = ''
+  snFilter.snCode = ''
+  snDialogVisible.value = true
+  loadSnData()
+}
+
+const openSnLocationDialog = async (row) => {
+  snLocationForm.snId = row.sn_id || ''
+  snLocationForm.snCode = row.sn_code || ''
+  snLocationForm.pnCode = row.pn_code || ''
+  snLocationForm.productName = row.product_name || snProductName.value || ''
+  snLocationForm.storeId = row.store_id || ''
+  snLocationForm.storeName = row.store_name || ''
+  snLocationForm.currentLocationId = row.location_id || ''
+  snLocationForm.currentLocationName = row.location_name || '未指定库位'
+  snLocationForm.targetLocationId = ''
+  snLocationOptions.value = []
+  snLocationDialogVisible.value = true
+  snLocationLoading.value = true
+  try {
+    const res = await api.getLocationsByStore(snLocationForm.storeId)
+    if (res.code === 0) {
+      snLocationOptions.value = Array.isArray(res.data) ? res.data : []
+    }
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '加载库位失败')
+  } finally {
+    snLocationLoading.value = false
+  }
+}
+
+const saveSnLocation = async () => {
+  if (!snLocationForm.targetLocationId) {
+    ElMessage.warning('请选择目标库位')
+    return
+  }
+  if (snLocationForm.targetLocationId === snLocationForm.currentLocationId) {
+    ElMessage.warning('目标库位与当前库位相同')
+    return
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      `确认将 SN ${snLocationForm.snCode} 调整到“${snLocationOptions.value.find(item => item.location_id === snLocationForm.targetLocationId)?.name || ''}”吗？`,
+      '确认调整库位',
+      { type: 'warning' }
+    )
+  } catch (err) {
+    return
+  }
+
+  snLocationSaving.value = true
+  try {
+    const res = await api.adjustSnLocation(snLocationForm.snId, {
+      storeId: snLocationForm.storeId,
+      locationId: snLocationForm.targetLocationId
+    })
+    if (res.code === 0) {
+      ElMessage.success(res.message || '库位调整成功')
+      snLocationDialogVisible.value = false
+      loadSnData()
+      loadSnInventory()
+      loadSummary()
+    } else {
+      ElMessage.error(res.message || '库位调整失败')
+    }
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '库位调整失败')
+  } finally {
+    snLocationSaving.value = false
+  }
+}
+
+const loadSnData = async () => {
+  snLoading.value = true
+  try {
+    const res = await api.getSnList({
+      productId: snProductId.value,
+      status: snFilter.status,
+      snCode: snFilter.snCode,
+      page: snFilter.page,
+      pageSize: snFilter.pageSize
+    })
+    if (res.code === 0) {
+      snTableData.value = res.data?.list || []
+      snTotal.value = res.data?.pagination?.total || res.data?.total || 0
+    }
+  } catch (err) {
+    ElMessage.error('加载SN数据失败')
+  } finally {
+    snLoading.value = false
+  }
+}
+
+const startSnEdit = () => {
+  snOriginalCodes.value = {}
+  snTableData.value.forEach((row, idx) => {
+    snOriginalCodes.value[row.sn_id || idx] = row.sn_code
+  })
+  snEditing.value = true
+}
+
+const cancelSnEdit = () => {
+  for (const key in snOriginalCodes.value) {
+    const row = snTableData.value.find(r => (r.sn_id || '') === key || snTableData.value.indexOf(r) === Number(key))
+    if (row) {
+      row.sn_code = snOriginalCodes.value[key]
+    }
+  }
+  snEditing.value = false
+}
+
+const finishSnEdit = async () => {
+  const changed = []
+  for (const row of snTableData.value) {
+    const original = snOriginalCodes.value[row.sn_id] || snOriginalCodes.value[snTableData.value.indexOf(row)]
+    if (original !== undefined && original !== row.sn_code) {
+      if (!row.sn_code || row.sn_code.trim() === '') {
+        ElMessage.warning('SN码不能为空')
+        return
+      }
+      changed.push({ snId: row.sn_id, oldCode: original, newCode: row.sn_code.trim() })
+    }
+  }
+
+  if (changed.length === 0) {
+    snEditing.value = false
+    return
+  }
+
+  const reasonResult = await ElMessageBox.prompt(
+    '请输入SN修改申请原因',
+    '提交SN修改申请',
+    { inputType: 'textarea', inputPlaceholder: '申请原因必填', inputValidator: value => value?.trim() ? true : '申请原因不能为空' }
+  ).catch(() => null)
+  if (!reasonResult) return
+
+  try {
+    await api.submitSnChangeApplication({
+      reason: reasonResult.value.trim(),
+      items: changed
+    })
+    ElMessage.success(`SN修改申请已提交，共 ${changed.length} 条，等待admin或boss审批`)
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '提交SN修改申请失败')
+    return
+  }
+  snEditing.value = false
+  loadSnData()
+}
+
+const finishBatchImport = () => {
+  batchImportDialogVisible.value = false
+  loadBatchApplications()
+}
+
+const loadSnTrace = async (row, snId = '') => {
+  traceSnCode.value = row.sn_code
+  traceDialogVisible.value = true
+  traceLoading.value = true
+  traceTimeline.value = []
+  try {
+    const res = await api.snTrace(row.sn_code, { pnCode: row.pn_code || '', ...(snId ? { snId } : {}) })
+    if (res.code === 0) {
+      if (!snId && (res.data?.candidates || []).length > 1) {
+        traceDialogVisible.value = false
+        traceCandidates.value = res.data.candidates
+        traceCandidateVisible.value = true
+        return
+      }
+      traceTimeline.value = res.data?.timeline || []
+      traceCurrentStatus.value = res.data?.currentStatus || ''
+      traceProductName.value = res.data?.productName || row.product_name || row.product_id || '-'
+    }
+  } catch (err) {
+    ElMessage.error('查询SN追踪失败')
+  } finally {
+    traceLoading.value = false
+  }
+}
+
+const openSnTrace = row => loadSnTrace(row)
+const selectTraceCandidate = row => {
+  traceCandidateVisible.value = false
+  loadSnTrace({ ...row, sn_code: row.snCode, pn_code: row.pnCode, product_name: row.productName, product_id: row.productId }, row.snId)
+}
+
+const goToOrder = async (row) => {
+  traceSnCode.value = row.sn_code
+  traceLoading.value = true
+  try {
+    const res = await api.snTrace(row.sn_code, { pnCode: row.pn_code || '' })
+    if (res.code === 0) {
+      const saleEvents = (res.data?.timeline || []).filter(e => e.type === 'sale')
+      if (saleEvents.length > 0 && saleEvents[0].ref_id) {
+        goToOrderFromTrace(saleEvents[0].ref_id, { trace: true })
+      } else {
+        ElMessage.info('未找到关联的销售订单')
+      }
+    }
+  } catch (err) {
+    ElMessage.error('查询订单失败')
+  } finally {
+    traceLoading.value = false
+  }
+}
+
+const goToOrderFromTrace = (orderId, { trace = false } = {}) => {
+  if (!orderId) return
+  traceDialogVisible.value = false
+  router.push({ name: 'Sales', query: trace ? { orderId, trace: '1' } : { orderId } })
+}
+
+const canOpenTraceReference = (event) => ['purchase_request', 'sales_order', 'transfer_order', 'inbound', 'return_stock'].includes(event?.ref_type)
+
+const traceReferenceButtonLabel = (event) => ({
+  purchase_request: '查看采购单',
+  sales_order: '查看销售单',
+  transfer_order: '查看调拨单',
+  inbound: '查看入库单',
+  return_stock: '查看退库单'
+}[event?.ref_type] || '查看原始单据')
+
+const traceReferenceButtonType = (event) => event?.ref_type === 'inbound' ? 'success' : 'primary'
+
+const goToTraceReference = (event) => {
+  if (!event?.ref_id || !canOpenTraceReference(event)) return
+  if (event.ref_type === 'sales_order') {
+    router.push({ name: 'Sales', query: { orderId: String(event.ref_id), trace: '1' } })
+  } else if (event.ref_type === 'purchase_request') {
+    router.push({ name: 'Purchase', query: { requestId: String(event.ref_id), trace: '1' } })
+  } else if (event.ref_type === 'transfer_order') {
+    router.push({ name: 'Inventory', query: { transferId: String(event.ref_id), trace: '1' } })
+  } else if (event.ref_type === 'inbound') {
+    router.push({ name: 'Inventory', query: { inboundId: String(event.ref_id) } })
+  } else {
+    router.push({ name: 'Inventory', query: { returnId: String(event.ref_id), trace: '1' } })
+  }
+  traceDialogVisible.value = false
+}
+
+const getStoreName = (storeId) => {
+  return stores.value.find(store => store.store_id === storeId)?.name || ''
+}
+
+const openTransferApplyDialog = async () => {
+  resetTransferForm()
+  await loadTransferStores()
+  if (isStoreUser()) {
+    transferForm.fromStoreId = getStoreId()
+    transferForm.fromStoreName = transferStores.value.find(store => store.store_id === transferForm.fromStoreId)?.name || getStoreName(transferForm.fromStoreId)
+  }
+  restoreTransferDraft()
+  transferDialogVisible.value = true
+  if (transferForm.fromStoreId) {
+    await searchTransferProducts('')
+  }
+}
+
+const onTransferFromStoreChange = async (storeId) => {
+  transferForm.fromStoreName = getStoreName(storeId)
+  transferForm.toStoreId = transferForm.toStoreId === storeId ? '' : transferForm.toStoreId
+  transferForm.items = []
+  transferAddForm.productId = ''
+  transferAddForm.snId = ''
+  transferAddForm.pnCode = ''
+  transferAddForm.quantity = 1
+  transferPnOptions.value = []
+  transferProductOptions.value = []
+  transferSnOptions.value = []
+  if (storeId) {
+    await searchTransferProducts('')
+  }
+}
+
+const searchTransferProducts = async (keyword = '') => {
+  if (!transferForm.fromStoreId) {
+    transferProductOptions.value = []
+    return
+  }
+  try {
+    const res = await api.getInventoryList({
+      storeId: transferForm.fromStoreId,
+      scope: 'transfer',
+      keyword,
+      page: 1,
+      pageSize: 50
+    })
+    if (res.code === 0) {
+      transferProductOptions.value = (res.data?.list || []).filter(item => Number(item.normal_qty || 0) > 0)
+    }
+  } catch (err) {
+    ElMessage.error('搜索可调拨商品失败')
+  }
+}
+
+const onTransferProductChange = async () => {
+  transferAddForm.snId = ''
+  transferAddForm.pnCode = ''
+  transferAddForm.quantity = 1
+  transferSnOptions.value = []
+  transferPnOptions.value = []
+  const productId = transferAddForm.productId
+  if (!productId) return
+  transferPnLoading.value = true
+  try {
+    const res = await api.getPnList({ productId, activeOnly: 1, page: 1, pageSize: 100 })
+    if (res.code === 0) {
+      transferPnOptions.value = res.data?.list || []
+      if (transferPnOptions.value.length === 1) transferAddForm.pnCode = transferPnOptions.value[0].pn_code || ''
+    }
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || '\u52a0\u8f7d\u5546\u54c1 PN \u5931\u8d25')
+  } finally {
+    transferPnLoading.value = false
+  }
+}
+
+const loadTransferProductSns = async () => {
+  if (!transferForm.fromStoreId || !transferAddForm.productId) return
+  try {
+    const res = await api.getSnList({
+      productId: transferAddForm.productId,
+      storeId: transferForm.fromStoreId,
+      scope: 'transfer',
+      status: 'in_stock',
+      page: 1,
+      pageSize: 100
+    })
+    if (res.code === 0) {
+      transferSnOptions.value = res.data?.list || []
+    }
+  } catch (err) {
+    ElMessage.error('加载可调拨SN失败')
+  }
+}
+
+const addTransferProductItem = () => {
+  if (transferPnLoading.value) return
+  if (!transferForm.fromStoreId) {
+    ElMessage.warning('\u8bf7\u9009\u62e9\u8c03\u51fa\u95e8\u5e97')
+    return
+  }
+  const product = transferProductOptions.value.find(item => item.product_id === transferAddForm.productId)
+  if (!product) {
+    ElMessage.warning('\u8bf7\u9009\u62e9\u8c03\u62e8\u5546\u54c1')
+    return
+  }
+
+  const fallbackPn = transferPnOptions.value.length === 0 ? (product.pn_code || product.manufacturer_code || '') : ''
+  const pnCode = String(transferAddForm.pnCode || fallbackPn).trim()
+  if (transferPnOptions.value.length > 1 && !pnCode) {
+    ElMessage.warning('\u8bf7\u9009\u62e9\u5546\u54c1 PN')
+    return
+  }
+
+  const quantity = Number(transferAddForm.quantity || 0)
+  const availableQty = Number(product.normal_qty || 0)
+  if (quantity <= 0) {
+    ElMessage.warning('\u8bf7\u8f93\u5165\u8c03\u62e8\u6570\u91cf')
+    return
+  }
+  if (quantity > availableQty) {
+    ElMessage.warning('\u8c03\u62e8\u6570\u91cf\u4e0d\u80fd\u8d85\u8fc7\u5e93\u5b58 ' + availableQty)
+    return
+  }
+
+  const existing = transferForm.items.find(item => !item.snId && item.productId === product.product_id && String(item.pnCode || '') === pnCode)
+  if (existing) {
+    const nextQty = Number(existing.quantity || 0) + quantity
+    if (nextQty > availableQty) {
+      ElMessage.warning('\u8be5\u5546\u54c1\u7d2f\u8ba1\u8c03\u62e8\u6570\u91cf\u4e0d\u80fd\u8d85\u8fc7\u5e93\u5b58 ' + availableQty)
+      return
+    }
+    existing.quantity = nextQty
+  } else {
+    transferForm.items.push({
+      snId: null,
+      snCode: '',
+      productId: product.product_id,
+      productName: product.product_name || product.name || '',
+      pnCode,
+      quantity
+    })
+  }
+
+  transferAddForm.productId = ''
+  transferAddForm.snId = ''
+  transferAddForm.pnCode = ''
+  transferAddForm.quantity = 1
+  transferPnOptions.value = []
+  transferSnOptions.value = []
+}
+
+const openTransferDialog = (row) => {
+  const existingIdx = transferForm.items.findIndex(i => i.snId === row.sn_id)
+  if (existingIdx >= 0) {
+    transferForm.items.splice(existingIdx, 1)
+    return
+  }
+  if (transferForm.items.length === 0) {
+    transferForm.fromStoreId = row.store_id || ''
+    transferForm.fromStoreName = row.store_name || ''
+  }
+  if (transferForm.fromStoreId && transferForm.items.length > 0 && row.store_id !== transferForm.fromStoreId) {
+    ElMessage.warning('只能调拨同一门店的商品')
+    return
+  }
+  if (!transferForm.fromStoreId) {
+    transferForm.fromStoreId = row.store_id || ''
+    transferForm.fromStoreName = row.store_name || ''
+  }
+  transferForm.items.push({
+    snId: row.sn_id,
+    snCode: row.sn_code,
+    productId: row.product_id,
+    productName: row.product_name || '',
+    pnCode: row.pn_code || '',
+    quantity: 1
+  })
+  transferDialogVisible.value = true
+}
+
+const formatTransferItemLabel = (item) => {
+  const name = item.product_name || item.productName || item.product_id || '-'
+  const pn = item.pn_code || item.pnCode || '-'
+  const sn = item.sn_code || item.snCode || (Number(item.need_sn || item.needSn || 0) === 1 ? '待出库确认' : '不适用')
+  return `${name} / PN:${pn} / SN:${sn} x${item.quantity || 0}`
+}
+
+const transferActionLabel = (action) => ({
+  submitted: '提交调拨申请',
+  outbound_confirmed: '确认调拨出库',
+  inbound_confirmed: '确认调拨入库',
+  revoked: '撤销调拨申请',
+  rejected: '拒绝调拨申请',
+  returned: '退回调拨申请'
+}[action] || action || '操作')
+
+const isTransferRequestOpen = (row) => ['pending', 'requested', 'applied', 'shipping'].includes(String(row?.status || '').toLowerCase())
+
+const canRevokeTransfer = (row) => {
+  if (!isTransferRequestOpen(row)) return false
+  const user = getUserInfo()
+  const applicant = String(row.apply_user || '').trim()
+  return Boolean(applicant) && [user.name, user.userName, user.staffId, user.staff_id, user.userId, user.user_id, user.phone]
+    .map(value => String(value || '').trim())
+    .filter(Boolean)
+    .includes(applicant)
+}
+
+const canRejectTransfer = (row) => {
+  if (!isTransferRequestOpen(row)) return false
+  return isDistributorAccount() || String(getStoreId()) === String(row.from_store_id || '')
+}
+
+const canReturnTransfer = (row) => ['out_confirmed', 'shipping_out', 'in_transit'].includes(String(row?.status || '').toLowerCase())
+
+const openTransferDetail = async (row, { trace = false } = {}) => {
+  try {
+    const res = await api.getTransferDetail(row.transfer_id, trace ? { trace: '1' } : undefined)
+    if (res.code === 0) {
+      transferDetailRow.value = res.data
+      transferDetailVisible.value = true
+    } else {
+      ElMessage.error(res.message || '加载调拨详情失败')
+    }
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || err.message || '加载调拨详情失败')
+  }
+}
+
+const resetTransferForm = () => {
+  transferForm.fromStoreId = ''
+  transferForm.fromStoreName = ''
+  transferForm.toStoreId = ''
+  transferForm.freightPlatformId = ''
+  transferForm.freightAmount = 0
+  transferForm.remark = ''
+  transferForm.items = []
+  transferAddForm.productId = ''
+  transferAddForm.snId = ''
+  transferAddForm.pnCode = ''
+  transferAddForm.quantity = 1
+  transferProductOptions.value = []
+  transferPnOptions.value = []
+  transferSnOptions.value = []
+}
+
+const saveTransferDraft = () => {
+  saveDraft(TRANSFER_DRAFT_KEY, cloneDraft(transferForm))
+  ElMessage.success('草稿已保存')
+}
+
+const restoreTransferDraft = () => {
+  const draft = loadDraft(TRANSFER_DRAFT_KEY)
+  if (!draft) return
+  Object.assign(transferForm, draft)
+  transferForm.items = Array.isArray(draft.items) ? draft.items : []
+  ElMessage.success('已恢复上次草稿')
+}
+
+const submitTransfer = async () => {
   if (!transferForm.fromStoreId) {
     ElMessage.warning('请选择调出门店')
     return
@@ -443,87 +4401,1267 @@ const handleTransferSubmit = async () => {
     ElMessage.warning('请选择调入门店')
     return
   }
-  if (transferForm.fromStoreId === transferForm.toStoreId) {
-    ElMessage.warning('调出门店和调入门店不能相同')
+  if (transferForm.items.length === 0) {
+    ElMessage.warning('请添加调拨商品')
     return
   }
-  if (!transferForm.productId) {
-    ElMessage.warning('请选择商品')
-    return
-  }
-
-  submitLoading.value = true
+  transferLoading.value = true
   try {
-    const data = {
+    const res = await api.transfer({
       fromStoreId: transferForm.fromStoreId,
       toStoreId: transferForm.toStoreId,
-      productId: transferForm.productId,
-      quantity: transferForm.quantity,
-      remark: transferForm.remark
-    }
-    const res = await api.transfer(data)
+      deliveryPlatformId: transferForm.freightPlatformId,
+      deliveryPlatformName: freightPlatforms.value.find(item => item.platform_id === transferForm.freightPlatformId)?.platform_name || '',
+      freightAmount: Number(transferForm.freightAmount || 0),
+      remark: transferForm.remark || '',
+      items: transferForm.items
+    })
     if (res.code === 0) {
-      ElMessage.success('调拨成功')
+      ElMessage.success('调拨申请已创建')
+      clearDraft(TRANSFER_DRAFT_KEY)
       transferDialogVisible.value = false
-      loadData()
+      resetTransferForm()
       loadSnData()
+      loadTransferLists()
     } else {
       ElMessage.error(res.message || '调拨失败')
     }
   } catch (err) {
-    ElMessage.error('调拨失败')
+    const msg = err.response?.data?.message || err.message || '调拨失败'
+    ElMessage.error(msg)
   } finally {
-    submitLoading.value = false
+    transferLoading.value = false
   }
 }
 
-const handleDialogClose = () => {
-  resetForms()
+const loadTransferLists = async () => {
+  try {
+    const [outRes, inRes] = await Promise.all([
+      api.getTransferList({ status: 'pending', page: 1, pageSize: 100 }),
+      api.getTransferList({ status: 'out_confirmed', page: 1, pageSize: 100 })
+    ])
+    if (outRes.code === 0) {
+      transferOutList.value = outRes.data?.list || []
+    }
+    if (inRes.code === 0) {
+      transferInList.value = inRes.data?.list || []
+    }
+    await loadTransferHistory()
+  } catch (err) {
+    ElMessage.error('加载调拨列表失败')
+  }
 }
 
-const resetForms = () => {
-  inboundForm.storeId = ''
-  inboundForm.productId = ''
-  inboundForm.pnCode = ''
-  inboundForm.snCode = ''
-  inboundForm.quantity = 1
-  inboundForm.remark = ''
+const searchTransferHistory = () => {
+  transferHistoryQuery.page = 1
+  return loadTransferHistory()
+}
 
-  outboundForm.storeId = ''
-  outboundForm.productId = ''
-  outboundForm.snCode = ''
-  outboundForm.quantity = 1
-  outboundForm.reason = 'sale'
-  outboundForm.remark = ''
+const loadTransferHistory = async () => {
+  transferHistoryLoading.value = true
+  try {
+    const res = await api.getTransferList({
+      history: 1,
+      page: transferHistoryQuery.page,
+      pageSize: transferHistoryQuery.pageSize,
+      transferNo: transferHistoryQuery.transferNo || undefined,
+      fromStoreId: transferHistoryQuery.fromStoreId || undefined,
+      toStoreId: transferHistoryQuery.toStoreId || undefined,
+      productName: transferHistoryQuery.productName.trim() || undefined,
+      manufacturerCode: transferHistoryQuery.manufacturerCode.trim() || undefined,
+      manufacturerConfig: transferHistoryQuery.manufacturerConfig.trim() || undefined,
+      status: transferHistoryQuery.status || undefined,
+      startDate: transferHistoryQuery.startDate || undefined,
+      endDate: transferHistoryQuery.endDate || undefined
+    })
+    if (res.code === 0) {
+      transferHistoryList.value = res.data?.list || []
+      transferHistoryTotal.value = Number(res.data?.total || 0)
+    }
+  } catch (err) {
+    ElMessage.error('加载历史调拨记录失败')
+  } finally {
+    transferHistoryLoading.value = false
+  }
+}
 
-  transferForm.fromStoreId = ''
-  transferForm.toStoreId = ''
-  transferForm.productId = ''
-  transferForm.quantity = 1
-  transferForm.remark = ''
+const resetTransferHistoryQuery = () => {
+  Object.assign(transferHistoryQuery, {
+    page: 1,
+    pageSize: 20,
+    transferNo: '',
+    fromStoreId: '',
+    toStoreId: '',
+    productKeyword: '',
+    productName:'',manufacturerCode:'',manufacturerConfig:'',
+    status: '',
+    startDate: '',
+    endDate: ''
+  })
+  loadTransferHistory()
+}
+
+const handleConfirmTransferOut = async (row) => {
+  transferOutConfirmRow.value = row
+  transferOutPhotoFiles.value = []
+  const snItems = (row.TransferItems || []).filter(item => Number(item.need_sn || 0) === 1 && !item.sn_id)
+  if (snItems.length > 0) {
+    transferOutSnRows.value = snItems.flatMap(item => {
+      const quantity = Math.max(Number(item.quantity || 0), 1)
+      return Array.from({ length: quantity }, (_, index) => ({
+        itemId: item.item_id,
+        productId: item.product_id,
+        productName: item.product_name || item.product_id || '-',
+        unitIndex: index + 1,
+        snId: '',
+        snOptions: []
+      }))
+    })
+    transferOutConfirmVisible.value = true
+    await loadTransferOutSnOptions(row)
+    return
+  }
+
+  transferOutSnRows.value = []
+  transferOutConfirmVisible.value = true
+}
+
+const loadProductLocationOptions = async () => {
+  productLocationOptions.value = []
+  productLocationSourceOptions.value = []
+  if (!productLocationForm.storeId) return
+  try {
+    const res = await api.getLocationsByStore(productLocationForm.storeId)
+    productLocationOptions.value = Array.isArray(res.data) ? res.data : []
+    const storeRow = summaryData.value.find(item => item.product_id === productLocationForm.productId)
+    productLocationSourceOptions.value = (storeRow?.store_stock_info || [])
+      .filter(item => item.store_id === productLocationForm.storeId)
+      .map(item => ({ location_id: item.location_id, name: item.location_name, quantity: Number(item.normal_qty || 0) + Number(item.demo_qty || 0) + Number(item.display_qty || 0) + Number(item.unsellable_qty || 0) + Number(item.pending_qty || 0) + Number(item.rental_demo_qty || 0) }))
+  } catch (err) { ElMessage.error(err.response?.data?.message || '加载库位失败') }
+}
+
+const openProductLocationDialog = async (row) => {
+  Object.assign(productLocationForm, { productId: row.product_id, productName: row.product_name || '', pnCode: row.pn_code || '', storeId: '', fromLocationId: '', toLocationId: '', quantity: 1 })
+  const storeRows = (row.store_stock_info || []).filter(item => Object.keys(item).some(key => key.endsWith('_qty') && Number(item[key] || 0) > 0))
+  productLocationForm.storeId = storeRows[0]?.store_id || ''
+  productLocationDialogVisible.value = true
+  await loadProductLocationOptions()
+}
+
+const saveProductLocation = async () => {
+  if (!productLocationForm.storeId || !productLocationForm.fromLocationId || !productLocationForm.toLocationId) return ElMessage.warning('请选择门店、原库位和目标库位')
+  if (productLocationForm.fromLocationId === productLocationForm.toLocationId) return ElMessage.warning('原库位和目标库位不能相同')
+  productLocationSaving.value = true
+  try {
+    const res = await api.adjustProductLocation(productLocationForm.productId, productLocationForm)
+    if (res.code === 0) { ElMessage.success(res.message || '库存库位调整成功'); productLocationDialogVisible.value = false; await loadSummary() }
+    else ElMessage.error(res.message || '库存库位调整失败')
+  } catch (err) { ElMessage.error(err.response?.data?.message || '库存库位调整失败') }
+  finally { productLocationSaving.value = false }
+}
+
+const handleRevokeTransfer = async (row) => {
+  try {
+    await ElMessageBox.confirm(
+      `确认撤销调拨申请 ${row.transfer_no} 吗？`,
+      '撤销调拨申请',
+      { confirmButtonText: '确认撤销', cancelButtonText: '取消', type: 'warning' }
+    )
+    const res = await api.revokeTransfer({ transferId: row.transfer_id })
+    if (res.code === 0) {
+      ElMessage.success('调拨申请已撤销')
+      loadTransferLists()
+    } else {
+      ElMessage.error(res.message || '撤销申请失败')
+    }
+  } catch (err) {
+    if (err !== 'cancel') ElMessage.error(err.response?.data?.message || err.message || '撤销申请失败')
+  }
+}
+
+const handleRejectTransfer = async (row) => {
+  try {
+    const result = await ElMessageBox.prompt(
+      `请输入拒绝调拨申请 ${row.transfer_no} 的理由`,
+      '拒绝调拨申请',
+      {
+        confirmButtonText: '确认拒绝',
+        cancelButtonText: '取消',
+        inputType: 'textarea',
+        inputPlaceholder: '请输入拒绝理由',
+        inputValidator: value => Boolean(String(value || '').trim()) || '拒绝理由不能为空'
+      }
+    )
+    const res = await api.rejectTransfer({ transferId: row.transfer_id, reason: String(result.value || '').trim() })
+    if (res.code === 0) {
+      ElMessage.success('调拨申请已拒绝')
+      loadTransferLists()
+    } else {
+      ElMessage.error(res.message || '拒绝申请失败')
+    }
+  } catch (err) {
+    if (err !== 'cancel') ElMessage.error(err.response?.data?.message || err.message || '拒绝申请失败')
+  }
+}
+
+const loadTransferOutSnOptions = async (row) => {
+  transferOutSnLoading.value = true
+  try {
+    const productIds = [...new Set(transferOutSnRows.value.map(item => item.productId).filter(Boolean))]
+    const optionsMap = {}
+    await Promise.all(productIds.map(async (productId) => {
+      const res = await api.getSnList({
+        productId,
+        storeId: row.from_store_id,
+        scope: 'transfer',
+        status: 'in_stock',
+        page: 1,
+        pageSize: 500
+      })
+      optionsMap[productId] = res.code === 0 ? (res.data?.list || []) : []
+    }))
+    transferOutSnRows.value.forEach(item => {
+      item.snOptions = optionsMap[item.productId] || []
+    })
+  } catch (err) {
+    ElMessage.error('加载可选SN失败')
+  } finally {
+    transferOutSnLoading.value = false
+  }
+}
+
+const isConfirmSnDisabled = (snId, currentRow) => {
+  return transferOutSnRows.value.some(row => row !== currentRow && String(row.snId || '') === String(snId || ''))
+}
+
+const handleTransferOutPhotoChange = (uploadFile, uploadFiles) => {
+  const file = uploadFile.raw
+  if (!file) return
+  const supportedTypes = new Set(['image/jpeg', 'image/png', 'image/webp'])
+  if (!supportedTypes.has(String(file.type || '').toLowerCase())) {
+    ElMessage.warning('发货照片仅支持 JPG、PNG、WEBP 图片')
+    transferOutPhotoFiles.value = uploadFiles.filter(item => item.uid !== uploadFile.uid)
+    return
+  }
+  if (file.size > 10 * 1024 * 1024) {
+    ElMessage.warning('单张发货照片不能超过10MB')
+    transferOutPhotoFiles.value = uploadFiles.filter(item => item.uid !== uploadFile.uid)
+    return
+  }
+  transferOutPhotoFiles.value = uploadFiles.slice(-9)
+}
+
+const handleTransferOutPhotoExceed = () => {
+  ElMessage.warning('最多上传9张发货照片')
+}
+
+const buildTransferOutItems = () => {
+  const row = transferOutConfirmRow.value
+  const itemRows = (row?.TransferItems || []).filter(item => Number(item.quantity || 0) > 0)
+  const nonSnItems = itemRows
+    .filter(item => Number(item.need_sn || 0) !== 1)
+    .map(item => ({
+      itemId: item.item_id,
+      productId: item.product_id,
+      quantity: Number(item.quantity || 1),
+      pnCode: item.pn_code || item.pnCode || ''
+    }))
+  const snItems = transferOutSnRows.value.map(item => {
+    const selected = item.snOptions.find(sn => String(sn.sn_id) === String(item.snId))
+    return {
+      itemId: item.itemId,
+      productId: item.productId,
+      snId: item.snId,
+      snCode: selected?.sn_code || selected?.snCode || '',
+      pnCode: selected?.pn_code || selected?.pnCode || ''
+    }
+  })
+  return [...nonSnItems, ...snItems]
+}
+
+const submitConfirmTransferOut = async () => {
+  if (!transferOutConfirmRow.value) return
+  const missing = transferOutSnRows.value.find(row => !row.snId)
+  if (missing) {
+    ElMessage.warning(`请选择 ${missing.productName} 的SN`)
+    return
+  }
+  const photoFiles = transferOutPhotoFiles.value.map(item => item.raw).filter(Boolean)
+  if (!photoFiles.length) {
+    ElMessage.warning('请至少上传一张发货照片')
+    return
+  }
+
+  transferOutConfirmLoading.value = true
+  try {
+    const formData = new FormData()
+    formData.append('transferId', String(transferOutConfirmRow.value.transfer_id))
+    formData.append('items', JSON.stringify(buildTransferOutItems()))
+    photoFiles.forEach((file, index) => {
+      formData.append('shippingPhotos', file, file.name || `shipping-photo-${index + 1}.jpg`)
+    })
+    const res = await api.confirmTransferOut(formData)
+    if (res.code === 0) {
+      ElMessage.success('调拨出库确认成功')
+      transferOutConfirmVisible.value = false
+      resetTransferOutConfirm()
+      loadTransferLists()
+      loadSummary()
+      loadSnData()
+    } else {
+      ElMessage.error(res.message || '确认出库失败')
+    }
+  } catch (err) {
+    const msg = err.response?.data?.message || err.message || '确认出库失败'
+    ElMessage.error(msg)
+  } finally {
+    transferOutConfirmLoading.value = false
+  }
+}
+
+const resetTransferOutConfirm = () => {
+  transferOutConfirmRow.value = null
+  transferOutSnRows.value = []
+  transferOutPhotoFiles.value = []
+  transferOutSnLoading.value = false
+  transferOutConfirmLoading.value = false
+}
+
+const handleConfirmTransferIn = async (row) => {
+  try {
+    await ElMessageBox.confirm(
+      `确认将调拨单 ${row.transfer_no} 的商品入库到「${row.to_store_name}」吗？`,
+      '确认调拨入库',
+      { confirmButtonText: '确认入库', cancelButtonText: '取消', type: 'warning' }
+    )
+    const res = await api.confirmTransferIn({ transferId: row.transfer_id })
+    if (res.code === 0) {
+      ElMessage.success('调拨入库确认成功，调拨完成')
+      loadTransferLists()
+    } else {
+      ElMessage.error(res.message || '确认入库失败')
+    }
+  } catch (err) {
+    if (err !== 'cancel') {
+      const msg = err.response?.data?.message || err.message || '确认入库失败'
+      ElMessage.error(msg)
+    }
+  }
+}
+
+const handleReturnTransfer = async (row) => {
+  try {
+    await ElMessageBox.confirm(
+      `确认退回调拨单 ${row.transfer_no} 吗？退回后申请将失效，商品恢复到原调出门店。`,
+      '退回调拨申请',
+      { confirmButtonText: '确认退回', cancelButtonText: '取消', type: 'warning' }
+    )
+    const res = await api.returnTransfer({
+      transferId: row.transfer_id,
+      reason: '管理后台运输中待收货退回'
+    })
+    if (res.code === 0) {
+      ElMessage.success('调拨申请已退回，库存已恢复')
+      await loadTransferLists()
+      loadSummary()
+      loadSnData()
+    } else {
+      ElMessage.error(res.message || '退回调拨申请失败')
+    }
+  } catch (err) {
+    if (err !== 'cancel') ElMessage.error(err.response?.data?.message || err.message || '退回调拨申请失败')
+  }
+}
+
+function roundMoney(value) {
+  return Math.round((Number(value || 0) + Number.EPSILON) * 100) / 100
+}
+
+const loadConversionList = async () => {
+  conversionLoading.value = true
+  try {
+    const res = await api.getConversionList(conversionQuery)
+    if (res.code === 0) {
+      conversionList.value = res.data?.list || []
+      conversionTotal.value = res.data?.pagination?.total || res.data?.total || 0
+    }
+  } catch (err) {
+    ElMessage.error('加载拆装单失败')
+  } finally {
+    conversionLoading.value = false
+  }
+}
+
+const openConversionDialog = async (type) => {
+  resetConversionForm()
+  conversionForm.conversionType = type
+  if (isStoreUser()) {
+    conversionForm.storeId = getStoreId()
+  }
+  conversionDialogVisible.value = true
+  if (conversionForm.storeId) {
+    await searchConversionSourceProducts('')
+  }
+  await searchConversionTargetProducts('')
+}
+
+const resetConversionForm = () => {
+  conversionPicker.value = ''
+  conversionForm.conversionType = conversionForm.conversionType || 'split'
+  conversionForm.storeId = isStoreUser() ? getStoreId() : ''
+  conversionForm.serviceCost = 0
+  conversionForm.remark = ''
+  conversionForm.sourceItems = []
+  conversionForm.targetItems = []
+  conversionSourceAdd.productId = ''
+  conversionSourceAdd.snId = ''
+  conversionSourceAdd.quantity = 1
+  conversionSourceAdd.unitCost = 0
+  conversionTargetAdd.productId = ''
+  conversionTargetAdd.pnCode = ''
+  conversionTargetAdd.snCode = ''
+  conversionTargetAdd.quantity = 1
+  conversionTargetAdd.unitCost = 0
+  conversionSourceOptions.value = []
+  conversionTargetOptions.value = []
+  conversionSourceSnOptions.value = []
+}
+
+const onConversionStoreChange = async () => {
+  conversionForm.sourceItems = []
+  conversionSourceAdd.productId = ''
+  conversionSourceAdd.snId = ''
+  conversionSourceOptions.value = []
+  conversionSourceSnOptions.value = []
+  if (conversionForm.storeId) {
+    await searchConversionSourceProducts('')
+  }
+}
+
+const searchConversionSourceProducts = async (keyword = '') => {
+  if (!conversionForm.storeId) {
+    conversionSourceOptions.value = []
+    return
+  }
+  try {
+    const res = await api.getInventoryList({
+      storeId: conversionForm.storeId,
+      keyword,
+      page: 1,
+      pageSize: 50
+    })
+    if (res.code === 0) {
+      conversionSourceOptions.value = (res.data?.list || []).filter(item => Number(item.normal_qty || 0) > 0)
+    }
+  } catch (err) {
+    ElMessage.error('搜索来源商品失败')
+  }
+}
+
+const searchConversionTargetProducts = async (keyword = '') => {
+  try {
+    const res = await api.getProductList({
+      activeOnly: 1,
+      keyword,
+      page: 1,
+      pageSize: 50
+    })
+    if (res.code === 0) {
+      conversionTargetOptions.value = res.data?.list || []
+    }
+  } catch (err) {
+    ElMessage.error('搜索目标商品失败')
+  }
+}
+
+const loadConversionProductCategoryTree = async () => {
+  if (conversionProductCategoryTree.value.length > 0) return
+  try {
+    const res = await api.getCategoryTree()
+    if (res.code === 0) conversionProductCategoryTree.value = res.data || []
+  } catch (err) {
+    ElMessage.error('加载商品分类失败')
+  }
+}
+
+const findConversionProductCategoryNode = (nodes, categoryId) => {
+  for (const node of nodes || []) {
+    if (!node) continue
+    if (String(node.category_id) === String(categoryId)) return node
+    const found = findConversionProductCategoryNode(node.children, categoryId)
+    if (found) return found
+  }
+  return null
+}
+
+const onConversionProductCategoryChange = async (value) => {
+  conversionProductForm.attributes = {}
+  conversionProductCategoryFields.value = []
+  conversionProductCategoryFieldName.value = ''
+  conversionProductCategoryNameParts.value = []
+  if (!value) return
+
+  try {
+    const res = await api.getCategoryFieldConfig(value)
+    if (res.code === 0 && res.data?.fields) {
+      conversionProductCategoryFields.value = res.data.fields
+      conversionProductCategoryFieldName.value = res.data.categoryName || ''
+      conversionProductCategoryNameParts.value = Array.isArray(res.data.categoryNameParts) ? res.data.categoryNameParts : []
+      const dimensions = res.data.categoryDimensions || {}
+      for (const key of ['category', 'brand', 'series', 'model']) {
+        if (dimensions[key]) conversionProductForm[key] = dimensions[key]
+      }
+    }
+  } catch (err) {
+    ElMessage.error('加载分类字段失败')
+  }
+}
+
+const resetConversionProductForm = () => {
+  conversionProductForm.categoryId = ''
+  conversionProductForm.category = ''
+  conversionProductForm.config = ''
+  conversionProductForm.brand = ''
+  conversionProductForm.series = ''
+  conversionProductForm.model = ''
+  conversionProductForm.processor = ''
+  conversionProductForm.memory = ''
+  conversionProductForm.storage = ''
+  conversionProductForm.color = ''
+  conversionProductForm.gpu = ''
+  conversionProductForm.accessory_type = ''
+  conversionProductForm.unit = '台'
+  conversionProductForm.needSn = false
+  conversionProductForm.needImei = false
+  conversionProductForm.remark = ''
+  conversionProductForm.status = 1
+  conversionProductForm.pnCode = ''
+  conversionProductForm.barcodes = []
+  conversionProductForm.attributes = {}
+  conversionProductCategoryNameParts.value = []
+  conversionProductForm.customName = ''
+  conversionProductCategoryFields.value = []
+  conversionProductCategoryFieldName.value = ''
+  conversionProductNewBarcode.value = ''
+}
+
+const openConversionProductDialog = async () => {
+  resetConversionProductForm()
+  await loadConversionProductCategoryTree()
+  conversionProductDialogVisible.value = true
+}
+
+const addConversionProductBarcode = () => {
+  const code = conversionProductNewBarcode.value.trim()
+  if (!code) {
+    ElMessage.warning('请输入69码')
+    return
+  }
+  if (conversionProductForm.barcodes.some(item => String(item.code || '').trim().toLowerCase() === code.toLowerCase())) {
+    ElMessage.warning('该69码已存在')
+    return
+  }
+  conversionProductForm.barcodes.push({ type: 'barcode69', code })
+  conversionProductNewBarcode.value = ''
+}
+
+const buildConversionProductPayload = () => {
+  const selectedCategory = findConversionProductCategoryNode(
+    conversionProductCategoryTree.value,
+    conversionProductForm.categoryId
+  )
+  if (!selectedCategory || Number(selectedCategory.level) !== 4 || (selectedCategory.children || []).some(child => Number(child.status ?? 1) === 1)) {
+    ElMessage.warning('新建商品必须选择完整的1-4级分类，请选择第4级分类')
+    return null
+  }
+  const finalName = conversionProductName.value
+  if (!finalName) {
+    ElMessage.warning('请填写商品属性或商品简称')
+    return null
+  }
+  if (!conversionProductForm.pnCode.trim()) {
+    ElMessage.warning('请输入厂商编码 / PN')
+    return null
+  }
+
+  const attributes = {}
+  for (const field of conversionProductStandardFields) {
+    if (conversionProductForm[field]) attributes[field] = conversionProductForm[field]
+  }
+  for (const [key, value] of Object.entries(conversionProductForm.attributes)) {
+    if (!conversionProductStandardFields.includes(key) && value) attributes[key] = value
+  }
+
+  return {
+    name: finalName,
+    categoryId: conversionProductForm.categoryId || null,
+    category: conversionProductForm.category,
+    brand: conversionProductForm.brand,
+    series: conversionProductForm.series,
+    model: conversionProductForm.model,
+    config: conversionProductForm.config,
+    unit: conversionProductForm.unit,
+    needSn: conversionProductForm.needSn ? 1 : 0,
+    needImei: conversionProductForm.needImei ? 1 : 0,
+    pnCode: conversionProductForm.pnCode.trim(),
+    manufacturerCode: conversionProductForm.pnCode.trim(),
+    pns: [{ pnCode: conversionProductForm.pnCode.trim(), isPrimary: true }],
+    remark: conversionProductForm.remark,
+    status: conversionProductForm.status,
+    barcodes: conversionProductForm.barcodes,
+    attributes: Object.keys(attributes).length > 0 ? attributes : null
+  }
+}
+
+const selectNewConversionTargetProduct = async (productId, fallbackProduct) => {
+  await searchConversionTargetProducts(fallbackProduct.name || '')
+  let product = conversionTargetOptions.value.find(item => item.product_id === productId)
+  if (!product) {
+    product = fallbackProduct
+    conversionTargetOptions.value.unshift(product)
+  }
+  conversionTargetAdd.productId = product.product_id
+  onConversionTargetProductChange()
+}
+
+const submitConversionProduct = async () => {
+  const data = buildConversionProductPayload()
+  if (!data) return
+
+  conversionProductSubmitLoading.value = true
+  try {
+    const res = await api.createProduct(data)
+    if (res.code === 0) {
+      if (res.pendingApproval) {
+        conversionProductDialogVisible.value = false
+        ElMessage.success('新建商品申请已提交，审批通过后才能作为拆装目标商品')
+        return
+      }
+      const productId = res.productId || res.data?.productId
+      await selectNewConversionTargetProduct(productId, {
+        product_id: productId,
+        name: data.name,
+        product_name: data.name,
+        manufacturer_code: data.pnCode,
+        manufacturer_codes: [data.pnCode],
+        need_sn: data.needSn ? 1 : 0,
+        cost_price: 0
+      })
+      conversionProductDialogVisible.value = false
+      ElMessage.success('商品创建成功，已自动选择')
+    } else {
+      ElMessage.error(res.message || '商品创建失败')
+    }
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.message || err?.message || '商品创建失败')
+  } finally {
+    conversionProductSubmitLoading.value = false
+  }
+}
+
+const onConversionSourceProductChange = async () => {
+  conversionSourceAdd.snId = ''
+  conversionSourceAdd.quantity = 1
+  conversionSourceAdd.unitCost = 0
+  conversionSourceSnOptions.value = []
+  const product = selectedConversionSourceProduct.value
+  if (product?.need_sn === 1 && conversionForm.storeId) {
+    try {
+      const res = await api.getSnList({
+        productId: product.product_id,
+        storeId: conversionForm.storeId,
+        status: 'in_stock',
+        page: 1,
+        pageSize: 200
+      })
+      if (res.code === 0) {
+        conversionSourceSnOptions.value = res.data?.list || []
+      }
+    } catch (err) {
+      ElMessage.error('加载来源SN失败')
+    }
+  } else if (product) {
+    conversionSourceAdd.unitCost = conversionForm.conversionType === 'assemble' ? displayedConversionSourceCost(product.conversion_source_unit_cost) : roundMoney(product.cost_price || 0)
+  }
+}
+
+const onConversionSourceSnChange = () => {
+  const sn = conversionSourceSnOptions.value.find(item => item.sn_id === conversionSourceAdd.snId)
+  conversionSourceAdd.unitCost = conversionForm.conversionType === 'assemble' ? displayedConversionSourceCost(sn?.inbound_price) : roundMoney(sn?.inbound_price || 0)
+}
+
+const displayedConversionSourceCost = value => value !== null && value !== undefined && typeof value !== 'boolean' && String(value).trim() !== '' && Number.isFinite(Number(value)) && Number(value) >= 0 ? Number(value) : undefined
+
+const onConversionTargetProductChange = () => {
+  const product = selectedConversionTargetProduct.value
+  conversionTargetAdd.pnCode = product?.manufacturer_codes?.[0] || ''
+  conversionTargetAdd.snCode = ''
+  conversionTargetAdd.quantity = 1
+  conversionTargetAdd.unitCost = roundMoney(product?.cost_price || 0)
+}
+
+const addConversionSourceItem = () => {
+  const product = selectedConversionSourceProduct.value
+  if (!product) {
+    ElMessage.warning('请选择来源商品')
+    return
+  }
+
+  let sn = null
+  let quantity = Number(conversionSourceAdd.quantity)
+  let unitCost = roundMoney(conversionSourceAdd.unitCost || 0)
+  if (product.need_sn === 1) {
+    sn = conversionSourceSnOptions.value.find(item => item.sn_id === conversionSourceAdd.snId)
+    if (!sn) {
+      ElMessage.warning('请选择来源SN')
+      return
+    }
+    if (conversionForm.sourceItems.some(item => item.snId === sn.sn_id)) {
+      ElMessage.warning('该SN已添加')
+      return
+    }
+    quantity = 1
+    unitCost = conversionForm.conversionType === 'assemble' ? displayedConversionSourceCost(sn.inbound_price) : (unitCost > 0 ? unitCost : roundMoney(sn.inbound_price || 0))
+  }
+  if (conversionForm.conversionType === 'assemble' && !sn) unitCost = displayedConversionSourceCost(product.conversion_source_unit_cost)
+
+  if (conversionForm.conversionType === 'split' && conversionForm.sourceItems.length > 0) {
+    ElMessage.warning('拆分单一次只能选择一个被拆商品')
+    return
+  }
+  if (conversionForm.conversionType === 'split' && quantity !== 1) {
+    ElMessage.warning('拆分单被拆商品数量只能为1')
+    return
+  }
+  if (!Number.isInteger(quantity) || quantity <= 0) {
+    ElMessage.warning('数量必须为大于0的整数')
+    return
+  }
+  if (unitCost === undefined || !Number.isFinite(unitCost) || unitCost < 0 || (conversionForm.conversionType !== 'assemble' && unitCost === 0)) {
+    ElMessage.warning(conversionForm.conversionType === 'assemble' ? '来源商品成本待补，请先核对原商品成本' : '成本必须大于0')
+    return
+  }
+  if (product.need_sn !== 1 && quantity > Number(product.normal_qty || 0)) {
+    ElMessage.warning(`来源商品库存不足，可用 ${product.normal_qty || 0}`)
+    return
+  }
+
+  conversionForm.sourceItems.push({
+    productId: product.product_id,
+    productName: product.product_name || product.name || '',
+    pnCode: sn?.pn_code || (product.manufacturer_code ? String(product.manufacturer_code).split(/[,，\s]+/)[0] : ''),
+    snId: sn?.sn_id || '',
+    snCode: sn?.sn_code || '',
+    quantity,
+    unitCost,
+    totalCost: roundMoney(quantity * unitCost),
+    inventoryType: sn?.inventory_type || 'normal_qty',
+    locationId: sn?.location_id || ''
+  })
+
+  conversionPicker.value = ''
+  conversionSourceAdd.productId = ''
+  conversionSourceAdd.snId = ''
+  conversionSourceAdd.quantity = 1
+  conversionSourceAdd.unitCost = 0
+  conversionSourceSnOptions.value = []
+}
+
+const addConversionTargetItem = () => {
+  const product = selectedConversionTargetProduct.value
+  if (!product) {
+    ElMessage.warning('请选择目标商品')
+    return
+  }
+
+  const quantity = product.need_sn === 1 ? 1 : Number(conversionTargetAdd.quantity)
+  const unitCost = conversionForm.conversionType === 'assemble' && conversionForm.targetItems.length === 0 ? 0 : displayedConversionSourceCost(conversionTargetAdd.unitCost)
+  if (!Number.isInteger(quantity) || quantity <= 0 || unitCost === undefined || (conversionForm.conversionType !== 'assemble' && unitCost <= 0)) {
+    ElMessage.warning(conversionForm.conversionType === 'assemble' ? '数量必须大于0，成本须为非负金额' : '数量和成本必须大于0')
+    return
+  }
+  if (product.need_sn === 1 && !conversionTargetAdd.snCode.trim()) {
+    ElMessage.warning('目标商品需要录入SN')
+    return
+  }
+  if (!conversionTargetAdd.pnCode) {
+    ElMessage.warning('请选择目标商品已有的厂商编码 / PN')
+    return
+  }
+
+  conversionForm.targetItems.push({
+    productId: product.product_id,
+    productName: product.name || product.product_name || '',
+    pnCode: conversionTargetAdd.pnCode,
+    snCode: conversionTargetAdd.snCode.trim(),
+    quantity,
+    unitCost,
+    totalCost: roundMoney(quantity * unitCost),
+    inventoryType: 'normal_qty',
+    locationId: ''
+  })
+
+  conversionPicker.value = ''
+  conversionTargetAdd.productId = ''
+  conversionTargetAdd.pnCode = ''
+  conversionTargetAdd.snCode = ''
+  conversionTargetAdd.quantity = 1
+  conversionTargetAdd.unitCost = 0
+}
+
+const submitConversion = async () => {
+  if (!conversionForm.storeId) {
+    ElMessage.warning('请选择转换门店')
+    return
+  }
+  if (!conversionCostMatched.value) {
+    ElMessage.warning(conversionForm.conversionType === 'split' ? '拆出金额不能超过来源成本' : '成本不守恒，不能执行')
+    return
+  }
+
+  conversionSubmitLoading.value = true
+  try {
+    const res = await api.createConversion({
+      conversionType: conversionForm.conversionType,
+      storeId: conversionForm.storeId,
+      serviceCost: conversionForm.serviceCost,
+      remark: conversionForm.remark,
+      sourceItems: conversionForm.sourceItems,
+      targetItems: conversionForm.targetItems
+    })
+    if (res.code === 0) {
+      ElMessage.success(res.message || '库存转换已完成')
+      conversionDialogVisible.value = false
+      loadConversionList()
+      loadSummary()
+    } else {
+      ElMessage.error(res.message || '库存转换失败')
+    }
+  } catch (err) {
+    const msg = err.response?.data?.message || err.message || '库存转换失败'
+    ElMessage.error(msg)
+  } finally {
+    conversionSubmitLoading.value = false
+  }
+}
+
+const viewConversionDetail = async (row) => {
+  try {
+    const res = await api.getConversionDetail(row.conversion_id)
+    if (res.code === 0) {
+      currentConversion.value = res.data
+      conversionDetailVisible.value = true
+    }
+  } catch (err) {
+    ElMessage.error('加载拆装单详情失败')
+  }
+}
+
+const handleVoidConversion = async (row) => {
+  try {
+    const result = await ElMessageBox.prompt(
+      `确认冲销拆装单 ${row.conversion_no} 吗？已销售或占用的目标SN不能冲销。`,
+      '冲销拆装单',
+      { confirmButtonText: '确认冲销', cancelButtonText: '取消', inputPlaceholder: '冲销原因' }
+    )
+    const res = await api.voidConversion(row.conversion_id, { reason: result.value || '' })
+    if (res.code === 0) {
+      ElMessage.success(res.message || '冲销成功')
+      loadConversionList()
+      loadSummary()
+    } else {
+      ElMessage.error(res.message || '冲销失败')
+    }
+  } catch (err) {
+    if (err !== 'cancel') {
+      const msg = err.response?.data?.message || err.message || '冲销失败'
+      ElMessage.error(msg)
+    }
+  }
+}
+
+const getConversionTypeText = (type) => {
+  return type === 'assemble' ? '组装' : '拆分'
+}
+
+const getConversionStatusText = (status) => {
+  const map = { completed: '已完成', voided: '已冲销' }
+  return map[status] || status
+}
+
+const getConversionLineRoleText = (role) => {
+  const map = { source: '来源', target: '目标', service: '服务' }
+  return map[role] || role
+}
+
+const getTransferStatusType = (status) => {
+  const types = { pending: 'warning', shipping: 'info', out_confirmed: 'info', received: 'success', completed: 'success', cancelled: 'danger', canceled: 'danger', revoked: 'info', rejected: 'danger', returned: 'danger' }
+  return types[status] || 'info'
+}
+
+const getTransferStatusText = (status) => {
+  const texts = { pending: '待出库门店确认', requested: '待出库门店确认', applied: '待出库门店确认', shipping: '待出库门店确认', out_confirmed: '待入库', received: '已收货', completed: '已完成', cancelled: '已取消', canceled: '已取消', revoked: '已撤销', rejected: '已拒绝', returned: '已退回' }
+  return texts[status] || status
+}
+
+const formatDate = (dateStr) => {
+  if (!dateStr) return '-'
+  const date = new Date(dateStr)
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  const hour = String(date.getHours()).padStart(2, '0')
+  const minute = String(date.getMinutes()).padStart(2, '0')
+  const second = String(date.getSeconds()).padStart(2, '0')
+  return `${year}-${month}-${day} ${hour}:${minute}:${second}`
 }
 
 const getStatusType = (status) => {
-  const types = { in_stock: 'success', sold: 'warning', damaged: 'danger', available: 'success', used: 'warning', scrapped: 'danger' }
+  const types = { in_stock: 'success', sold: 'warning', damaged: 'danger', available: 'success', used: 'warning', scrapped: 'danger', returned: 'info', return_pending: 'warning' }
   return types[status] || 'info'
+}
+
+const getStatusText = (status) => {
+  const texts = { in_stock: '在库', sold: '已售', damaged: '损坏', available: '可用', used: '已使用', scrapped: '已报废', returned: '已退库', return_pending: '退库待入库' }
+  return texts[status] || status
+}
+
+const getInboundStatusType = (status) => {
+  const types = { pending: 'warning', completed: 'success', cancelled: 'info', returned: 'danger' }
+  return types[status] || 'info'
+}
+
+const getInboundStatusText = (status) => {
+  const texts = { pending: '待入库', completed: '已完成', cancelled: '已取消', returned: '已退库' }
+  return texts[status] || status
+}
+
+const getReturnStatusType = (status) => {
+  const types = { pending: 'warning', approved: 'primary', rejected: 'danger', completed: 'success' }
+  return types[status] || 'info'
+}
+
+const getReturnStatusText = (status) => {
+  const texts = { pending: '待审批', approved: '待执行', rejected: '已拒绝', completed: '已退库' }
+  return texts[status] || status
 }
 </script>
 
 <style scoped>
+.module-tabs :deep(> .el-tabs__header) {
+  display: none;
+}
+
 .card-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
 }
-
 .filter-bar {
   display: flex;
   gap: 12px;
   margin-bottom: 16px;
+  flex-wrap: wrap;
 }
-
-.el-pagination {
+.batch-maintenance-layout {
+  min-width: 0;
+}
+.batch-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+.age-separator {
+  align-self: center;
+  color: #909399;
+}
+.resource-status-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.muted {
+  color: #909399;
+}
+.price-warning {
+  margin: -4px 0 18px 90px;
+  width: calc(100% - 90px);
+}
+.execute-item-section {
+  margin-bottom: 20px;
+  border: 1px solid #e8e8e8;
+  border-radius: 6px;
+  padding: 12px;
+}
+.execute-item-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.item-label {
+  font-weight: 600;
+  font-size: 14px;
+}
+.item-qty {
+  color: #666;
+  font-size: 13px;
+  margin-left: auto;
+}
+.item-location {
+  color: #409eff;
+  font-size: 13px;
+}
+.sn-table {
+  margin-top: 8px;
+}
+.no-sn-item {
+  padding: 8px 0;
+}
+.mt-20 {
+  margin-top: 20px;
+}
+.mt-30 {
+  margin-top: 30px;
+}
+.transfer-section {
+  margin-bottom: 20px;
+}
+.conversion-heading { display: flex; align-items: center; gap: 14px; }
+.conversion-heading-icon { color: #4765ff; background: #eef2ff; border-radius: 12px; font-size: 30px; padding: 5px 12px; }
+.conversion-heading h2 { margin: 0 0 5px; font-size: 21px; color: #202940; }
+.conversion-heading p, .conversion-panel-header p { margin: 0; font-size: 12px; color: #8790a5; }
+.conversion-meta { display: grid; grid-template-columns: 1fr 1fr; gap: 0 24px; padding: 8px 4px; }
+.conversion-meta :deep(.el-form-item__label) { font-weight: 600; color: #38415a; }
+.conversion-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 36px minmax(0, 1fr);
+  gap: 10px;
+}
+.conversion-panel { min-width: 0; min-height: 260px; padding: 18px 14px; border: 1px solid #e9ecf8; border-radius: 12px; background: linear-gradient(140deg, #f1f3ff, #fafbff); }
+.conversion-panel-target { background: linear-gradient(140deg, #f0faf2, #f8fcfa); border-color: #e5f0e8; }
+.conversion-item-cost { color: #8790a5; font-size: 11px; margin-top: 4px; }
+.conversion-panel-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 20px; }
+.conversion-panel-label { display: flex; gap: 10px; align-items: center; }
+.conversion-panel-header h3 { margin: 0 0 6px; font-size: 14px; color: #273049; }
+.conversion-panel-icon { display: grid; place-items: center; width: 32px; height: 32px; flex-shrink: 0; background: #e0e7ff; color: #4b6aff; border-radius: 11px; font-size: 25px; font-weight: 700; }
+.conversion-panel-target .conversion-panel-icon { background: #d9f4dd; color: #4caf50; }
+.conversion-flow { align-self: center; border-radius: 50%; background: #eaf0ff; color: #4b6aff; text-align: center; line-height: 36px; font-size: 22px; }
+.conversion-panel :deep(.el-table) { --el-table-header-bg-color: #f8f9ff; --el-table-border-color: #e9edf6; border-radius: 6px; }
+.conversion-panel :deep(.el-table th.el-table__cell) { font-size: 12px; color: #636e86; }
+.conversion-add-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 0 18px;
+}
+.conversion-add-row > .el-select:first-child { flex-basis: 100% !important; }
+.conversion-cost-check {
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  margin-top: 18px; padding: 18px 0; border-radius: 10px; background: #f7f9ff;
+}
+.conversion-metric { display: flex; align-items: center; gap: 13px; padding: 0 20px; border-right: 1px solid #e9edf6; color: #4c566d; font-size: 12px; }
+.conversion-metric:last-child { border: 0; }
+.conversion-metric strong { display: block; color: #202940; font-size: 22px; margin-top: 5px; }
+.conversion-metric small { display: block; margin-top: 4px; color: #8790a5; }
+.conversion-metric-icon { display: grid; place-items: center; width: 44px; height: 44px; flex-shrink: 0; border-radius: 50%; background: #e7edff; color: #4b6aff; font-size: 24px; }
+.conversion-metric-icon.green { background: #e5f6e9; color: #50b452; }
+.conversion-metric-icon.amber { background: #fff1d5; color: #e7a300; }
+.conversion-footer { display: flex; align-items: center; justify-content: space-between; gap: 20px; border-top: 1px solid #f0f2f7; padding-top: 14px; }
+.conversion-notice { text-align: left; padding: 12px 16px; border-radius: 6px; background: #f3f8ff; color: #727e95; font-size: 12px; line-height: 1.7; }
+.conversion-footer-actions { display: flex; flex-shrink: 0; }
+.conversion-footer-actions .el-button { height: 40px; padding: 0 24px; border-radius: 8px; }
+@media (max-width: 900px) {
+  .conversion-grid { grid-template-columns: minmax(0, 1fr); }
+  .conversion-flow { justify-self: center; width: 36px; transform: rotate(90deg); }
+  .conversion-meta { grid-template-columns: 1fr; }
+  .conversion-cost-check { grid-template-columns: 1fr; gap: 18px; }
+  .conversion-metric { border: 0; }
+  .conversion-footer { flex-wrap: wrap; }
+}
+.section-title {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 12px;
+  padding-left: 8px;
+  border-left: 3px solid #409eff;
+}
+.stock-breakdown {
+  font-size: 13px;
+  line-height: 2;
+}
+.inventory-resource-legend {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border: 1px solid #ebeef5;
+  border-radius: 4px;
+  background: #fafafa;
+  color: #606266;
+  font-size: 13px;
+}
+.model-filter-panel {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: -2px 0 12px;
+  padding: 8px 12px;
+  border: 1px solid #ebeef5;
+  border-radius: 4px;
+  background: #fafafa;
+}
+.model-filter-label {
+  color: #606266;
+  font-size: 13px;
+  font-weight: 600;
+}
+.model-filter-label-spaced {
+  margin-left: 10px;
+}
+.summary-metric-secondary {
+  margin-top: 4px;
+  color: #909399;
+  font-size: 12px;
+}
+.summary-continue-query {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
   margin-top: 16px;
-  justify-content: flex-end;
+  color: #606266;
+  font-size: 13px;
 }
+.summary-complete-text {
+  color: #67c23a;
+}
+.legend-title {
+  color: #303133;
+  font-weight: 600;
+}
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+.full-resource {
+  background: #67c23a;
+}
+.subsidy-resource {
+  background: #e6a23c;
+}
+.no-subsidy-resource {
+  background: #f56c6c;
+}
+.stock-quantity-reference {
+  cursor: help;
+  color: #409eff;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 3px;
+}
+.breakdown-locations {
+  border-top: 1px solid #ebeef5;
+  margin-top: 6px;
+  padding-top: 6px;
+}
+.breakdown-title {
+  color: #606266;
+  font-weight: 600;
+}
+.breakdown-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+.breakdown-location {
+  margin-top: 6px;
+}
+.breakdown-label {
+  color: #909399;
+}
+.breakdown-value {
+  color: #303133;
+  font-weight: 600;
+}
+.breakdown-resource-values {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px 8px;
+  max-width: 240px;
+}
+.breakdown-resource {
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+}
+.full-resource-text {
+  color: #67c23a;
+}
+.subsidy-resource-text {
+  color: #e6a23c;
+}
+.no-subsidy-resource-text {
+  color: #f56c6c;
+}
+.breakdown-empty {
+  color: #909399;
+}
+.warehouse-values {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  color: #303133;
+  font-weight: 600;
+}
+.transfer-out-photo-section {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid #ebeef5;
+}
+.transfer-out-photo-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  color: #303133;
+  font-weight: 600;
+}
+.transfer-out-photo-tip {
+  margin-top: 6px;
+  color: #909399;
+  font-size: 12px;
+}
+.order-summary {
+  margin-top: 16px;
+  padding: 12px 15px;
+  border-radius: 4px;
+  background: #f5f7fa;
+}
+.summary-item {
+  display: flex;
+  justify-content: space-between;
+  padding: 5px 0;
+}
+.summary-item.total {
+  font-size: 16px;
+  font-weight: 700;
+}
+.batch-invoice-preview { margin-top: 16px; }
+.batch-invoice-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.batch-invoice-toolbar > span { margin-inline-end: auto; }
 </style>

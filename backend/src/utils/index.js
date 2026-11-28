@@ -3,6 +3,7 @@
  */
 const { v4: uuidv4 } = require('uuid');
 const moment = require('moment');
+const { Op } = require('sequelize');
 
 /**
  * 生成UUID
@@ -68,12 +69,31 @@ function generateRequestNo() {
 
 /**
  * 生成商品编号
- * 规则: P + 年月日 + 5位序号
+ * 规则: SP + 5位递增序号 (如 SP00001, SP00002, ...)
+ * 需传入 Product 模型以查询当前最大编号
  */
-function generateProductCode() {
-  const date = moment().format('YYYYMMDD');
-  const seq = String(Math.floor(Math.random() * 100000)).padStart(5, '0');
-  return `P${date}${seq}`;
+async function generateProductCode(Product) {
+  if (!Product) {
+    const date = moment().format('YYYYMMDD');
+    const seq = String(Math.floor(Math.random() * 100000)).padStart(5, '0');
+    return `P${date}${seq}`;
+  }
+
+  const allCodes = await Product.findAll({
+    attributes: ['product_code'],
+    where: { product_code: { [Op.like]: 'SP%' } },
+    raw: true
+  });
+
+  let maxNum = 0;
+  for (const row of allCodes) {
+    const num = parseInt((row.product_code || '').replace('SP', ''), 10);
+    if (!isNaN(num) && num > maxNum) {
+      maxNum = num;
+    }
+  }
+
+  return `SP${String(maxNum + 1).padStart(5, '0')}`;
 }
 
 /**
@@ -102,15 +122,61 @@ function paginate(query, { page = 1, pageSize = 20 }) {
  * 格式化分页结果
  */
 function formatPaginatedResult(data, { page, pageSize, count }) {
+  const total = Number(count) || 0;
+  const currentPageSize = Math.min(Number(pageSize) || 20, 100);
   return {
     list: data,
+    total,
+    page: Number(page),
+    pageSize: currentPageSize,
+    totalPages: Math.ceil(total / currentPageSize),
     pagination: {
-      total: count,
+      total,
       page: Number(page),
-      pageSize: Number(pageSize),
-      totalPages: Math.ceil(count / pageSize)
+      pageSize: currentPageSize,
+      totalPages: Math.ceil(total / currentPageSize)
     }
   };
+}
+
+/**
+ * 业务清单统一排序：待处理状态优先，其次按业务时间倒序。
+ * 所有字段名必须由服务端常量传入，禁止传入用户输入。
+ */
+function buildPendingFirstOrder(sequelize, {
+  statusColumn,
+  pendingStatuses = [],
+  dateColumns = [],
+  idColumn
+}) {
+  if (!sequelize || typeof sequelize.literal !== 'function' || typeof sequelize.escape !== 'function') {
+    throw new TypeError('sequelize 实例无效');
+  }
+
+  const quoteColumn = (column) => {
+    const value = String(column || '');
+    if (!/^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$/.test(value)) {
+      throw new TypeError(`排序字段无效: ${value}`);
+    }
+    return value.split('.').map(part => `\`${part}\``).join('.');
+  };
+
+  const order = [];
+  if (statusColumn && pendingStatuses.length > 0) {
+    const escapedStatuses = pendingStatuses.map(status => sequelize.escape(String(status))).join(', ');
+    order.push([
+      sequelize.literal(`CASE WHEN ${quoteColumn(statusColumn)} IN (${escapedStatuses}) THEN 0 ELSE 1 END`),
+      'ASC'
+    ]);
+  }
+
+  for (const dateColumn of dateColumns) {
+    order.push([sequelize.literal(quoteColumn(dateColumn)), 'DESC']);
+  }
+  if (idColumn) {
+    order.push([sequelize.literal(quoteColumn(idColumn)), 'DESC']);
+  }
+  return order;
 }
 
 /**
@@ -126,8 +192,18 @@ function filterEmpty(data) {
   return result;
 }
 
+/**
+ * 生成带前缀的ID
+ */
+function generateId(prefix = '') {
+  const date = moment().format('YYYYMMDD');
+  const random = String(Math.floor(Math.random() * 100000)).padStart(5, '0');
+  return prefix + date + random;
+}
+
 module.exports = {
   generateUUID,
+  generateId,
   generateOrderNo,
   generatePurchaseNo,
   generateInboundNo,
@@ -138,5 +214,6 @@ module.exports = {
   generateBatchNo,
   paginate,
   formatPaginatedResult,
+  buildPendingFirstOrder,
   filterEmpty
 };

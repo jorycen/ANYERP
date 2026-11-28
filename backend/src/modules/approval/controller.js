@@ -1,0 +1,647 @@
+const { Op } = require('sequelize');
+const {
+  sequelize,
+  Staff,
+  Store,
+  Expense,
+  Role,
+  Payable,
+  PurchaseRequest,
+  PurchaseRequestItem,
+  Settlement,
+  SettlementItem,
+  ApprovalFlowDefinition,
+  ApprovalFlowInstance,
+  ApprovalTask,
+  ApprovalActionLog
+} = require('../../models');
+const { generateUUID } = require('../../utils');
+const {
+  createInstance,
+  actionInstance,
+  resubmitInstance,
+  normalizeFlowConfig,
+  parseJson,
+  getApprovalStoreWhere,
+  canReadApprovalStore
+} = require('./service');
+
+function isAdmin(user) {
+  return user.roles?.some(role => ['admin', 'boss'].includes(role));
+}
+
+function bodyError(ctx, error) {
+  ctx.throw(400, error.message || String(error));
+}
+
+function approvalInstanceVisibilityWhere(user) {
+  const storeWhere = getApprovalStoreWhere(user);
+  if (!storeWhere) return null;
+  return {
+    [Op.or]: [
+      storeWhere,
+      { store_id: { [Op.is]: null }, distributor_id: { [Op.in]: require('../../utils/distributorScope').accessibleDistributorIds(user).filter(id => id !== '*') } }
+    ]
+  };
+}
+
+function toFlow(row) {
+  const data = row.toJSON();
+  data.config = parseJson(data.config_json, {});
+  const bound = new Set(require('./catalog').defaultCatalog().map(item => item.flowCode));
+  data.binding_status = bound.has(data.flow_code) ? 'business' : 'standalone';
+  delete data.config_json;
+  return data;
+}
+
+function toInstance(row) {
+  const data = row.toJSON ? row.toJSON() : row;
+  data.payload = parseJson(data.payload_json, null);
+  data.definitionSnapshot = parseJson(data.definition_snapshot_json, {});
+  delete data.payload_json;
+  delete data.definition_snapshot_json;
+  return data;
+}
+
+async function listFlows(ctx) {
+  const where = {};
+  if (ctx.query.businessType) where.business_type = ctx.query.businessType;
+  const rows = await ApprovalFlowDefinition.findAll({ where, order: [['flow_code', 'ASC'], ['version', 'DESC']] });
+  const currentByCode = new Map();
+  for (const row of rows) {
+    if (!currentByCode.has(row.flow_code)) currentByCode.set(row.flow_code, row);
+  }
+  ctx.body = [...currentByCode.values()]
+    .filter(row => !ctx.query.status || row.status === ctx.query.status)
+    .map(toFlow);
+}
+
+async function getFlow(ctx) {
+  const row = await ApprovalFlowDefinition.findByPk(ctx.params.definitionId);
+  if (!row) ctx.throw(404, '审批流程不存在');
+  ctx.body = toFlow(row);
+}
+
+function validateFlowBody(ctx, body) {
+  const flowCode = String(body.flowCode || body.flow_code || '').trim();
+  const name = String(body.name || '').trim();
+  const businessType = String(body.businessType || body.business_type || '').trim();
+  if (!flowCode || !/^[A-Za-z0-9_.-]{2,64}$/.test(flowCode)) ctx.throw(400, '流程编码必须为2-64位英文、数字、点、下划线或短横线');
+  if (!name) ctx.throw(400, '请输入流程名称');
+  if (!businessType) ctx.throw(400, '请输入业务类型');
+  let config;
+  try { config = normalizeFlowConfig(body.config || body); } catch (error) { bodyError(ctx, error); }
+  return { flowCode, name, businessType, subjectType: body.subjectType || body.subject_type || 'staff', config };
+}
+
+async function createFlow(ctx) {
+  const input = validateFlowBody(ctx, ctx.request.body || {});
+  const existing = await ApprovalFlowDefinition.findOne({ where: { flow_code: input.flowCode }, order: [['version', 'DESC']] });
+  const builtin = require('./catalog').defaultCatalog().find(item => item.flowCode === input.flowCode);
+  if ((builtin && builtin.businessType !== input.businessType) || (existing && existing.business_type !== input.businessType)) ctx.throw(400, '流程编码已绑定业务类型，不可更改');
+  const row = await ApprovalFlowDefinition.create({
+    definition_id: generateUUID(),
+    flow_code: input.flowCode,
+    name: input.name,
+    business_type: input.businessType,
+    subject_type: input.subjectType,
+    version: existing ? Number(existing.version) + 1 : 1,
+    status: 'draft',
+    config_json: JSON.stringify(input.config),
+    create_staff_id: ctx.state.user.staffId,
+    update_staff_id: ctx.state.user.staffId
+  });
+  ctx.body = { code: 0, message: '审批流程已保存为草稿', data: toFlow(row) };
+}
+
+async function updateFlow(ctx) {
+  const row = await ApprovalFlowDefinition.findByPk(ctx.params.definitionId);
+  if (!row) ctx.throw(404, '\u5ba1\u6279\u6d41\u7a0b\u4e0d\u5b58\u5728');
+  const input = validateFlowBody(ctx, ctx.request.body || {});
+  if (input.flowCode !== row.flow_code || input.businessType !== row.business_type) ctx.throw(400, '\u5df2\u6709\u6d41\u7a0b\u7684\u7f16\u7801\u548c\u4e1a\u52a1\u7c7b\u578b\u4e0d\u53ef\u4fee\u6539\uff0c\u8bf7\u4ec5\u8c03\u6574\u540d\u79f0\u548c\u5ba1\u6279\u8282\u70b9');
+  await validateFlowConfigApprovers(ctx, input.config);
+
+  let current = row;
+  await sequelize.transaction(async transaction => {
+    if (row.status === 'draft') {
+      await row.update({ name: input.name, subject_type: input.subjectType, config_json: JSON.stringify(input.config), status: 'published', update_staff_id: ctx.state.user.staffId, update_time: new Date() }, { transaction });
+    } else {
+      const latest = await ApprovalFlowDefinition.findOne({ where: { flow_code: row.flow_code }, order: [['version', 'DESC']], transaction, lock: transaction.LOCK.UPDATE });
+      current = await ApprovalFlowDefinition.create({
+        definition_id: generateUUID(), flow_code: row.flow_code, name: input.name,
+        business_type: input.businessType, subject_type: input.subjectType,
+        version: Number(latest?.version || row.version) + 1, status: 'published',
+        config_json: JSON.stringify(input.config), create_staff_id: ctx.state.user.staffId,
+        update_staff_id: ctx.state.user.staffId
+      }, { transaction });
+    }
+    await ApprovalFlowDefinition.update(
+      { status: 'disabled', update_staff_id: ctx.state.user.staffId, update_time: new Date() },
+      { where: { flow_code: row.flow_code, status: 'published', definition_id: { [Op.ne]: current.definition_id } }, transaction }
+    );
+  });
+  ctx.body = { code: 0, message: '\u5ba1\u6279\u6d41\u7a0b\u5df2\u66f4\u65b0\u5e76\u7acb\u5373\u751f\u6548\uff1b\u8fdb\u884c\u4e2d\u7684\u5ba1\u6279\u4fdd\u7559\u63d0\u4ea4\u65f6\u7684\u6d41\u7a0b', data: toFlow(current) };
+}
+
+async function validateFlowConfigApprovers(ctx, config) {
+  const fixedIds = config.nodes.flatMap(node => node.approvers).filter(rule => rule.type === 'fixed_user').map(rule => Number(rule.staffId));
+  if (fixedIds.length) {
+    const active = await Staff.findAll({ where: { staff_id: { [Op.in]: fixedIds }, status: 1, is_deleted: 0 }, attributes: ['staff_id'] });
+    if (fixedIds.some(id => !active.some(staff => Number(staff.staff_id) === id))) ctx.throw(400, '\u6d41\u7a0b\u5305\u542b\u4e0d\u5b58\u5728\u6216\u5df2\u505c\u7528\u7684\u5ba1\u6279\u4eba\uff0c\u8bf7\u91cd\u65b0\u9009\u62e9');
+  }
+  const roleCodes = [...new Set(config.nodes.flatMap(node => node.approvers).filter(rule => rule.type === 'role').map(rule => rule.roleCode))];
+  if (roleCodes.length) {
+    const activeRoles = await Role.findAll({ where: { role_code: { [Op.in]: roleCodes }, status: 1 }, attributes: ['role_code'] });
+    if (roleCodes.some(code => !activeRoles.some(role => role.role_code === code))) ctx.throw(400, '\u6d41\u7a0b\u5305\u542b\u4e0d\u5b58\u5728\u6216\u5df2\u505c\u7528\u7684\u5ba1\u6279\u89d2\u8272\uff0c\u8bf7\u91cd\u65b0\u9009\u62e9');
+  }
+}
+
+async function publishFlow(ctx) {
+  const row = await ApprovalFlowDefinition.findByPk(ctx.params.definitionId);
+  if (!row) ctx.throw(404, '审批流程不存在');
+  if (row.status !== 'draft') ctx.throw(400, '只有草稿流程可以发布');
+  let config;
+  try { config = normalizeFlowConfig(row.config_json); } catch (error) { bodyError(ctx, error); }
+  const fixedIds = config.nodes.flatMap(node => node.approvers).filter(rule => rule.type === 'fixed_user').map(rule => Number(rule.staffId));
+  if (fixedIds.length) {
+    const active = await Staff.findAll({ where: { staff_id: { [Op.in]: fixedIds }, status: 1, is_deleted: 0 }, attributes: ['staff_id'] });
+    if (fixedIds.some(id => !active.some(staff => Number(staff.staff_id) === id))) ctx.throw(400, '流程包含不存在或已停用的审批人，请重新选择');
+  }
+  const roleCodes = [...new Set(config.nodes.flatMap(node => node.approvers).filter(rule => rule.type === 'role').map(rule => rule.roleCode))];
+  if (roleCodes.length) {
+    const activeRoles = await Role.findAll({ where: { role_code: { [Op.in]: roleCodes }, status: 1 }, attributes: ['role_code'] });
+    if (roleCodes.some(code => !activeRoles.some(role => role.role_code === code))) ctx.throw(400, '流程包含不存在或已停用的审批角色，请重新选择');
+  }
+  await sequelize.transaction(async transaction => {
+    await ApprovalFlowDefinition.update({ status: 'disabled', update_staff_id: ctx.state.user.staffId, update_time: new Date() }, { where: { flow_code: row.flow_code, status: 'published' }, transaction });
+    await row.update({ status: 'published', update_staff_id: ctx.state.user.staffId, update_time: new Date() }, { transaction });
+  });
+  ctx.body = { code: 0, message: '审批流程已发布' };
+}
+
+async function validatePublishConfig(ctx, row) {
+  let config;
+  try { config = normalizeFlowConfig(row.config_json); } catch (error) { bodyError(ctx, error); }
+  const fixedIds = config.nodes.flatMap(node => node.approvers).filter(rule => rule.type === 'fixed_user').map(rule => Number(rule.staffId));
+  if (fixedIds.length) {
+    const active = await Staff.findAll({ where: { staff_id: { [Op.in]: fixedIds }, status: 1, is_deleted: 0 }, attributes: ['staff_id'] });
+    if (fixedIds.some(id => !active.some(staff => Number(staff.staff_id) === id))) ctx.throw(400, '\u6d41\u7a0b\u5305\u542b\u4e0d\u5b58\u5728\u6216\u5df2\u505c\u7528\u7684\u5ba1\u6279\u4eba\uff0c\u8bf7\u91cd\u65b0\u9009\u62e9');
+  }
+  const roleCodes = [...new Set(config.nodes.flatMap(node => node.approvers).filter(rule => rule.type === 'role').map(rule => rule.roleCode))];
+  if (roleCodes.length) {
+    const activeRoles = await Role.findAll({ where: { role_code: { [Op.in]: roleCodes }, status: 1 }, attributes: ['role_code'] });
+    if (roleCodes.some(code => !activeRoles.some(role => role.role_code === code))) ctx.throw(400, '\u6d41\u7a0b\u5305\u542b\u4e0d\u5b58\u5728\u6216\u5df2\u505c\u7528\u7684\u5ba1\u6279\u89d2\u8272\uff0c\u8bf7\u91cd\u65b0\u9009\u62e9');
+  }
+  return config;
+}
+
+async function enableFlow(ctx) {
+  const row = await ApprovalFlowDefinition.findByPk(ctx.params.definitionId);
+  if (!row) ctx.throw(404, '\u5ba1\u6279\u6d41\u7a0b\u4e0d\u5b58\u5728');
+  if (row.status !== 'disabled') ctx.throw(400, '\u53ea\u6709\u5df2\u505c\u7528\u7684\u6d41\u7a0b\u53ef\u4ee5\u91cd\u65b0\u542f\u7528');
+  await validatePublishConfig(ctx, row);
+  await sequelize.transaction(async transaction => {
+    await ApprovalFlowDefinition.update({ status: 'disabled', update_staff_id: ctx.state.user.staffId, update_time: new Date() }, { where: { flow_code: row.flow_code, status: 'published' }, transaction });
+    await row.update({ status: 'published', update_staff_id: ctx.state.user.staffId, update_time: new Date() }, { transaction });
+  });
+  ctx.body = { code: 0, message: '\u5ba1\u6279\u6d41\u7a0b\u5df2\u542f\u7528', data: toFlow(row) };
+}
+
+async function disableFlow(ctx) {
+  const row = await ApprovalFlowDefinition.findByPk(ctx.params.definitionId);
+  if (!row) ctx.throw(404, '审批流程不存在');
+  await row.update({ status: 'disabled', update_staff_id: ctx.state.user.staffId, update_time: new Date() });
+  ctx.body = { code: 0, message: '审批流程已停用' };
+}
+
+async function listTasks(ctx) {
+  const paginated = ctx.query.page !== undefined || ctx.query.pageSize !== undefined;
+  const page = Math.max(1, Number(ctx.query.page) || 1);
+  const pageSize = Math.min(100, Math.max(1, Number(ctx.query.pageSize) || 20));
+  const where = { assignee_staff_id: ctx.state.user.staffId };
+  if (ctx.query.status) where.status = ctx.query.status;
+  else where.status = 'pending';
+  const storeWhere = approvalInstanceVisibilityWhere(ctx.state.user);
+  const instanceInclude = {
+    model: ApprovalFlowInstance,
+    as: 'Instance',
+    attributes: ['instance_id', 'instance_no', 'business_type', 'business_id', 'title', 'summary', 'applicant_staff_id', 'subject_staff_id', 'store_id', 'status', 'resubmit_count', 'create_time']
+  };
+  if (storeWhere) {
+    instanceInclude.where = storeWhere;
+    instanceInclude.required = true;
+  }
+  instanceInclude.where = { ...(instanceInclude.where || {}), business_type: { [Op.notIn]: Object.keys(require('./businessRuntime').registry) } };
+  instanceInclude.required = true;
+  const result = await ApprovalTask.findAndCountAll({
+    where,
+    include: [instanceInclude],
+    order: [['create_time', 'DESC'], ['task_id', 'DESC']],
+    limit: pageSize,
+    offset: (page - 1) * pageSize,
+    distinct: true
+  });
+  const tasks = result.rows;
+  const settlementIds = tasks
+    .filter(task => task.Instance?.business_type === 'payable_settlement')
+    .map(task => String(task.Instance.business_id || ''))
+    .filter(Boolean);
+  const settlements = settlementIds.length ? await Settlement.findAll({
+    where: { settlement_id: settlementIds, is_deleted: 0 },
+    attributes: ['settlement_id', 'settlement_no', 'supplier_name', 'payee_name', 'settlement_type', 'payee_type', 'source_type', 'source_id', 'source_no', 'tax_status', 'total_amount', 'paid_amount', 'status', 'payment_status', 'remark', 'create_user', 'submit_time', 'create_time'],
+    include: [{ model: SettlementItem, as: 'items', attributes: ['request_no', 'product_name', 'quantity', 'unit_price', 'amount'], required: false }]
+  }) : [];
+  const settlementMap = new Map(settlements.map(row => [String(row.settlement_id), row.toJSON()]));
+  const expenseIds = tasks.filter(task => ['expense', 'purchase_expense', 'expense_attribution'].includes(task.Instance?.business_type)).map(task => String(task.Instance.business_id || '')).filter(Boolean);
+  const expenses = expenseIds.length ? await Expense.findAll({
+    where: { expense_id: expenseIds, is_deleted: 0 },
+    attributes: ['expense_id', 'expense_no', 'expense_type', 'expense_party', 'amount', 'accounting_month', 'affects_store_profit', 'payment_method', 'has_invoice', 'invoice_type', 'invoice_no', 'expense_date', 'attribution_type', 'attribution_method', 'attribution_details_json', 'attachment_urls', 'recipient_snapshot_json', 'applicant_staff_id', 'applicant_name', 'operator_name', 'submit_user', 'source_type', 'source_no', 'related_order_no', 'remark', 'create_time'],
+    include: [{ model: Store, attributes: ['store_id', 'name'], required: false }]
+  }) : [];
+  const expenseMap = new Map(expenses.map(row => [String(row.expense_id), row.toJSON()]));
+  const list = tasks.map(task => {
+    const data = task.toJSON();
+    if (data.Instance?.business_type === 'payable_settlement') {
+      const settlement = settlementMap.get(String(data.Instance.business_id));
+      data.Instance.display = settlement ? {
+        settlement_no: settlement.settlement_no,
+        applicant_name: settlement.create_user || '',
+        supplier_name: settlement.supplier_name,
+        payee_name: settlement.payee_name,
+        funding_type: ['personal_advance', 'personal', 'employee', 'staff', 'reimbursement', 'expense'].includes(String(settlement.payee_type || settlement.settlement_type || '').toLowerCase()) ? '个人垫付' : '供应商付款',
+        source_type: settlement.source_type,
+        source_no: settlement.source_no,
+        tax_status: settlement.tax_status,
+        amount: Number(settlement.total_amount || 0),
+        paid_amount: Number(settlement.paid_amount || 0),
+        status: settlement.status,
+        payment_status: settlement.payment_status,
+        remark: settlement.remark || '',
+        create_user: settlement.create_user || '',
+        submit_time: settlement.submit_time,
+        create_time: settlement.create_time,
+        purchase_request_nos: [...new Set((settlement.items || []).map(item => item.request_no).filter(Boolean))],
+        items: (settlement.items || []).map(item => ({
+          request_no: item.request_no || '',
+          product_name: item.product_name || '',
+          quantity: Number(item.quantity || 0),
+          unit_price: Number(item.unit_price || 0),
+          amount: Number(item.amount || 0)
+        }))
+      } : {};
+    }
+    if (['expense', 'purchase_expense', 'expense_attribution'].includes(data.Instance?.business_type)) {
+      const expense = expenseMap.get(String(data.Instance.business_id));
+      data.Instance.display = expense ? {
+        ...expense,
+        store_name: expense.Store?.name || '',
+        attribution_details: parseJson(expense.attribution_details_json, [])
+      } : {};
+    }
+    return data;
+  });
+  ctx.body = paginated
+    ? { list, total: result.count, page, pageSize, totalPages: Math.ceil(result.count / pageSize) }
+    : list;
+}
+
+function instanceAccessWhere(user, scope) {
+  if (scope === 'all' && isAdmin(user)) return {};
+  return { applicant_staff_id: user.staffId };
+}
+
+async function enrichInstanceProgress(rows) {
+  const pendingRows = rows.filter(row => row.status === 'pending');
+  if (!pendingRows.length) return;
+  const instanceIds = pendingRows.map(row => row.instance_id);
+  const instanceMap = new Map(pendingRows.map(row => [String(row.instance_id), row]));
+  const tasks = await ApprovalTask.findAll({
+    where: { instance_id: { [Op.in]: instanceIds }, status: 'pending' },
+    include: [{ model: Staff, as: 'Assignee', attributes: ['staff_id', 'name', 'phone'] }],
+    order: [['node_index', 'ASC'], ['task_order', 'ASC']]
+  });
+  const taskMap = new Map();
+  for (const task of tasks) {
+    const instance = instanceMap.get(String(task.instance_id));
+    if (!instance
+      || Number(task.node_index) !== Number(instance.current_node_index)
+      || Number(task.round_no) !== Number(instance.resubmit_count)) continue;
+    const key = String(task.instance_id);
+    if (!taskMap.has(key)) taskMap.set(key, []);
+    taskMap.get(key).push(task);
+  }
+  for (const instance of pendingRows) {
+    const currentTasks = taskMap.get(String(instance.instance_id)) || [];
+    const nodeName = currentTasks[0]?.node_name || `第${Number(instance.current_node_index || 0) + 1}环节`;
+    const approverNames = [...new Set(currentTasks.map(task => task.Assignee?.name || task.Assignee?.phone).filter(Boolean))];
+    instance.setDataValue('current_stage_name', nodeName);
+    instance.setDataValue('current_approver_names', approverNames);
+    instance.setDataValue('current_progress_text', approverNames.length ? `${nodeName}（${approverNames.join('、')}）` : nodeName);
+  }
+}
+
+async function listInstances(ctx) {
+  const scope = ctx.query.scope || 'mine';
+  const where = ['todo', 'handled'].includes(scope) ? {} : { [Op.and]: [instanceAccessWhere(ctx.state.user, scope)] };
+  // An applicant or actual reviewer keeps access to their own history after
+  // changing stores. Other scopes still use the current store visibility.
+  const storeWhere = ['mine', 'handled'].includes(scope) ? null : approvalInstanceVisibilityWhere(ctx.state.user);
+  if (storeWhere) where[Op.and] = [...(where[Op.and] || []), storeWhere];
+  const handledFilters = require('./handledFilters');
+  let range;
+  if (scope === 'handled' || scope === 'mine') {
+    try {
+      range = handledFilters.dateRange(ctx.query);
+      if (ctx.query.title) where.title = { [Op.substring]: String(ctx.query.title).trim() };
+      if (ctx.query.businessType) where.business_type = String(ctx.query.businessType);
+      if (ctx.query.instanceNo) where.instance_no = { [Op.substring]: String(ctx.query.instanceNo).trim() };
+      for (const kind of ['pn','sn']) {
+        const condition = handledFilters.productFilter(require('../../models'), require('./businessRuntime').registry, kind, ctx.query[kind]);
+        if (condition) where[Op.and] = [...(where[Op.and] || []), condition];
+      }
+      if (range && (scope === 'mine' || ctx.query.dateType === 'submitted')) where.create_time = range;
+    } catch (error) { ctx.throw(400, error.message); }
+  }
+  let handledTasks = [];
+  if (scope === 'todo' || scope === 'handled') {
+    const taskInclude = {
+      model: ApprovalFlowInstance,
+      as: 'Instance',
+      attributes: [],
+      required: Boolean(storeWhere),
+      ...(storeWhere ? { where: storeWhere } : {})
+    };
+    const taskRows = await ApprovalTask.findAll({
+      where: {
+        assignee_staff_id: ctx.state.user.staffId,
+        ...(scope === 'handled' && range && ctx.query.dateType !== 'submitted' ? { acted_time: range } : {}),
+        ...(scope === 'handled' ? { status: ctx.query.reviewStatus && ['approved', 'rejected'].includes(ctx.query.reviewStatus) ? ctx.query.reviewStatus : { [Op.in]: ['approved', 'rejected'] } } : { status: 'pending' })
+      },
+      include: [taskInclude],
+      attributes: ['instance_id', 'status', 'node_name', 'comment', 'acted_time'],
+      raw: true
+    });
+    if (scope === 'handled') handledTasks = taskRows;
+    where.instance_id = taskRows.length ? [...new Set(taskRows.map(row => String(row.instance_id)))] : '';
+  }
+  if (ctx.query.status) where.status = ctx.query.status;
+  const paginated = ctx.query.page !== undefined || ctx.query.pageSize !== undefined;
+  const page = Math.max(1, Number(ctx.query.page) || 1);
+  const pageSize = Math.min(100, Math.max(1, Number(ctx.query.pageSize) || Number(ctx.query.limit) || 20));
+  const queryOptions = {
+    where,
+    order: [['create_time', 'DESC'], ['instance_id', 'DESC']],
+    ...(paginated ? { limit: pageSize, offset: (page - 1) * pageSize } : { limit: Math.min(Number(ctx.query.limit || 100), 500) })
+  };
+  const result = paginated
+    ? await ApprovalFlowInstance.findAndCountAll(queryOptions)
+    : { rows: await ApprovalFlowInstance.findAll(queryOptions) };
+  const businessTypes = scope === 'handled' ? (await ApprovalFlowInstance.findAll({
+    attributes: ['business_type'],
+    include: [{ model: ApprovalTask, as: 'Tasks', attributes: [], required: true,
+      where: { assignee_staff_id: ctx.state.user.staffId, status: { [Op.in]: ['approved','rejected'] } } }],
+    group: ['ApprovalFlowInstance.business_type'], raw: true
+  })).map(row => row.business_type) : scope === 'mine' ? (await ApprovalFlowInstance.findAll({
+    attributes: ['business_type'],
+    where: instanceAccessWhere(ctx.state.user, 'mine'),
+    group: ['business_type'], raw: true
+  })).map(row => row.business_type) : [];
+  const rows = result.rows;
+  await enrichInstanceProgress(rows);
+  const applicantIds = [...new Set(rows.map(row => row.applicant_staff_id).filter(Boolean))];
+  const applicants = applicantIds.length ? await Staff.findAll({
+    where: { staff_id: { [Op.in]: applicantIds } },
+    attributes: ['staff_id', 'name']
+  }) : [];
+  const applicantNames = new Map(applicants.map(row => [String(row.staff_id), row.name]));
+  const lastHandled = new Map();
+  for (const task of handledTasks) {
+    const key = String(task.instance_id);
+    const previous = lastHandled.get(key);
+    if (!previous || new Date(task.acted_time || 0) > new Date(previous.acted_time || 0)) lastHandled.set(key, task);
+  }
+  const list = rows.map(row => {
+    const data = toInstance(row);
+    data.applicant_name = applicantNames.get(String(row.applicant_staff_id)) || '';
+    const review = lastHandled.get(String(row.instance_id));
+    if (review) {
+      data.my_review_status = review.status;
+      data.my_review_node_name = review.node_name || '';
+      data.my_review_comment = review.comment || '';
+      data.my_review_time = review.acted_time || null;
+    }
+    return data;
+  });
+  ctx.body = paginated
+    ? { list, total: result.count, page, pageSize, totalPages: Math.ceil(result.count / pageSize), ...(['handled', 'mine'].includes(scope) ? { businessTypes } : {}) }
+    : list;
+}
+
+async function canReadInstance(ctx, instance) {
+  if (Number(instance.applicant_staff_id) === Number(ctx.state.user.staffId) || Number(instance.subject_staff_id) === Number(ctx.state.user.staffId)) return true;
+  if (await ApprovalTask.findOne({ where: { instance_id: instance.instance_id, assignee_staff_id: ctx.state.user.staffId } })) return true;
+  const managed = parseJson(instance.payload_json, {}).managedBusiness;
+  if (managed ? !require('./businessRuntime').visible(ctx.state.user, instance) : !canReadApprovalStore(ctx.state.user, instance.store_id, instance.business_type, instance.distributor_id)) return false;
+  if (isAdmin(ctx.state.user)) return true;
+  return false;
+}
+
+async function getInstance(ctx) {
+  const row = await ApprovalFlowInstance.findByPk(ctx.params.instanceId, {
+    include: [
+      { model: ApprovalTask, as: 'Tasks', include: [{ model: Staff, as: 'Assignee', attributes: ['staff_id', 'name'] }], order: [['round_no', 'ASC'], ['node_index', 'ASC'], ['task_order', 'ASC']] },
+      { model: ApprovalActionLog, as: 'Logs', include: [{ model: Staff, as: 'Actor', attributes: ['staff_id', 'name'] }], order: [['create_time', 'ASC']] }
+    ],
+    order: [
+      [{ model: ApprovalTask, as: 'Tasks' }, 'round_no', 'ASC'],
+      [{ model: ApprovalTask, as: 'Tasks' }, 'node_index', 'ASC'],
+      [{ model: ApprovalTask, as: 'Tasks' }, 'task_order', 'ASC'],
+      [{ model: ApprovalActionLog, as: 'Logs' }, 'create_time', 'ASC']
+    ]
+  });
+  if (!row) ctx.throw(404, '审批实例不存在');
+  if (!(await canReadInstance(ctx, row))) ctx.throw(403, '无权查看该审批实例');
+  const data = toInstance(row);
+  if (data.business_type === 'resource_claim') {
+    data.moduleData = await require('./resourceClaimDetail').resourceClaimDetail(data.business_id);
+  }
+  if (data.business_type === 'sale_resource_reward') {
+    data.moduleData = await require('./resourceRewardDetail').resourceRewardDetail(data.business_id);
+  }
+  if (data.business_type === 'profit_adjustment') {
+    const models = require('../../models');
+    const adjustment = await models.PerformanceProfitAdjustment.findByPk(data.business_id, {
+      include: [{ model: models.PerformanceProfitAdjustmentAttachment, as: 'attachments' }]
+    });
+    if (adjustment) data.moduleData = require('../report/settlementPriceCorrection').display(adjustment.toJSON(), ctx.state.user);
+  }
+  if (['sales_component_recovery', 'gift_receipt'].includes(data.business_type)) {
+    const receipt = await require('../../models').NonPurchaseReceipt.findByPk(data.business_id);
+    if (receipt) {
+      data.moduleData = { ...receipt.toJSON(), items: JSON.parse(receipt.payload_json).items };
+    }
+  }
+  if (data.business_type === 'payable_settlement') {
+    const applicant = data.applicant_staff_id
+      ? await Staff.findByPk(data.applicant_staff_id, { attributes: ['staff_id', 'name', 'phone'] })
+      : null;
+    const settlement = await Settlement.findOne({
+      where: { settlement_id: data.business_id, is_deleted: 0 },
+      attributes: ['settlement_id', 'settlement_no', 'payee_name', 'supplier_name', 'settlement_type', 'payee_type', 'source_type', 'source_id', 'source_no', 'tax_status', 'total_amount', 'paid_amount', 'status', 'payment_status', 'remark', 'create_user', 'create_staff_id', 'create_time', 'submit_time', 'supplier_account_snapshot', 'other_payment_remark'],
+      include: [{ model: SettlementItem, as: 'items', attributes: ['payable_id', 'request_item_id', 'request_no', 'product_id', 'product_name', 'quantity', 'unit_price', 'amount'], required: false }]
+    });
+    const settlementItems = settlement?.items || [];
+    const payableIds = [...new Set(settlementItems.map(item => item.payable_id).filter(Boolean))];
+    const payables = payableIds.length ? await Payable.findAll({
+      where: { payable_id: payableIds },
+      attributes: ['payable_id', 'request_id', 'request_no', 'supplier_name', 'payee_type', 'payee_name', 'source_type', 'source_no', 'total_amount']
+    }) : [];
+    const payableMap = new Map(payables.map(item => [String(item.payable_id), item]));
+    const requestIds = [...new Set(payables.map(item => item.request_id).filter(Boolean))];
+    const requestNos = [...new Set([...settlementItems.map(item => item.request_no), ...payables.map(item => item.request_no)].filter(Boolean))];
+    const requests = requestIds.length || requestNos.length ? await PurchaseRequest.findAll({
+      where: {
+        [Op.or]: [
+          ...(requestIds.length ? [{ request_id: requestIds }] : []),
+          ...(requestNos.length ? [{ request_no: requestNos }] : [])
+        ]
+      },
+      attributes: ['request_id', 'request_no', 'payment_method', 'apply_user', 'applicant_staff_id', 'create_user', 'submit_user', 'store_id', 'total_amount', 'actual_total', 'reason', 'create_time']
+    }) : [];
+    const requestMap = new Map(requests.map(item => [String(item.request_id), item]));
+    const requestNoMap = new Map(requests.map(item => [String(item.request_no), item]));
+    const requestItemIds = [...new Set(settlementItems.map(item => item.request_item_id).filter(Boolean))];
+    const requestItems = requestItemIds.length ? await PurchaseRequestItem.findAll({
+      where: { item_id: requestItemIds },
+      attributes: ['item_id', 'request_id', 'product_id', 'product_name', 'product_code', 'pn_code', 'quantity', 'unit_price', 'subtotal']
+    }) : [];
+    const requestItemMap = new Map(requestItems.map(item => [String(item.item_id), item]));
+    const paymentMethods = [...requests.map(item => item.payment_method), settlement?.payee_type, settlement?.settlement_type]
+      .filter(Boolean).map(value => String(value).toLowerCase());
+    const isPersonalAdvance = paymentMethods.some(value => ['personal_advance', 'personal', 'employee', 'staff', 'reimbursement', 'expense'].includes(value));
+    const fundingType = isPersonalAdvance ? '个人垫付' : '供应商付款';
+    const snapshot = parseJson(settlement?.supplier_account_snapshot, {}) || {};
+    data.counterparty_payment_info = {
+      payeeName: settlement?.payee_name || settlement?.supplier_name || '',
+      companyName: snapshot.companyName || '',
+      bankName: snapshot.bankName || '',
+      accountNumber: snapshot.accountNumber || '',
+      taxNo: snapshot.taxNo || '',
+      remark: snapshot.remark || settlement?.other_payment_remark || '',
+      available: Boolean(snapshot.companyName || snapshot.bankName || snapshot.accountNumber || snapshot.taxNo || snapshot.remark || settlement?.other_payment_remark)
+    };
+    data.settlement_detail = settlement ? {
+      settlement_id: settlement.settlement_id,
+      settlement_no: settlement.settlement_no,
+      supplier_name: settlement.supplier_name || '',
+      payee_name: settlement.payee_name || '',
+      funding_type: fundingType,
+      settlement_type: settlement.settlement_type || '',
+      payee_type: settlement.payee_type || '',
+      source_type: settlement.source_type || '',
+      source_id: settlement.source_id || '',
+      source_no: settlement.source_no || '',
+      tax_status: settlement.tax_status || '',
+      total_amount: Number(settlement.total_amount || 0),
+      paid_amount: Number(settlement.paid_amount || 0),
+      rebate_deduction: Number(settlement.rebate_deduction || 0),
+      status: settlement.status || '',
+      payment_status: settlement.payment_status || '',
+      remark: settlement.remark || settlement.other_payment_remark || '',
+      create_user: settlement.create_user || '',
+      applicant_name: applicant?.name || settlement.create_user || '',
+      applicant_phone: applicant?.phone || '',
+      create_time: settlement.create_time,
+      submit_time: settlement.submit_time,
+      purchase_request_nos: [...new Set(settlementItems.map(item => item.request_no || payableMap.get(String(item.payable_id))?.request_no).filter(Boolean))],
+      purchase_requests: requests.map(request => ({
+        request_id: request.request_id,
+        request_no: request.request_no || '',
+        payment_method: request.payment_method || '',
+        applicant_name: request.apply_user || request.submit_user || request.create_user || '',
+        store_id: request.store_id || '',
+        total_amount: Number(request.total_amount || 0),
+        actual_total: Number(request.actual_total || 0),
+        reason: request.reason || '',
+        create_time: request.create_time
+      })),
+      items: settlementItems.map(item => {
+        const requestItem = requestItemMap.get(String(item.request_item_id));
+        const payable = payableMap.get(String(item.payable_id));
+        const request = requestItem ? requestMap.get(String(requestItem.request_id)) : requestNoMap.get(String(item.request_no || payable?.request_no || ''));
+        return {
+        request_no: item.request_no || payable?.request_no || request?.request_no || '',
+        product_id: item.product_id || requestItem?.product_id || '',
+        product_code: requestItem?.product_code || '',
+        pn_code: requestItem?.pn_code || '',
+        product_name: item.product_name || requestItem?.product_name || '',
+        quantity: Number(item.quantity || requestItem?.quantity || 0),
+        unit_price: Number(item.unit_price || requestItem?.unit_price || 0),
+        amount: Number(item.amount || 0)
+        };
+      })
+    } : null;
+    data.applicant_name = applicant?.name || data.settlement_detail?.applicant_name || data.applicant_name || '';
+    data.applicant_phone = applicant?.phone || '';
+  }
+  if (['expense', 'purchase_expense', 'expense_attribution'].includes(data.business_type)) {
+    const expense = await Expense.findOne({ where: { expense_id: data.business_id, is_deleted: 0 }, include: [{ model: Store, attributes: ['store_id', 'name'], required: false }] });
+    if (expense) {
+      data.moduleData = expense.toJSON();
+      data.moduleData.expense_items = require('../finance/expenseItems').display(expense);
+      data.moduleData.profit_deduction = require('../finance/expenseProfitDeduction').display(expense);
+      data.moduleData.store_name = data.moduleData.Store?.name || '';
+      data.moduleData.attribution_details = parseJson(data.moduleData.attribution_details_json, []);
+      let attachmentUrls = parseJson(data.moduleData.attachment_urls, []);
+      if (!Array.isArray(attachmentUrls)) attachmentUrls = [];
+      data.moduleData.attachments = attachmentUrls.map(item => typeof item === 'string' ? { url: item, original_name: item.split('/').pop() || '附件' } : item).filter(item => item && typeof item === 'object');
+      data.applicant_name = data.moduleData.applicant_name || data.moduleData.submit_user || data.moduleData.create_user || data.applicant_name || '';
+      data.store_name = data.moduleData.store_name || '';
+    }
+  }
+  ctx.body = data;
+}
+
+async function submitInstance(ctx) {
+  const input = ctx.request.body || {};
+  if (['storeId', 'distributorId', 'initialNodeIndex'].some(key => input[key] !== undefined)) ctx.throw(400, '审批归属和起始节点由业务单据确定，不可手动指定');
+  if (input.payload?.managedBusiness || require('./businessRuntime').registry[input.businessType]) ctx.throw(400, '请从原业务单据提交审批');
+  const selectedFlow = await ApprovalFlowDefinition.findOne({ where: input.flowId ? { definition_id: input.flowId } : { flow_code: input.flowCode || '' }, order: [['version', 'DESC']] });
+  if (selectedFlow?.business_type === 'monthly_indicator_evidence') ctx.throw(400, '请从日常工作台提交证明');
+  if (selectedFlow && require('./businessRuntime').registry[selectedFlow.business_type]) ctx.throw(400, '请从原业务单据提交审批');
+  try {
+    const row = await createInstance(ctx.request.body || {}, ctx.state.user);
+    ctx.body = { code: 0, message: '审批申请已提交', data: toInstance(row) };
+  } catch (error) { bodyError(ctx, error); }
+}
+
+async function action(ctx) {
+  const instance = await ApprovalFlowInstance.findByPk(ctx.params.instanceId);
+  if (instance && parseJson(instance.payload_json, {}).managedBusiness) {
+    return require('./businessRuntime').dispatch(ctx, instance.business_type, instance.business_id, ctx.request.body?.action, ctx.request.body?.comment || '');
+  }
+  try {
+    const row = await actionInstance(ctx.params.instanceId, ctx.request.body?.action, ctx.request.body?.comment, ctx.state.user, { batchExpected: ctx.state.batchApprovalExpected });
+    ctx.body = { code: 0, message: ctx.request.body?.action === 'approve' ? '审批已通过' : '审批已拒绝', data: toInstance(row) };
+  } catch (error) { bodyError(ctx, error); }
+}
+
+async function resubmit(ctx) {
+  try {
+    const row = await resubmitInstance(ctx.params.instanceId, ctx.request.body || {}, ctx.state.user);
+    ctx.body = { code: 0, message: '申请已重新提交', data: toInstance(row) };
+  } catch (error) { bodyError(ctx, error); }
+}
+
+async function getAssigneeOptions(ctx) {
+  const where = { status: 1, is_deleted: 0 };
+  if (!isAdmin(ctx.state.user) && ctx.state.user.distributorId) where.distributor_id = ctx.state.user.distributorId;
+  const [staff, roles, stores] = await Promise.all([
+    Staff.findAll({ where, attributes: ['staff_id', 'name', 'phone'], order: [['name', 'ASC']] }),
+    Role.findAll({ where: { status: 1, ...(ctx.state.user.roles.includes('boss') ? {} : { role_code: { [Op.ne]: 'boss' } }) }, attributes: ['role_code', 'name'], order: [['name', 'ASC']] }),
+    Store.findAll({ where: { status: 1, is_deleted: 0, ...(ctx.state.user.roles.includes('boss') ? {} : { distributor_id: ctx.state.user.distributorId }) }, attributes: ['store_id', 'name'], order: [['name', 'ASC']] })
+  ]);
+  ctx.body = { staff, roles, stores };
+}
+
+module.exports = { listFlows, getFlow, createFlow, updateFlow, publishFlow, enableFlow, disableFlow, listTasks, listInstances, getInstance, submitInstance, action, resubmit, getAssigneeOptions };

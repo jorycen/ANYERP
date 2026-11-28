@@ -1,0 +1,561 @@
+const { QueryTypes } = require('sequelize');
+const XLSX = require('xlsx');
+const { sequelize } = require('../../models');
+const { RealtimeSqlDashboardDataSource } = require('./dashboardDataSource');
+const { buildRanges, summarizeTrend, canViewProfit } = require('./dashboardService');
+const { queryProductSettlementSummary, listProductSettlementOrders } = require('./productSettlement');
+const { summarizeAllocatedExpenses } = require('../finance/expenseCostAllocation');
+
+const dataSource = new RealtimeSqlDashboardDataSource();
+const PAYMENT_SOURCE_TYPES = ['purchase', 'purchase_adjustment', 'purchase_return', 'expense', 'reimbursement'];
+
+function toNumber(value) {
+  const number = Number(value || 0);
+  return Number.isFinite(number) ? number : 0;
+}
+
+function roundMoney(value) {
+  return Number(toNumber(value).toFixed(2));
+}
+
+function monthKeysBetween(startDate, endDate) {
+  const start = new Date(`${startDate}T00:00:00Z`);
+  const end = new Date(`${endDate}T00:00:00Z`);
+  const result = [];
+  const cursor = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), 1));
+  while (cursor <= end) {
+    result.push(`${cursor.getUTCFullYear()}-${String(cursor.getUTCMonth() + 1).padStart(2, '0')}`);
+    cursor.setUTCMonth(cursor.getUTCMonth() + 1);
+  }
+  return result;
+}
+
+function chinaToday() {
+  const now = new Date(Date.now() + 8 * 60 * 60 * 1000);
+  return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}`;
+}
+
+function resolvePeriod(query = {}) {
+  if (query.startDate && query.endDate) {
+    const current = buildRanges(query).current;
+    return { periodType: 'range', date: current.endDate, startDate: current.startDate, endDate: current.endDate };
+  }
+  const periodType = ['day', 'month', 'year'].includes(query.periodType) ? query.periodType : 'month';
+  const date = String(query.date || query.endDate || chinaToday()).slice(0, 10);
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  if (!match) {
+    const error = new Error('日期格式不正确');
+    error.status = 400;
+    throw error;
+  }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  if (periodType === 'day') return { periodType, date, startDate: date, endDate: date };
+  if (periodType === 'year') {
+    return {
+      periodType,
+      date,
+      startDate: `${year}-01-01`,
+      endDate: `${year}-12-31`
+    };
+  }
+  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return {
+    periodType,
+    date,
+    startDate: `${year}-${String(month).padStart(2, '0')}-01`,
+    endDate: `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
+  };
+}
+
+async function resolveStoreIds(user, regionId, storeId) {
+  let storeIds = user?.accessibleStoreIds || [];
+  if (storeIds.includes('*')) {
+    const rows = await dataSource.query(
+      'SELECT STORE_ID AS storeId FROM T_STORE WHERE IS_DELETED = 0 AND STATUS = 1'
+    );
+    storeIds = rows.map(row => String(row.storeId));
+  } else {
+    storeIds = storeIds.map(String).filter(Boolean);
+  }
+
+  if (storeId && !storeIds.includes(String(storeId))) {
+    const error = new Error('无权访问该门店');
+    error.status = 403;
+    throw error;
+  }
+
+  if (regionId) {
+    const rows = await dataSource.query(
+      `SELECT STORE_ID AS storeId
+         FROM T_STORE
+        WHERE IS_DELETED = 0 AND STATUS = 1
+          AND REGION_ID = :regionId
+          AND STORE_ID IN (:storeIds)`,
+      { regionId: String(regionId), storeIds: storeIds.length ? storeIds : ['__NO_STORE__'] }
+    );
+    storeIds = rows.map(row => String(row.storeId));
+  }
+  if (storeId) storeIds = storeIds.filter(id => id === String(storeId));
+  return storeIds;
+}
+
+async function resolveAccessibleRegionIds(user, storeIds) {
+  if (user?.accessibleStoreIds?.includes('*')) return null;
+  if (!storeIds.length) return [];
+  const rows = await dataSource.query(
+    `SELECT DISTINCT REGION_ID AS regionId
+       FROM T_STORE
+      WHERE IS_DELETED = 0 AND STATUS = 1
+        AND STORE_ID IN (:storeIds)
+        AND REGION_ID IS NOT NULL`,
+    { storeIds }
+  );
+  return rows.map(row => String(row.regionId)).filter(Boolean);
+}
+
+async function queryAccountSummary(regionId, accessibleRegionIds) {
+  const regionClause = regionId
+    ? 'AND sa.REGION_ID = :regionId'
+    : accessibleRegionIds
+      ? 'AND (sa.REGION_ID IN (:accessibleRegionIds) OR sa.REGION_ID IS NULL)'
+      : '';
+  const replacements = regionId
+    ? { regionId }
+    : accessibleRegionIds
+      ? { accessibleRegionIds: accessibleRegionIds.length ? accessibleRegionIds : ['__NO_REGION__'] }
+      : {};
+  const accounts = await sequelize.query(
+    `SELECT sa.ACCOUNT_ID AS accountId,
+            sa.ACCOUNT_NAME AS accountName,
+            sa.ACCOUNT_TYPE AS accountType,
+            ROUND(COALESCE(SUM(CASE WHEN sat.TYPE = 'income' THEN sat.AMOUNT ELSE -sat.AMOUNT END), 0), 2) AS balance
+       FROM T_SETTLEMENT_ACCOUNT sa
+       LEFT JOIN T_SETTLEMENT_ACCOUNT_TRANSACTION sat ON sat.ACCOUNT_ID = sa.ACCOUNT_ID
+      WHERE sa.STATUS = 1 ${regionClause}
+      GROUP BY sa.ACCOUNT_ID, sa.ACCOUNT_NAME, sa.ACCOUNT_TYPE
+      ORDER BY sa.SORT_ORDER ASC, sa.ACCOUNT_ID ASC`,
+    { replacements, type: QueryTypes.SELECT }
+  );
+
+  const policyIds = accounts.filter(row => row.accountType === 'POLICY_RECEIVABLE').map(row => row.accountId);
+  if (policyIds.length) {
+    const outstanding = await sequelize.query(
+      `SELECT SETTLEMENT_ACCOUNT_ID AS accountId,
+              ROUND(SUM(GREATEST(AMOUNT - SETTLED, 0)), 2) AS balance
+         FROM T_DAILY_STATEMENT_DETAIL
+        WHERE SETTLEMENT_ACCOUNT_ID IN (:accountIds)
+          AND (BUSINESS_TYPE = 'national_subsidy_receivable'
+               OR PAYMENT_METHOD LIKE '国补%-政策补贴应收')
+        GROUP BY SETTLEMENT_ACCOUNT_ID`,
+      { replacements: { accountIds: policyIds }, type: QueryTypes.SELECT }
+    );
+    const outstandingMap = new Map(outstanding.map(row => [String(row.accountId), toNumber(row.balance)]));
+    accounts.forEach(row => {
+      if (row.accountType === 'POLICY_RECEIVABLE') row.balance = outstandingMap.get(String(row.accountId)) || 0;
+    });
+  }
+
+  const typeNames = {
+    FUND: '资金账户',
+    POLICY_RECEIVABLE: '政策补贴应收',
+    CARE_CREDIT: 'Care可用金',
+    SUPPLIER_REBATE: '厂商返利'
+  };
+  const byType = new Map();
+  accounts.forEach(row => {
+    const name = typeNames[row.accountType] || row.accountName || '其他账户';
+    byType.set(name, roundMoney((byType.get(name) || 0) + toNumber(row.balance)));
+  });
+  return {
+    totalAmount: roundMoney(accounts.reduce((sum, row) => sum + toNumber(row.balance), 0)),
+    byType: [...byType.entries()].map(([name, amount]) => ({ name, amount })),
+    accounts: accounts.map(row => ({
+      accountId: row.accountId,
+      accountName: row.accountName,
+      accountType: row.accountType,
+      balance: roundMoney(row.balance)
+    }))
+  };
+}
+
+async function queryRebateOverview(regionId, accessibleRegionIds, storeIds) {
+  const regionClause = regionId
+    ? 'AND sa.REGION_ID = :regionId'
+    : accessibleRegionIds
+      ? 'AND (sa.REGION_ID IN (:accessibleRegionIds) OR sa.REGION_ID IS NULL)'
+      : '';
+  const replacements = {
+    storeIds: storeIds.length ? storeIds : ['__NO_STORE__'],
+    ...(regionId ? { regionId } : {}),
+    ...(accessibleRegionIds ? { accessibleRegionIds: accessibleRegionIds.length ? accessibleRegionIds : ['__NO_REGION__'] } : {})
+  };
+  const [receivedRows, pendingRows] = await Promise.all([
+    sequelize.query(
+      `SELECT sa.ACCOUNT_ID AS accountId,
+              sa.ACCOUNT_NAME AS supplierName,
+              sa.SUPPLIER_ID AS supplierId,
+              ROUND(COALESCE(SUM(CASE WHEN sat.TYPE = 'income' THEN sat.AMOUNT ELSE -sat.AMOUNT END), 0), 2) AS amount
+         FROM T_SETTLEMENT_ACCOUNT sa
+         LEFT JOIN T_SETTLEMENT_ACCOUNT_TRANSACTION sat ON sat.ACCOUNT_ID = sa.ACCOUNT_ID
+        WHERE sa.STATUS = 1
+          AND sa.ACCOUNT_TYPE = 'SUPPLIER_REBATE'
+          ${regionClause}
+        GROUP BY sa.ACCOUNT_ID, sa.ACCOUNT_NAME, sa.SUPPLIER_ID
+        HAVING amount > 0
+        ORDER BY amount DESC`,
+      { replacements, type: QueryTypes.SELECT }
+    ),
+    sequelize.query(
+      `SELECT COALESCE(NULLIF(e.SUPPLIER_NAME, ''), '未命名供应商') AS supplierName,
+              e.SUPPLIER_ID AS supplierId,
+              ROUND(SUM(e.REBATE_ESTIMATE_AMOUNT), 2) AS amount
+         FROM T_REBATE_ESTIMATE e
+         INNER JOIN T_ORDER o ON o.ORDER_ID = e.SALES_ORDER_ID
+        WHERE e.STATUS IN ('estimated', 'confirmed')
+          AND o.STORE_ID IN (:storeIds)
+        GROUP BY COALESCE(NULLIF(e.SUPPLIER_NAME, ''), '未命名供应商'), e.SUPPLIER_ID
+        HAVING amount > 0
+        ORDER BY amount DESC`,
+      { replacements, type: QueryTypes.SELECT }
+    )
+  ]);
+  const normalize = rows => rows.map(row => ({
+    supplierId: row.supplierId || '',
+    supplierName: row.supplierName || '未命名供应商',
+    amount: roundMoney(row.amount)
+  }));
+  const receivedList = normalize(receivedRows);
+  const pendingList = normalize(pendingRows);
+  return {
+    receivedAmount: roundMoney(receivedList.reduce((sum, row) => sum + row.amount, 0)),
+    pendingAmount: roundMoney(pendingList.reduce((sum, row) => sum + row.amount, 0)),
+    receivedList,
+    pendingList
+  };
+}
+
+async function queryPaymentSummary(regionId, accessibleRegionIds) {
+  const regionClause = regionId
+    ? 'AND p.REGION_ID = :regionId'
+    : accessibleRegionIds
+      ? 'AND p.REGION_ID IN (:accessibleRegionIds)'
+      : '';
+  const settlementRegionClause = regionId
+    ? 'AND s.REGION_ID = :regionId'
+    : accessibleRegionIds
+      ? 'AND s.REGION_ID IN (:accessibleRegionIds)'
+      : '';
+  const replacements = {
+    sourceTypes: PAYMENT_SOURCE_TYPES,
+    ...(regionId ? { regionId } : {}),
+    ...(accessibleRegionIds ? { accessibleRegionIds: accessibleRegionIds.length ? accessibleRegionIds : ['__NO_REGION__'] } : {})
+  };
+  const [uncreatedRows, settlementRows, uncreatedSupplierRows, settlementSupplierRows] = await Promise.all([
+    sequelize.query(
+      `SELECT ROUND(SUM(GREATEST(
+                p.TOTAL_AMOUNT - COALESCE(p.OFFSET_AMOUNT, 0) - COALESCE(p.PAID_AMOUNT, 0)
+                - COALESCE(a.ALLOCATED_AMOUNT, 0), 0)), 2) AS amount
+              ,ROUND(SUM(CASE WHEN p.SOURCE_TYPE IN ('purchase', 'purchase_adjustment', 'purchase_return') THEN GREATEST(
+                p.TOTAL_AMOUNT - COALESCE(p.OFFSET_AMOUNT, 0) - COALESCE(p.PAID_AMOUNT, 0)
+                - COALESCE(a.ALLOCATED_AMOUNT, 0), 0) ELSE 0 END), 2) AS purchaseAmount
+              ,ROUND(SUM(CASE WHEN p.SOURCE_TYPE IN ('expense', 'reimbursement') THEN GREATEST(
+                p.TOTAL_AMOUNT - COALESCE(p.OFFSET_AMOUNT, 0) - COALESCE(p.PAID_AMOUNT, 0)
+                - COALESCE(a.ALLOCATED_AMOUNT, 0), 0) ELSE 0 END), 2) AS expenseAmount
+         FROM T_PAYABLE p
+         LEFT JOIN (
+           SELECT si.PAYABLE_ID, SUM(si.AMOUNT) AS ALLOCATED_AMOUNT
+             FROM T_SETTLEMENT_ITEM si
+             INNER JOIN T_SETTLEMENT s ON s.SETTLEMENT_ID = si.SETTLEMENT_ID
+            WHERE s.IS_DELETED = 0 AND s.STATUS <> 'voided'
+            GROUP BY si.PAYABLE_ID
+         ) a ON a.PAYABLE_ID = p.PAYABLE_ID
+        WHERE p.SOURCE_TYPE IN (:sourceTypes)
+          AND p.STATUS NOT IN ('paid', 'offset', 'cancelled')
+          ${regionClause}`,
+      { replacements, type: QueryTypes.SELECT }
+    ),
+    sequelize.query(
+      `SELECT ROUND(SUM(CASE WHEN s.PAYMENT_STATUS IN ('unpaid', 'partial_paid')
+                            THEN GREATEST(s.TOTAL_AMOUNT - COALESCE(s.PAID_AMOUNT, 0), 0) ELSE 0 END), 2) AS createdAmount,
+              ROUND(SUM(CASE WHEN s.SETTLEMENT_TYPE = 'supplier' AND s.PAYMENT_STATUS IN ('unpaid', 'partial_paid')
+                            THEN GREATEST(s.TOTAL_AMOUNT - COALESCE(s.PAID_AMOUNT, 0), 0) ELSE 0 END), 2) AS purchaseAmount,
+              ROUND(SUM(CASE WHEN s.SETTLEMENT_TYPE IN ('expense', 'reimbursement') AND s.PAYMENT_STATUS IN ('unpaid', 'partial_paid')
+                            THEN GREATEST(s.TOTAL_AMOUNT - COALESCE(s.PAID_AMOUNT, 0), 0) ELSE 0 END), 2) AS expenseAmount,
+              ROUND(SUM(COALESCE(s.PAID_AMOUNT, 0)), 2) AS paidAmount
+         FROM T_SETTLEMENT s
+        WHERE s.IS_DELETED = 0
+          AND s.STATUS <> 'voided'
+          AND s.SETTLEMENT_TYPE IN ('supplier', 'expense', 'reimbursement')
+          ${settlementRegionClause}`,
+      { replacements, type: QueryTypes.SELECT }
+    ),
+    sequelize.query(
+      `SELECT COALESCE(NULLIF(p.SUPPLIER_NAME, ''), NULLIF(p.PAYEE_NAME, ''), '未命名供应商') AS supplierName,
+              ROUND(SUM(GREATEST(
+                p.TOTAL_AMOUNT - COALESCE(p.OFFSET_AMOUNT, 0) - COALESCE(p.PAID_AMOUNT, 0)
+                - COALESCE(a.ALLOCATED_AMOUNT, 0), 0)), 2) AS amount
+         FROM T_PAYABLE p
+         LEFT JOIN (
+           SELECT si.PAYABLE_ID, SUM(si.AMOUNT) AS ALLOCATED_AMOUNT
+             FROM T_SETTLEMENT_ITEM si
+             INNER JOIN T_SETTLEMENT s ON s.SETTLEMENT_ID = si.SETTLEMENT_ID
+            WHERE s.IS_DELETED = 0 AND s.STATUS <> 'voided'
+            GROUP BY si.PAYABLE_ID
+         ) a ON a.PAYABLE_ID = p.PAYABLE_ID
+        WHERE p.SOURCE_TYPE IN (:sourceTypes)
+          AND p.STATUS NOT IN ('paid', 'offset', 'cancelled')
+          ${regionClause}
+        GROUP BY COALESCE(NULLIF(p.SUPPLIER_NAME, ''), NULLIF(p.PAYEE_NAME, ''), '未命名供应商')
+        ORDER BY amount DESC
+        `,
+      { replacements, type: QueryTypes.SELECT }
+    ),
+    sequelize.query(
+      `SELECT COALESCE(NULLIF(s.SUPPLIER_NAME, ''), NULLIF(s.PAYEE_NAME, ''), '未命名供应商') AS supplierName,
+              ROUND(SUM(CASE WHEN s.PAYMENT_STATUS IN ('unpaid', 'partial_paid')
+                        THEN GREATEST(s.TOTAL_AMOUNT - COALESCE(s.PAID_AMOUNT, 0), 0) ELSE 0 END), 2) AS amount
+         FROM T_SETTLEMENT s
+        WHERE s.IS_DELETED = 0
+          AND s.STATUS <> 'voided'
+          AND s.SETTLEMENT_TYPE IN ('supplier', 'expense', 'reimbursement')
+          ${settlementRegionClause}
+        GROUP BY COALESCE(NULLIF(s.SUPPLIER_NAME, ''), NULLIF(s.PAYEE_NAME, ''), '未命名供应商')
+        HAVING amount > 0
+        ORDER BY amount DESC
+        `,
+      { replacements, type: QueryTypes.SELECT }
+    )
+  ]);
+  const uncreated = roundMoney(uncreatedRows[0]?.amount);
+  const created = roundMoney(settlementRows[0]?.createdAmount);
+  const paid = roundMoney(settlementRows[0]?.paidAmount);
+  const purchase = roundMoney(toNumber(uncreatedRows[0]?.purchaseAmount) + toNumber(settlementRows[0]?.purchaseAmount));
+  const expense = roundMoney(toNumber(uncreatedRows[0]?.expenseAmount) + toNumber(settlementRows[0]?.expenseAmount));
+  const normalizeSupplierRows = rows => rows.map(row => ({
+    name: String(row.supplierName || '未命名供应商'),
+    amount: roundMoney(row.amount)
+  })).filter(row => row.amount > 0);
+  const uncreatedSuppliers = normalizeSupplierRows(uncreatedSupplierRows);
+  const createdSuppliers = normalizeSupplierRows(settlementSupplierRows);
+  const allSupplierMap = new Map();
+  [...uncreatedSuppliers, ...createdSuppliers].forEach(row => {
+    allSupplierMap.set(row.name, roundMoney((allSupplierMap.get(row.name) || 0) + row.amount));
+  });
+  const allSuppliers = [...allSupplierMap.entries()]
+    .map(([name, amount]) => ({ name, amount }))
+    .sort((left, right) => right.amount - left.amount)
+    .slice(0, 5);
+  return {
+    all: roundMoney(uncreated + created), uncreated, created, paid, purchase, expense,
+    supplierTop: {
+      all: allSuppliers,
+      uncreated: uncreatedSuppliers.slice(0, 5),
+      created: createdSuppliers.slice(0, 5)
+    }
+  };
+}
+
+async function queryExpenseSummary(period, storeIds) {
+  return summarizeAllocatedExpenses({
+    storeIds,
+    dateMode: period.periodType === 'day' ? 'date' : 'accounting_month',
+    startDate: period.startDate,
+    endDate: period.endDate,
+    monthKeys: period.periodType === 'day' ? [] : monthKeysBetween(period.startDate, period.endDate)
+  });
+}
+
+async function getFinanceOverview(ctx) {
+  const user = ctx.state.user;
+  const period = resolvePeriod(ctx.query);
+  const regionId = String(ctx.query.regionId || '').trim();
+  const storeId = String(ctx.query.storeId || '').trim();
+  const includeDemo = !['0', 'false', 'no', 'off'].includes(String(ctx.query.includeDemo || '1').trim().toLowerCase());
+  const storeIds = await resolveStoreIds(user, regionId, storeId);
+  if (!storeIds.length) {
+    ctx.body = {
+      code: 0,
+      data: {
+        period,
+        revenue: 0,
+        grossProfit: null,
+        grossMargin: null,
+        salesGrossProfit: null,
+        salesGrossMargin: null,
+        productGrossProfit: null,
+        productGrossMargin: null,
+        combinedGrossProfit: null,
+        combinedGrossMargin: null,
+        operatingExpense: null,
+        storeOperatingProfit: null,
+        productSettlement: {
+          productPricingAmount: 0,
+          purchaseCostAmount: 0,
+          orderCount: 0,
+          costPendingOrderCount: 0,
+          costPendingAmount: 0
+        },
+        inventory: { totalAmount: 0, totalQuantity: 0, includeDemo, categories: [] },
+        accounts: { totalAmount: 0, byType: [], accounts: [] },
+        rebate: { receivedAmount: 0, pendingAmount: 0, receivedList: [], pendingList: [] },
+        payments: { all: 0, uncreated: 0, created: 0, paid: 0, purchase: 0, expense: 0, supplierTop: { all: [], uncreated: [], created: [] } }
+      }
+    };
+    return;
+  }
+  const accessibleRegionIds = await resolveAccessibleRegionIds(user, storeIds);
+
+  const ranges = buildRanges({ startDate: period.startDate, endDate: period.endDate });
+  const filters = { storeIds, storeId: storeId || '', employeeId: '', productLine: '', includeDemo };
+  const [trendRows, inventory, accounts, payments, productSettlement, expenseSummary, rebate] = await Promise.all([
+    dataSource.getTrend(filters, ranges.current, 'day'),
+    dataSource.getInventory({ ...filters, allRootCategories: true }),
+    queryAccountSummary(regionId, accessibleRegionIds),
+    queryPaymentSummary(regionId, accessibleRegionIds),
+    queryProductSettlementSummary({
+      startDate: period.startDate,
+      endDate: period.endDate,
+      storeIds
+    }),
+    queryExpenseSummary(period, storeIds),
+    queryRebateOverview(regionId, accessibleRegionIds, storeIds)
+  ]);
+  const summary = summarizeTrend(trendRows);
+  const profitVisible = canViewProfit(user);
+  const companyReport = profitVisible ? await require('./financialProfitController').queryFinancialProfit({
+    storeIds, startDate: period.startDate, endDate: period.endDate
+  }) : null;
+  const company = companyReport?.summary;
+  const productGrossProfit = profitVisible ? company.productGrossProfit : null;
+  const operationsGrossProfit = profitVisible ? company.operationsGrossProfit : null;
+  const combinedGrossProfit = profitVisible && summary.salesAmount !== null
+    ? company.companyGrossProfit
+    : null;
+  const combinedGrossMargin = profitVisible && combinedGrossProfit !== null && summary.salesAmount
+    ? Number((combinedGrossProfit / summary.salesAmount * 100).toFixed(2))
+    : null;
+  const storeOperatingProfit = profitVisible && company.salesGrossProfit !== null
+    ? roundMoney(company.salesGrossProfit - expenseSummary.amount)
+    : null;
+
+  ctx.body = {
+    code: 0,
+    data: {
+      period,
+      regionId,
+      revenue: roundMoney(summary.salesAmount),
+      grossProfit: profitVisible ? company.salesGrossProfit : null,
+      grossMargin: profitVisible && company.salesGrossProfit !== null && summary.salesAmount ? Number((company.salesGrossProfit / summary.salesAmount * 100).toFixed(2)) : null,
+      salesGrossProfit: profitVisible ? company.salesGrossProfit : null,
+      salesGrossMargin: profitVisible && company.salesGrossProfit !== null && summary.salesAmount ? Number(((company.salesGrossProfit / summary.salesAmount) * 100).toFixed(2)) : null,
+      companyProfitPendingCount: company?.profitPendingCount ?? null,
+      operationsGrossProfit,
+      companyGrossProfit: combinedGrossProfit,
+      productGrossProfit,
+      productGrossMargin: profitVisible && productGrossProfit !== null && productSettlement.productPricingAmount
+        ? Number(((productGrossProfit / productSettlement.productPricingAmount) * 100).toFixed(2))
+        : null,
+      combinedGrossProfit,
+      grossProfitSource: 'COMPANY_OPERATING_EVENTS_V1',
+      combinedGrossMargin,
+      operatingExpense: profitVisible ? expenseSummary : null,
+      storeOperatingProfit,
+      productOperatingExpense: profitVisible ? roundMoney(expenseSummary.productAmount) : null,
+      productOperatingProfit: profitVisible && productGrossProfit !== null ? roundMoney(productGrossProfit - roundMoney(expenseSummary.productAmount)) : null,
+      productSettlement: {
+        productPricingAmount: productSettlement.productPricingAmount,
+        purchaseCostAmount: productSettlement.purchaseCostAmount,
+        orderCount: productSettlement.orderCount,
+        costPendingOrderCount: productSettlement.costPendingOrderCount,
+        costPendingAmount: productSettlement.costPendingAmount,
+        policyIncome: {
+          recognizedAmount: profitVisible ? roundMoney(productSettlement.realizedPolicyIncomeAmount) : null,
+          estimatedAmount: profitVisible ? roundMoney(productSettlement.estimatedPolicyIncomeAmount) : null,
+          note: '厂家返利、价保及教育补贴20%完成整笔返利核销后计入产品端毛利；待核销金额不计入。'
+        }
+      },
+      inventory: {
+        totalQuantity: profitVisible ? inventory.inventoryQuantity : null,
+        totalAmount: profitVisible ? roundMoney(inventory.inventoryAmount) : null,
+        includeDemo,
+        categories: profitVisible ? inventory.categories : []
+      },
+      accounts,
+      rebate,
+      payments
+    }
+  };
+}
+
+async function resolveProductSettlementQuery(ctx) {
+  const period = resolvePeriod(ctx.query);
+  const regionId = String(ctx.query.regionId || '').trim();
+  const storeId = String(ctx.query.storeId || '').trim();
+  const storeIds = await resolveStoreIds(ctx.state.user, regionId, storeId);
+  const endExclusive = new Date(`${period.endDate}T00:00:00.000+08:00`);
+  endExclusive.setTime(endExclusive.getTime() + 24 * 60 * 60 * 1000);
+  return {
+    period,
+    storeIds,
+    startDate: new Date(`${period.startDate}T00:00:00.000+08:00`),
+    endDate: endExclusive,
+    status: String(ctx.query.status || '').trim(),
+    entryType: String(ctx.query.entryType || '').trim(),
+    keyword: String(ctx.query.keyword || '').trim(),
+    settlementNo: String(ctx.query.settlementNo || ctx.query.settlement_no || '').trim(),
+    sourceOrderNo: String(ctx.query.sourceOrderNo || ctx.query.source_order_no || '').trim()
+  };
+}
+
+async function getProductSettlementOrders(ctx) {
+  const filters = await resolveProductSettlementQuery(ctx);
+  const data = await listProductSettlementOrders({
+    ...filters,
+    page: ctx.query.page,
+    pageSize: ctx.query.pageSize
+  });
+  const expenses = await queryExpenseSummary(filters.period, filters.storeIds);
+  data.canSupplementCost = require('../../middleware/permission').getUserRoles(ctx.state.user).some(role => ['boss','admin','finance'].includes(role));
+  data.summary.productExpenseAmount = roundMoney(expenses.productAmount);
+  data.summary.productOperatingProfit = [filters.keyword, filters.entryType, filters.status, filters.settlementNo, filters.sourceOrderNo].some(Boolean) ? null : roundMoney(data.summary.realizedGrossProfitAmount - data.summary.productExpenseAmount);
+  data.summary.expenseScopeNote = '产品端费用按所选门店及期间汇总，不随商品或单据类型筛选变化';
+  ctx.body = { code: 0, data };
+}
+
+async function exportProductSettlementOrders(ctx) {
+  const filters = await resolveProductSettlementQuery(ctx);
+  const data = await listProductSettlementOrders({
+    ...filters,
+    page: 1,
+    pageSize: 10000,
+    maxPageSize: 10000
+  });
+  if (data.total > 10000) ctx.throw(400, '导出结果超过10000条，请缩小筛选范围后再导出');
+  const rows = data.items.map(row => ({
+    单据类型: ({ sale: '销售结算', return: '退货调整', education: '教育20%返利', manufacturer: '厂家返利/价保', external: '外调费收入', external_return: '外调费退回' })[row.entryType] || row.entryType,
+    产品端单号: row.entryNo,
+    来源销售订单: row.sourceOrderNo,
+    业务日期: row.businessDate,
+    门店: row.storeName,
+    产品定价金额: row.productPricingAmount,
+    实际采购成本: row.purchaseCostAmount,
+    产品端毛利: row.grossProfitAmount ?? (row.status === 'cost_pending' ? '待补成本' : '待核销'),
+    待核销返利: row.policyPendingAmount,
+    待补商品定价额: row.costPendingAmount,
+    待补原因: row.pendingCostReason,
+    计算说明: row.calculationNote,
+    状态: row.status === 'cost_pending' ? '待补成本' : row.status === 'policy_pending' ? '待核销' : '已入账',
+    公式版本: row.formulaVersion
+  }));
+  const worksheet = XLSX.utils.json_to_sheet(rows);
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, '产品端毛利');
+  const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+  const fileName = `产品端毛利_${new Date().toISOString().slice(0, 10)}.xlsx`;
+  ctx.set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  ctx.set('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`);
+  ctx.body = buffer;
+}
+
+module.exports = { getFinanceOverview, getProductSettlementOrders, exportProductSettlementOrders, resolvePeriod };

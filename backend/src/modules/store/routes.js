@@ -2,12 +2,20 @@
  * 门店管理路由
  */
 const Router = require('koa-router');
-const { getStoreList, createStore, updateStore } = require('./controller');
+const { getStoreList, createStore, updateStore, deleteStore, getRegionList, getAllStores, getOrderStoreOptions, getReadableStoreList, getInventoryReadableStoreList, getInventorySummaryStoreList, getTransferStores } = require('./controller');
 
 const router = new Router();
 
-router.get('/', getStoreList);
+router.get('/list', getStoreList);
+router.get('/all', getAllStores);
+router.get('/order-options', getOrderStoreOptions);
+router.get('/readable', getReadableStoreList);
+router.get('/inventory-readable', getInventoryReadableStoreList);
+router.get('/inventory-summary-readable', getInventorySummaryStoreList);
+router.get('/transfer-options', getTransferStores);
 router.post('/create', createStore);
 router.put('/update/:id', updateStore);
+router.delete('/delete/:id', deleteStore);
+router.get('/regions', getRegionList);
 
 module.exports = router;

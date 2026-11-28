@@ -1,0 +1,79 @@
+const crypto = require('crypto');
+const { Op } = require('sequelize');
+const { ApprovalFlowDefinition, Staff } = require('../../models');
+
+const FIXED_APPROVERS = [
+  { name: '\u6bb5\u8d85', phone: '15308182113' },
+  { name: '\u5f20\u6b22', phone: '17711068535' },
+  { name: '\u9093\u7ea2\u6885', phone: '14780834570' },
+  { name: '\u8d56\u66e6', phone: '18980060806' },
+  { name: '\u674e\u71d5', phone: '18010607277' }
+];
+
+function serial(name, approvers) { return { name, signMode: 'serial', approvers }; }
+function or(name, approvers) { return { name, signMode: 'or', approvers }; }
+function role(roleCode, scope = 'subject_distributor') { return { type: 'role', roleCode, scope }; }
+
+function defaultCatalog(fixed = new Map()) {
+  const fixedRule = name => ({ type: 'fixed_user', staffId: Number(fixed.get(name) || 0) });
+  return [
+    { flowCode: 'monthly_indicator_evidence', name: '管理指标证明审批', businessType: 'monthly_indicator_evidence', nodes: [or('直属上级审批', [{ type: 'direct_supervisor' }])] },
+    { flowCode: 'sale_resource_reward', name: '教育补贴及销量报号审批', businessType: 'sale_resource_reward', nodes: [or('店长审批', [{ type: 'store_manager', scope: 'subject_store' }]), serial('张欢审批', [fixedRule('张欢')]), serial('邓红梅审批', [fixedRule('邓红梅')])] },
+    { flowCode: 'sn_change', name: '\u0053\u004e\u4fee\u6539\u5ba1\u6279', businessType: 'sn_change', nodes: [or('\u7ecf\u9500\u5546\u603b\u8d26\u53f7\u5ba1\u6279', [role('admin'), role('boss')])] },
+    { flowCode: 'expense_attribution', name: '\u62a5\u9500\u5ba1\u6279\u6d41\u7a0b', businessType: 'expense', nodes: [serial('\u5e97\u957f\u5ba1\u6279', [{ type: 'store_manager', scope: 'subject_store' }]), ...FIXED_APPROVERS.map(item => serial(`${item.name}\u5ba1\u6279`, [fixedRule(item.name)]))] },
+    { flowCode: 'payable_settlement', name: '\u5e94\u4ed8\u7ed3\u7b97\u5ba1\u6279', businessType: 'payable_settlement', nodes: [serial('\u63d0\u4ea4\u4eba\u76f4\u5c5e\u4e0a\u7ea7\u5ba1\u6279', [role('manager', 'subject_store')]), serial('\u6bb5\u8d85\u5ba1\u6279', [fixedRule('\u6bb5\u8d85')]), serial('\u8d56\u66e6\u5ba1\u6279', [fixedRule('\u8d56\u66e6')])] },
+    { flowCode: 'purchase_request', name: '\u91c7\u8d2d\u7533\u8bf7\u5ba1\u6279', businessType: 'purchase_request', nodes: [or('\u91c7\u8d2d\u5ba1\u6279\u90e8\u95e8', [role('purchaser'), role('admin'), role('boss')])] },
+    { flowCode: 'product_application', name: '\u65b0\u5efa\u5546\u54c1\u5ba1\u6279', businessType: 'product_application', nodes: [or('\u5546\u54c1\u5ba1\u6279\u90e8\u95e8', [role('purchaser'), role('finance'), role('admin'), role('boss')])] },
+    { flowCode: 'sales_order_negative_gross_profit', name: '\u9500\u552e\u8d1f\u6bdb\u5229\u5ba1\u6279', businessType: 'sales_order_negative_gross_profit', nodes: [serial('\u5e97\u957f\u5ba1\u6279', [{ type: 'store_manager', scope: 'subject_store' }]), or('\u7ecf\u9500\u5546\u603b\u8d26\u53f7\u5ba1\u6279', [role('admin'), role('boss')])] },
+    { flowCode: 'sales_return', name: '\u9500\u552e\u9000\u5355\u5ba1\u6279', businessType: 'sales_return', nodes: [serial('\u5e97\u957f\u5ba1\u6279', [{ type: 'store_manager', scope: 'subject_store' }]), serial('\u6bb5\u8d85\u5ba1\u6279', [fixedRule('\u6bb5\u8d85')]), serial('\u9093\u7ea2\u6885\u5ba1\u6279', [fixedRule('\u9093\u7ea2\u6885')]), serial('\u674e\u71d5\u5ba1\u6279', [fixedRule('\u674e\u71d5')])] },
+    { flowCode: 'deposit_refund', name: '\u5b9a\u91d1\u9000\u6b3e\u5ba1\u6279', businessType: 'deposit_refund', nodes: [serial('\u5e97\u957f\u5ba1\u6279', [{ type: 'store_manager', scope: 'subject_store' }]), serial('\u9093\u7ea2\u6885\u5ba1\u6279', [fixedRule('\u9093\u7ea2\u6885')]), serial('\u674e\u71d5\u5ba1\u6279', [fixedRule('\u674e\u71d5')])] },
+    { flowCode: 'return_stock', name: '\u9000\u5e93\u5ba1\u6279', businessType: 'return_stock', nodes: [or('\u91c7\u8d2d\u5e93\u5b58\u5ba1\u6279\u90e8\u95e8', [role('purchaser'), role('admin'), role('boss')])] },
+    { flowCode: 'resource_claim', name: '\u8d44\u6e90\u6743\u76ca\u5957\u56de\u5ba1\u6279', businessType: 'resource_claim', nodes: [or('\u8d22\u52a1\u5ba1\u6279\u90e8\u95e8', [role('finance'), role('admin'), role('boss')])] },
+    { flowCode: 'sales_cash_rebate_claim', name: '\u9500\u552e\u7ea2\u5305\u5957\u56de\u5ba1\u6279', businessType: 'sales_cash_rebate_claim', nodes: [or('\u8d22\u52a1\u5ba1\u6279', [role('finance'), role('admin'), role('boss')])] },
+    { flowCode: 'profit_adjustment', name: '\u6bdb\u5229\u8c03\u6574\u5ba1\u6279', businessType: 'profit_adjustment', nodes: [or('\u8d22\u52a1\u5ba1\u6279\u90e8\u95e8', [role('finance'), role('admin'), role('boss')])] },
+    { flowCode: 'manufacturer_rebate_confirmation', name: '\u5382\u5546\u8fd4\u5229\u91d1\u989d\u786e\u8ba4', businessType: 'manufacturer_rebate_confirmation', nodes: [or('\u8fd4\u5229\u91d1\u989d\u786e\u8ba4', [role('finance'), role('admin'), role('boss')])] },
+    { flowCode: 'subsidy_receivable_adjustment', name: '\u56fd\u8865\u5dee\u989d\u5ba1\u6279', businessType: 'subsidy_receivable_adjustment', nodes: [or('\u8d22\u52a1\u5ba1\u6279\u90e8\u95e8', [role('finance'), role('admin'), role('boss')])] },
+    { flowCode: 'expense_performance_allocation', name: '\u8d39\u7528\u7ee9\u6548\u5206\u914d\u5ba1\u6279', businessType: 'expense_performance_allocation', nodes: [or('\u8d22\u52a1\u5ba1\u6279\u90e8\u95e8', [role('finance'), role('admin'), role('boss')])] }
+  ].concat([
+    { flowCode: 'sales_component_recovery', name: '拆机回收审批', businessType: 'sales_component_recovery', nodes: [or('拆件成本确认', [role('purchaser'), role('admin'), role('boss')])] },
+    { flowCode: 'gift_receipt', name: '获赠入库审批', businessType: 'gift_receipt', nodes: [or('获赠确认', [role('purchaser'), role('admin'), role('boss')])] },
+    { flowCode: 'purchase_expense', name: '采购垫付报销审批', businessType: 'purchase_expense', nodes: [or('报销审批', [role('admin'), role('boss')])] },
+    { flowCode: 'inventory_batch', name: '批量库存维护审批', businessType: 'inventory_batch', nodes: [or('库存维护审批', [role('admin'), role('boss')])] },
+    { flowCode: 'sale_share', name: '销售晒单审核', businessType: 'sale_share', nodes: [or('店长审核', [{ type: 'store_manager' }])] }
+  ]).map(item => {
+    if (['profit_adjustment', 'expense_performance_allocation'].includes(item.flowCode)) {
+      item.nodes = [or('财务初审', [role('finance'), role('boss')]), or('管理员复审', [role('admin'), role('boss')])];
+    }
+    if (item.flowCode === 'subsidy_receivable_adjustment') item.nodes = [or('国补差额审批', [role('admin'), role('boss')])];
+    if (item.flowCode === 'payable_settlement') item.nodes[0].approvers = [{ type: 'direct_supervisor' }];
+    if (item.flowCode === 'resource_claim') item.nodes = [or('财务审批', [role('finance'), role('boss')])];
+    if (['sales_return', 'deposit_refund', 'expense_attribution', 'sales_order_negative_gross_profit'].includes(item.flowCode)) item.nodes[0].signMode = 'or';
+    if (item.flowCode === 'sales_order_negative_gross_profit') item.nodes[0].approvers.push(role('admin'), role('boss'), role('distributor'));
+    return { ...item, config: { nodes: item.nodes } };
+  });
+}
+
+async function seedApprovalFlowCatalog(transaction = null) {
+  const staffRows = await Staff.findAll({ where: { phone: { [Op.in]: FIXED_APPROVERS.map(item => item.phone) }, status: 1, is_deleted: 0 }, attributes: ['staff_id', 'phone'], transaction });
+  const staffByPhone = new Map();
+  for (const row of staffRows) {
+    const phone = String(row.phone);
+    staffByPhone.set(phone, staffByPhone.has(phone) ? 0 : Number(row.staff_id));
+  }
+  const fixed = new Map(FIXED_APPROVERS.map(item => [item.name, staffByPhone.get(item.phone)]));
+  for (const item of defaultCatalog(fixed)) {
+    const missingApprovers = item.nodes.filter(node => node.approvers.some(rule => rule.type === 'fixed_user' && !rule.staffId)).map(node => node.name);
+    const existing = await ApprovalFlowDefinition.findOne({ where: { flow_code: item.flowCode }, order: [['version', 'DESC']], transaction });
+    if (existing) continue;
+    try {
+      await ApprovalFlowDefinition.create({ definition_id: crypto.randomUUID().replace(/-/g, '').slice(0, 32), flow_code: item.flowCode, name: item.name, business_type: item.businessType, subject_type: 'staff', version: 1, status: missingApprovers.length ? 'draft' : 'published', config_json: JSON.stringify({ ...item.config, missingApprovers }), create_time: new Date(), update_time: new Date() }, { transaction });
+    } catch (error) {
+      // Multiple server processes may initialize the same catalog concurrently.
+      if (error.name !== 'SequelizeUniqueConstraintError') throw error;
+      const concurrent = await ApprovalFlowDefinition.findOne({ where: { flow_code: item.flowCode }, transaction });
+      if (!concurrent) throw error;
+    }
+  }
+}
+
+module.exports = { FIXED_APPROVERS, defaultCatalog, seedApprovalFlowCatalog };

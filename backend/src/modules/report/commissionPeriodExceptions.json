@@ -1,0 +1,646 @@
+{
+  "batch": "OCTOBER-PERIOD-EXCEPTIONS-20261112",
+  "reason": "用户确认一次性将清单50笔优惠券、12笔教育套件历史校正及3张跨月销售归10月，真实日期和金额保留。",
+  "sales": [
+    {
+      "orderId": "62608e0c6c184b4695e1d05e1977aa9a",
+      "orderNo": "ORD202610310655426396",
+      "postingTime": "2026-10-31T06:55:42.000Z",
+      "originalArchiveTime": "2026-11-01T02:55:54.000Z"
+    },
+    {
+      "orderId": "51106b0736f14476b0bb206a5d9eaa74",
+      "orderNo": "ORD202610310655091651",
+      "postingTime": "2026-10-31T06:55:09.000Z",
+      "originalArchiveTime": "2026-11-01T02:55:58.000Z"
+    },
+    {
+      "orderId": "3ca1e9a5194f4cb9b948a5199f8b5e6e",
+      "orderNo": "ORD202610310653487030",
+      "postingTime": "2026-10-31T06:53:48.000Z",
+      "originalArchiveTime": "2026-11-01T02:56:02.000Z"
+    }
+  ],
+  "adjustments": [
+    {
+      "adjustmentId": "eedf1b4a718d4bccba4dd78c22a29d94",
+      "adjustmentNo": "HCP-20261103-1746757115f54fe7aa9270a0b608a14e",
+      "orderId": "1746757115f54fe7aa9270a0b608a14e",
+      "orderNo": "ORD202610310736103855",
+      "postingTime": "2026-10-31T07:36:25.000Z",
+      "originalApprovalTime": "2026-11-03T11:43:54.000Z",
+      "amount": -173.95,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "7e883fc824b0426db82fdccff1a4b361",
+      "adjustmentNo": "HCP-20261103-e4420924daae4c9d864d462381d97d06",
+      "orderId": "e4420924daae4c9d864d462381d97d06",
+      "orderNo": "ORD202610310730383147",
+      "postingTime": "2026-10-31T07:35:52.000Z",
+      "originalApprovalTime": "2026-11-03T11:44:10.000Z",
+      "amount": -323.05,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "502a1f2295604889b86161e0be7aba01",
+      "adjustmentNo": "HCP-20261103-767d37f54f874c9d8d3ae22adb11ee7e",
+      "orderId": "767d37f54f874c9d8d3ae22adb11ee7e",
+      "orderNo": "ORD202610310729162303",
+      "postingTime": "2026-10-31T07:29:37.000Z",
+      "originalApprovalTime": "2026-11-03T11:44:01.000Z",
+      "amount": -173.95,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "9c91b4350f8a4be093f7af8a754a092b",
+      "adjustmentNo": "HCP-20261103-0fbd7ccbf1b741e89fa561a27e02eff9",
+      "orderId": "0fbd7ccbf1b741e89fa561a27e02eff9",
+      "orderNo": "ORD202610310728292772",
+      "postingTime": "2026-10-31T07:29:46.000Z",
+      "originalApprovalTime": "2026-11-03T11:43:53.000Z",
+      "amount": -1292.2,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "eec6b3c7b9244c49b8863b2a65f3ef0e",
+      "adjustmentNo": "HCP-20261103-30f0fe90e1e24b3b9888750ff39eba28",
+      "orderId": "30f0fe90e1e24b3b9888750ff39eba28",
+      "orderNo": "ORD202610310725527476",
+      "postingTime": "2026-10-31T07:26:12.000Z",
+      "originalApprovalTime": "2026-11-03T11:43:57.000Z",
+      "amount": -273.35,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "6a549682abf54ad3bdffd3c87e818165",
+      "adjustmentNo": "HCP-20261103-b4105bbc36c744cfbb3c8700db76b4f6",
+      "orderId": "b4105bbc36c744cfbb3c8700db76b4f6",
+      "orderNo": "ORD202610310720480379",
+      "postingTime": "2026-10-31T07:38:01.000Z",
+      "originalApprovalTime": "2026-11-03T11:44:06.000Z",
+      "amount": -273.35,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "548749535bde47ddba1202d6b4b47ec8",
+      "adjustmentNo": "HCP-20261103-29c45b32c0224723bf5c1dd45a494a97",
+      "orderId": "29c45b32c0224723bf5c1dd45a494a97",
+      "orderNo": "ORD202610310720248534",
+      "postingTime": "2026-10-31T07:38:58.000Z",
+      "originalApprovalTime": "2026-11-03T11:43:56.000Z",
+      "amount": -273.35,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "89ffc60b17f4437e84c3a294b7d9291f",
+      "adjustmentNo": "HCP-20261103-e6c428af0ce24ecdbd58b512062924f8",
+      "orderId": "e6c428af0ce24ecdbd58b512062924f8",
+      "orderNo": "ORD202610310657394571",
+      "postingTime": "2026-10-31T07:36:05.000Z",
+      "originalApprovalTime": "2026-11-03T11:44:10.000Z",
+      "amount": -223.65,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "e9009df8c5e74a50bf58c3e9a45d03a4",
+      "adjustmentNo": "HCP-20261103-870b0191a2014d2ea1d3b168d56e1025",
+      "orderId": "870b0191a2014d2ea1d3b168d56e1025",
+      "orderNo": "ORD202610310657109040",
+      "postingTime": "2026-10-31T07:36:22.000Z",
+      "originalApprovalTime": "2026-11-03T11:44:03.000Z",
+      "amount": -223.65,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "5002f0459b144676ae2ca9db5f4dabbb",
+      "adjustmentNo": "HCP-20261103-f97437eaa195497fa7cf2feee6fe379f",
+      "orderId": "f97437eaa195497fa7cf2feee6fe379f",
+      "orderNo": "ORD202610310656328143",
+      "postingTime": "2026-10-31T07:39:11.000Z",
+      "originalApprovalTime": "2026-11-03T11:44:12.000Z",
+      "amount": -223.65,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "7932f4d061c74fe796b0630996d85cdc",
+      "adjustmentNo": "HCP-20261103-62608e0c6c184b4695e1d05e1977aa9a",
+      "orderId": "62608e0c6c184b4695e1d05e1977aa9a",
+      "orderNo": "ORD202610310655426396",
+      "postingTime": "2026-10-31T06:55:42.000Z",
+      "originalApprovalTime": "2026-11-03T11:44:00.000Z",
+      "amount": -323.05,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "63d0166ea77048c08ad5f371820c7c2c",
+      "adjustmentNo": "HCP-20261103-51106b0736f14476b0bb206a5d9eaa74",
+      "orderId": "51106b0736f14476b0bb206a5d9eaa74",
+      "orderNo": "ORD202610310655091651",
+      "postingTime": "2026-10-31T06:55:09.000Z",
+      "originalApprovalTime": "2026-11-03T11:43:59.000Z",
+      "amount": -173.95,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "02746dd30213433caa201f05436ef678",
+      "adjustmentNo": "HCP-20261103-3ca1e9a5194f4cb9b948a5199f8b5e6e",
+      "orderId": "3ca1e9a5194f4cb9b948a5199f8b5e6e",
+      "orderNo": "ORD202610310653487030",
+      "postingTime": "2026-10-31T06:53:48.000Z",
+      "originalApprovalTime": "2026-11-03T11:43:58.000Z",
+      "amount": -372.75,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "caf2c1628fc2471bb76aeccee6a175e3",
+      "adjustmentNo": "HCP-20261103-6e8d30f76c8947658145db8f1500705f",
+      "orderId": "6e8d30f76c8947658145db8f1500705f",
+      "orderNo": "ORD202610310635412183",
+      "postingTime": "2026-10-31T06:53:42.000Z",
+      "originalApprovalTime": "2026-11-03T11:44:01.000Z",
+      "amount": -323.05,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "8726b22f1dcc49b89de602286feca34d",
+      "adjustmentNo": "HCP-20261103-58f8f52a225c4963abe774d93427cbd7",
+      "orderId": "58f8f52a225c4963abe774d93427cbd7",
+      "orderNo": "ORD202610310635018303",
+      "postingTime": "2026-10-31T06:53:46.000Z",
+      "originalApprovalTime": "2026-11-03T11:44:00.000Z",
+      "amount": -323.05,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "b69feedc9d47413cbab2fa043bdd3c07",
+      "adjustmentNo": "HCP-20261103-2365169e20fa43d1907c6acedc07bf0b",
+      "orderId": "2365169e20fa43d1907c6acedc07bf0b",
+      "orderNo": "ORD202610290345335350",
+      "postingTime": "2026-10-29T07:27:35.000Z",
+      "originalApprovalTime": "2026-11-03T11:43:56.000Z",
+      "amount": -148.84,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "26f6d69b18b84d0a91743275b52f189b",
+      "adjustmentNo": "HCP-20261103-df7374cc6bf14eb09809b74ce995b64d",
+      "orderId": "df7374cc6bf14eb09809b74ce995b64d",
+      "orderNo": "ORD202610271015075696",
+      "postingTime": "2026-10-27T10:19:11.000Z",
+      "originalApprovalTime": "2026-11-03T11:44:09.000Z",
+      "amount": -238.28,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "a31484d796a74a7591f61abbb50c47e6",
+      "adjustmentNo": "HCP-20261103-835ea5f925b84234b77ec25b52631f8b",
+      "orderId": "835ea5f925b84234b77ec25b52631f8b",
+      "orderNo": "ORD202610250504063441",
+      "postingTime": "2026-10-25T06:14:48.000Z",
+      "originalApprovalTime": "2026-11-03T11:44:03.000Z",
+      "amount": -238.3,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "4b9cb6670d0e440dbd94249e8463653a",
+      "adjustmentNo": "HCP-20261103-9e990dbfe0e64993a04e9541b0ef2eb5",
+      "orderId": "9e990dbfe0e64993a04e9541b0ef2eb5",
+      "orderNo": "ORD202610240952327829",
+      "postingTime": "2026-10-24T10:43:29.000Z",
+      "originalApprovalTime": "2026-11-03T11:44:05.000Z",
+      "amount": -148.85,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "89fe1500a08f42eea149ec766bda1629",
+      "adjustmentNo": "HCP-20261103-edb1eac6ee4c4519a8ac8fe63fc291b3",
+      "orderId": "edb1eac6ee4c4519a8ac8fe63fc291b3",
+      "orderNo": "ORD202610240939561911",
+      "postingTime": "2026-10-24T09:54:16.000Z",
+      "originalApprovalTime": "2026-11-03T11:44:11.000Z",
+      "amount": -29.82,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "92093ed571cf4e99ac6011c52b29fb95",
+      "adjustmentNo": "HCP-20261103-ad348bfbfcf54a0badcbe764776b8e80",
+      "orderId": "ad348bfbfcf54a0badcbe764776b8e80",
+      "orderNo": "ORD202610230836341872",
+      "postingTime": "2026-10-23T09:41:55.000Z",
+      "originalApprovalTime": "2026-11-03T11:44:06.000Z",
+      "amount": -238.16,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "fe21ec6e1f154331b16281a810e3eb8e",
+      "adjustmentNo": "EDUH-202610-7c48ed701d724ac581aa365f3d2dccce",
+      "orderId": "9c120c698e734c219edfe21a4c3765f7",
+      "orderNo": "ORD202610100816597460",
+      "postingTime": "2026-10-10T09:24:04.000Z",
+      "originalApprovalTime": "2026-11-03T10:01:24.000Z",
+      "amount": -90,
+      "category": "教育套件历史校正移月"
+    },
+    {
+      "adjustmentId": "01ccbb8177a24af0b36bf3dcd3d4742b",
+      "adjustmentNo": "EDUH-202610-9a4a12b65a7940629f032d4041acc840",
+      "orderId": "4d09a36a21204aac94f63baf718164e1",
+      "orderNo": "ORD202610090637194120",
+      "postingTime": "2026-10-09T13:40:11.000Z",
+      "originalApprovalTime": "2026-11-03T10:01:25.000Z",
+      "amount": -90,
+      "category": "教育套件历史校正移月"
+    },
+    {
+      "adjustmentId": "395333bf1e114058b9d2aa67b505a43e",
+      "adjustmentNo": "EDUH-202610-c61f78bb69734f25883f5eeede2e8cfe",
+      "orderId": "9667710d06a248629dbe2122dcf15aef",
+      "orderNo": "ORD202610081244423387",
+      "postingTime": "2026-10-08T12:48:30.000Z",
+      "originalApprovalTime": "2026-11-03T10:01:25.000Z",
+      "amount": -90,
+      "category": "教育套件历史校正移月"
+    },
+    {
+      "adjustmentId": "25ccc6a7413b479aa5a726a712c214c7",
+      "adjustmentNo": "EDUH-202610-f36b5e3f98cd4181b9b76f6696b59456",
+      "orderId": "d9a4179a8bb449798b6a862f9190d11b",
+      "orderNo": "ORD202610071320468493",
+      "postingTime": "2026-10-07T13:54:52.000Z",
+      "originalApprovalTime": "2026-11-03T10:01:26.000Z",
+      "amount": -250,
+      "category": "教育套件历史校正移月"
+    },
+    {
+      "adjustmentId": "6929df0189564f158535320b4c906a0d",
+      "adjustmentNo": "HCP-20261103-18ef2e0f66e24b69879b86bf5d0a69d3",
+      "orderId": "18ef2e0f66e24b69879b86bf5d0a69d3",
+      "orderNo": "ORD202610071053307538",
+      "postingTime": "2026-10-07T14:50:33.000Z",
+      "originalApprovalTime": "2026-11-03T11:43:54.000Z",
+      "amount": -99.2,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "811e68dc82e146fca9e01ab66b58efeb",
+      "adjustmentNo": "HCP-20261103-891d683f7a674069a708a3cb5a3d96a4",
+      "orderId": "891d683f7a674069a708a3cb5a3d96a4",
+      "orderNo": "ORD202610070915590487",
+      "postingTime": "2026-10-07T13:26:34.000Z",
+      "originalApprovalTime": "2026-11-03T11:44:04.000Z",
+      "amount": -148.81,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "b8fd0bd82df14749997ebd6a5b56040b",
+      "adjustmentNo": "EDUH-202610-7928886cf6cb454bab7fb46b7130b4d6",
+      "orderId": "b0bfd5d22f274abdac394c37be8aa4be",
+      "orderNo": "ORD202610070746578622",
+      "postingTime": "2026-10-07T11:09:15.000Z",
+      "originalApprovalTime": "2026-11-03T10:01:24.000Z",
+      "amount": -250,
+      "category": "教育套件历史校正移月"
+    },
+    {
+      "adjustmentId": "02fc1b689020403d85aef3b9181cf3b1",
+      "adjustmentNo": "HCP-20261103-4a5f42c4c1ea4618bfc59c11c4bbeabd",
+      "orderId": "4a5f42c4c1ea4618bfc59c11c4bbeabd",
+      "orderNo": "ORD202610070522424123",
+      "postingTime": "2026-10-07T14:55:56.000Z",
+      "originalApprovalTime": "2026-11-03T11:43:59.000Z",
+      "amount": -148.9,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "e00bae3177844ebcb69a8a03337167fe",
+      "adjustmentNo": "HCP-20261103-3a169e01c29942db9cbe867b6595f8fa",
+      "orderId": "3a169e01c29942db9cbe867b6595f8fa",
+      "orderNo": "ORD202610061148235848",
+      "postingTime": "2026-10-06T14:40:54.000Z",
+      "originalApprovalTime": "2026-11-03T11:43:57.000Z",
+      "amount": -148.8,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "16f3d26347e1433d8c6560bc1f3a19ab",
+      "adjustmentNo": "HCP-20261103-57e0b33557ea4980a72d0176ba41e34a",
+      "orderId": "57e0b33557ea4980a72d0176ba41e34a",
+      "orderNo": "ORD202610060948152716",
+      "postingTime": "2026-10-07T14:57:07.000Z",
+      "originalApprovalTime": "2026-11-03T11:43:59.000Z",
+      "amount": -148.9,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "7524db657c374d7eb61feaa1bbd2b8e1",
+      "adjustmentNo": "HCP-20261103-c03629b575bf4eb3826a54c198426499",
+      "orderId": "c03629b575bf4eb3826a54c198426499",
+      "orderNo": "ORD202610060318162385",
+      "postingTime": "2026-10-06T05:30:17.000Z",
+      "originalApprovalTime": "2026-11-03T11:44:07.000Z",
+      "amount": -148.94,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "56a72649d5c84671bcbd3f84fe545dc3",
+      "adjustmentNo": "HCP-20261103-220673b1248b4d989c15cedac1ab108a",
+      "orderId": "220673b1248b4d989c15cedac1ab108a",
+      "orderNo": "ORD202610051144223932",
+      "postingTime": "2026-10-05T11:59:47.000Z",
+      "originalApprovalTime": "2026-11-03T11:43:55.000Z",
+      "amount": -148.94,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "7fdb2cac1c5c429a90e3d0b92f000694",
+      "adjustmentNo": "HCP-20261103-3c55525d91194f988f0841d37ff277b6",
+      "orderId": "3c55525d91194f988f0841d37ff277b6",
+      "orderNo": "ORD202610051023393262",
+      "postingTime": "2026-10-05T13:51:23.000Z",
+      "originalApprovalTime": "2026-11-03T11:43:58.000Z",
+      "amount": -99.26,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "c344f7a2723a4cb58f202ec0836dcfe0",
+      "adjustmentNo": "HCP-20261103-96138a591e454303b9fd3d8b6a325394",
+      "orderId": "96138a591e454303b9fd3d8b6a325394",
+      "orderNo": "ORD202610050804276099",
+      "postingTime": "2026-10-05T13:12:16.000Z",
+      "originalApprovalTime": "2026-11-03T11:44:04.000Z",
+      "amount": -297.41,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "a087f4ec5f2b4753bac7e7f6911526bc",
+      "adjustmentNo": "HCP-20261103-d5b5b42da2024a57b55f4572969a02d1",
+      "orderId": "d5b5b42da2024a57b55f4572969a02d1",
+      "orderNo": "ORD202610050723400073",
+      "postingTime": "2026-10-05T13:51:50.000Z",
+      "originalApprovalTime": "2026-11-03T11:44:08.000Z",
+      "amount": -595.91,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "d336e0a4e7f340d09133a65ba3dfd164",
+      "adjustmentNo": "EDUH-202610-26fdeff9cf5d494faa0a93d461145b0f",
+      "orderId": "1dc98e438517462caa6ede755eec7564",
+      "orderNo": "ORD202610050434380971",
+      "postingTime": "2026-10-05T10:33:02.000Z",
+      "originalApprovalTime": "2026-11-03T10:01:22.000Z",
+      "amount": -90,
+      "category": "教育套件历史校正移月"
+    },
+    {
+      "adjustmentId": "0758acdcd10b4db49d56da11c1e0db32",
+      "adjustmentNo": "EDUH-202610-9a5392185b8246aa99734c2e51da3e26",
+      "orderId": "75f09a0fdd5e41e5902274b9ac6e6478",
+      "orderNo": "ORD202610041412049268",
+      "postingTime": "2026-10-04T14:16:39.000Z",
+      "originalApprovalTime": "2026-11-03T10:01:25.000Z",
+      "amount": -250,
+      "category": "教育套件历史校正移月"
+    },
+    {
+      "adjustmentId": "e53f2b3612554794944660c43748d727",
+      "adjustmentNo": "EDUH-202610-62bd4ef325ab47df8137fe29557a6f24",
+      "orderId": "68e4f903876045c494bba2f0400050d9",
+      "orderNo": "ORD202610041347006448",
+      "postingTime": "2026-10-04T14:12:18.000Z",
+      "originalApprovalTime": "2026-11-03T10:01:23.000Z",
+      "amount": -250,
+      "category": "教育套件历史校正移月"
+    },
+    {
+      "adjustmentId": "eebb883e644e42019bc58a1cb05e3e84",
+      "adjustmentNo": "EDUH-202610-39b056d0abfd4b30a9edb6acb197a7e6",
+      "orderId": "6814df50f89841689a7ed7e16c3d35e8",
+      "orderNo": "ORD202610040940550836",
+      "postingTime": "2026-10-04T09:53:58.000Z",
+      "originalApprovalTime": "2026-11-03T10:01:23.000Z",
+      "amount": -250,
+      "category": "教育套件历史校正移月"
+    },
+    {
+      "adjustmentId": "1b85f2c1e91b431b947f3dcf48611ae6",
+      "adjustmentNo": "HCP-20261103-961517b0977e4f2cab2369e9d532db26",
+      "orderId": "961517b0977e4f2cab2369e9d532db26",
+      "orderNo": "ORD202610040631567679",
+      "postingTime": "2026-10-04T14:43:58.000Z",
+      "originalApprovalTime": "2026-11-03T11:44:05.000Z",
+      "amount": -148.86,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "3e8e45e336eb4bc1bc0d1892261e7fee",
+      "adjustmentNo": "HCP-20261103-f2e553a8714f4d43a7c2396532bd12fe",
+      "orderId": "f2e553a8714f4d43a7c2396532bd12fe",
+      "orderNo": "ORD202610031425538752",
+      "postingTime": "2026-10-03T15:28:18.000Z",
+      "originalApprovalTime": "2026-11-03T11:44:11.000Z",
+      "amount": -99.26,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "1409fd8a70f14296b9b097d99d083404",
+      "adjustmentNo": "HCP-20261103-03b05c64c1d04e6aa97f099dc536ae3c",
+      "orderId": "03b05c64c1d04e6aa97f099dc536ae3c",
+      "orderNo": "ORD202610031228148054",
+      "postingTime": "2026-10-03T14:54:06.000Z",
+      "originalApprovalTime": "2026-11-03T11:43:52.000Z",
+      "amount": -148.94,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "817653d770af493797ca369a7a557fb3",
+      "adjustmentNo": "HCP-20261103-1bfbd615ad7044a9906c44a30016d57b",
+      "orderId": "1bfbd615ad7044a9906c44a30016d57b",
+      "orderNo": "ORD202610031032152440",
+      "postingTime": "2026-10-03T15:06:48.000Z",
+      "originalApprovalTime": "2026-11-03T11:43:55.000Z",
+      "amount": -148.9,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "33e3cf3955f943099d08825014b8d271",
+      "adjustmentNo": "HCP-20261103-0910aa57a99f47c4af9cb0c3e2579ef0",
+      "orderId": "0910aa57a99f47c4af9cb0c3e2579ef0",
+      "orderNo": "ORD202610030644113363",
+      "postingTime": "2026-10-03T09:33:54.000Z",
+      "originalApprovalTime": "2026-11-03T11:43:52.000Z",
+      "amount": -464.16,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "2c3672d8ff8244d38b035c7cade71800",
+      "adjustmentNo": "HCP-20261103-35a6f212e678460382b2b5cb976c4261",
+      "orderId": "35a6f212e678460382b2b5cb976c4261",
+      "orderNo": "ORD202610030428348827",
+      "postingTime": "2026-10-03T15:28:23.000Z",
+      "originalApprovalTime": "2026-11-03T11:43:57.000Z",
+      "amount": -154.75,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "59f1da2e61a347e592a4cf90a5a626aa",
+      "adjustmentNo": "HCP-20261103-0e2d9363110242fb94bf683640200666",
+      "orderId": "0e2d9363110242fb94bf683640200666",
+      "orderNo": "ORD202610021236408580",
+      "postingTime": "2026-10-02T12:50:09.000Z",
+      "originalApprovalTime": "2026-11-03T11:43:53.000Z",
+      "amount": -309.37,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "f064599a3a8f450085be0d15e8355c6b",
+      "adjustmentNo": "HCP-20261103-7b84881581084174921468b2758dd483",
+      "orderId": "7b84881581084174921468b2758dd483",
+      "orderNo": "ORD202610020910110154",
+      "postingTime": "2026-10-02T10:53:07.000Z",
+      "originalApprovalTime": "2026-11-03T11:44:02.000Z",
+      "amount": -99.26,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "a6826c6f2c084bd0bcd19c37a14720fe",
+      "adjustmentNo": "EDUH-202610-de16606dbd4540ffbfe1e19a9ab10d4b",
+      "orderId": "fe9e7dbe84c64827bdfeb12ec93ec41d",
+      "orderNo": "ORD202610020905200010",
+      "postingTime": "2026-10-08T08:20:29.000Z",
+      "originalApprovalTime": "2026-11-03T10:01:26.000Z",
+      "amount": -250,
+      "category": "教育套件历史校正移月"
+    },
+    {
+      "adjustmentId": "04db9d2b269e4b56acab5686520bc820",
+      "adjustmentNo": "HCP-20261103-dfcbb6af5b9b443681ef3ecfae896a67",
+      "orderId": "dfcbb6af5b9b443681ef3ecfae896a67",
+      "orderNo": "ORD202610020853138356",
+      "postingTime": "2026-10-02T10:53:12.000Z",
+      "originalApprovalTime": "2026-11-03T11:44:09.000Z",
+      "amount": -464.19,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "63d5b50a0b474ac4817132851f15951d",
+      "adjustmentNo": "HCP-20261103-f177d6b3125f426ca0ac92846025368a",
+      "orderId": "f177d6b3125f426ca0ac92846025368a",
+      "orderNo": "ORD202610020846469709",
+      "postingTime": "2026-10-07T14:58:18.000Z",
+      "originalApprovalTime": "2026-11-03T11:44:11.000Z",
+      "amount": -148.81,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "06e7231e20d74ea1836572a23fa51f57",
+      "adjustmentNo": "HCP-20261103-bc4f0d958b4440419531215c76d15c79",
+      "orderId": "bc4f0d958b4440419531215c76d15c79",
+      "orderNo": "ORD202610020757159053",
+      "postingTime": "2026-10-02T14:25:43.000Z",
+      "originalApprovalTime": "2026-11-03T11:44:07.000Z",
+      "amount": -148.8,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "650b33675f204c0ea30bb023acdf0151",
+      "adjustmentNo": "HCP-20261103-20a7771ba44b4eb7be6dccc7363cc62a",
+      "orderId": "20a7771ba44b4eb7be6dccc7363cc62a",
+      "orderNo": "ORD202610020748588864",
+      "postingTime": "2026-10-02T10:53:18.000Z",
+      "originalApprovalTime": "2026-11-03T11:43:55.000Z",
+      "amount": -99.26,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "b00ed212ee4e484d85717719ca3f640f",
+      "adjustmentNo": "HCP-20261103-fffe3efc132e4fd7b501ef222e59736b",
+      "orderId": "fffe3efc132e4fd7b501ef222e59736b",
+      "orderNo": "ORD202610020746046923",
+      "postingTime": "2026-10-02T16:29:03.000Z",
+      "originalApprovalTime": "2026-11-03T11:44:13.000Z",
+      "amount": -99.22,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "388f305bc1a04f33a5bfde2574724bab",
+      "adjustmentNo": "EDUH-202610-686f2d22bc8d4b468d3f477816cc2eb3",
+      "orderId": "011101d79356491490d6ab6b3b091287",
+      "orderNo": "ORD202610020736348895",
+      "postingTime": "2026-10-02T11:50:25.000Z",
+      "originalApprovalTime": "2026-11-03T10:01:24.000Z",
+      "amount": -250,
+      "category": "教育套件历史校正移月"
+    },
+    {
+      "adjustmentId": "733292a560a145c9882bf3f56c82cea6",
+      "adjustmentNo": "HCP-20261103-2ff0da6c50bf4ae2965d1d616f3c296f",
+      "orderId": "2ff0da6c50bf4ae2965d1d616f3c296f",
+      "orderNo": "ORD202610020639134092",
+      "postingTime": "2026-10-02T14:20:47.000Z",
+      "originalApprovalTime": "2026-11-03T11:43:56.000Z",
+      "amount": -154.65,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "96ef04139a774d9bb81c8945143d1ea1",
+      "adjustmentNo": "HCP-20261103-3a5ca65438494d7a9a2505c528b6752d",
+      "orderId": "3a5ca65438494d7a9a2505c528b6752d",
+      "orderNo": "ORD202610020518509682",
+      "postingTime": "2026-10-02T10:53:25.000Z",
+      "originalApprovalTime": "2026-11-03T11:43:58.000Z",
+      "amount": -102.39,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "514296910f8f41e1adfded583aaed701",
+      "adjustmentNo": "EDUH-202610-22814897f055469488085e8769b6a584",
+      "orderId": "0ccf954c52404818b5a111fa9d3a2c69",
+      "orderNo": "ORD202610020400510384",
+      "postingTime": "2026-10-02T11:46:10.000Z",
+      "originalApprovalTime": "2026-11-03T10:01:22.000Z",
+      "amount": -200,
+      "category": "教育套件历史校正移月"
+    },
+    {
+      "adjustmentId": "5a622688421e4050acaea716cbabe1f9",
+      "adjustmentNo": "HCP-20261103-833b7aeb07cc4497842e5d8efb09d957",
+      "orderId": "833b7aeb07cc4497842e5d8efb09d957",
+      "orderNo": "ORD202610011121195738",
+      "postingTime": "2026-10-01T14:30:12.000Z",
+      "originalApprovalTime": "2026-11-03T11:44:03.000Z",
+      "amount": -154.75,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "b603e4498afc43069e016e2e10c032ea",
+      "adjustmentNo": "HCP-20261103-0e7e6f686bba4bd8b8c3ddde580d38f5",
+      "orderId": "0e7e6f686bba4bd8b8c3ddde580d38f5",
+      "orderNo": "ORD202610011002193542",
+      "postingTime": "2026-10-01T13:14:46.000Z",
+      "originalApprovalTime": "2026-11-03T11:43:53.000Z",
+      "amount": -102.34,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "967d4b28a7e047f9b35a4d40b4ceeeb2",
+      "adjustmentNo": "HCP-20261103-91c431fead324fc6892e3b92e24613d6",
+      "orderId": "91c431fead324fc6892e3b92e24613d6",
+      "orderNo": "ORD202610010845415143",
+      "postingTime": "2026-10-01T12:25:57.000Z",
+      "originalApprovalTime": "2026-11-03T11:44:04.000Z",
+      "amount": -309.39,
+      "category": "优惠券历史校正移月"
+    },
+    {
+      "adjustmentId": "655c2794ced64108ae8900eb11563b6c",
+      "adjustmentNo": "HCP-20261103-d04cfbc104ee4d58b4f846a9d0ce0845",
+      "orderId": "d04cfbc104ee4d58b4f846a9d0ce0845",
+      "orderNo": "ORD202610010808293127",
+      "postingTime": "2026-10-01T08:15:03.000Z",
+      "originalApprovalTime": "2026-11-03T11:44:08.000Z",
+      "amount": -99.13,
+      "category": "优惠券历史校正移月"
+    }
+  ]
+}

@@ -1,82 +1,1998 @@
+const { normalizeSnCode } = require('../../utils/snCode');
 /**
  * 采购管理控制器
  */
-const { PurchaseRequest, PurchaseRequestItem, Supplier, Store } = require('../../models');
+const { sequelize, PurchaseRequest, PurchaseRequestItem, PurchaseAdjustment, PurchaseAdjustmentItem, Supplier, SupplierPaymentAccount, Store, Staff, Distributor, Location, Product, ProductPrice, ProductSn, Inbound, InboundItem, InboundItemSn, ReturnStock, ReturnStockItem, Payable, Expense, Settlement, SettlementItem, SupplierRebate, ResourceCategory, GoodsType, SnLog } = require('../../models');
 const { Op } = require('sequelize');
-const { generateRequestNo, generateUUID, generateId, paginate, formatPaginatedResult } = require('../../utils');
+const { generateRequestNo, generateUUID, generateId, generateInboundNo, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
+const { sendExcel } = require('../../utils/excelExport');
+const { recordRebateDeduction, recordSupplierRebateAccountTransaction, _getRebateBalance } = require('../finance/rebateController');
+const { createPurchaseReimbursementAfterInbound, createSettlementReversal, cancelExpenseRecord } = require('../finance/expenseService');
+const { recordBusinessAction, listBusinessActions } = require('../../utils/businessActionLog');
+const { canViewSnTraceReference } = require('../../utils/snTracePermission');
+const { isUsablePnCode } = require('../../utils/productPn');
+const { assertPnAvailableForNewProduct } = require('../../utils/productPnMaster');
+const { getUserRoles } = require('../../middleware/permission');
+const { isStoreScopedAccount } = require('../../utils/storePermissions');
+const { canAccessDistributor } = require('../../utils/distributorScope');
+const { syncFreightRecord, setFreightRecordStatus } = require('../finance/freightService');
+const { createProductRecord } = require('../product/controller');
+const { applyPurchaseApprovalEdits } = require('./approvalEdits');
+const { applyIncomingCostModes } = require('./costModeInput');
+
+const VALID_PURCHASE_INVOICE_TYPES = new Set(['专票13%', '收据']);
+const PURCHASE_COST_MODES = ['COMPANY_PRICE', 'PURCHASE_PRICE'];
+function parseSupplierCostModes(value) {
+  const modes = String(value || PURCHASE_COST_MODES.join(',')).split(',').map(mode => mode.trim()).filter(Boolean);
+  return modes;
+}
+function validateSupplierCostRule(ctx, defaultMode, allowedModes) {
+  const allowed = Array.isArray(allowedModes) ? allowedModes : parseSupplierCostModes(allowedModes);
+  if (!allowed.length || allowed.some(mode => !PURCHASE_COST_MODES.includes(mode)) || new Set(allowed).size !== allowed.length) {
+    ctx.throw(400, '请选择至少一种有效的采购毛利成本口径');
+  }
+  const normalizedDefault = defaultMode || (allowed.length === 1 ? allowed[0] : null);
+  if (normalizedDefault && !allowed.includes(normalizedDefault)) ctx.throw(400, '默认毛利成本口径必须在允许范围内');
+  return { defaultMode: normalizedDefault, allowedModes: allowed.join(',') };
+}
+async function assertSupplierCostModes(ctx, supplierId, items, transaction) {
+  if (!supplierId) return;
+  const supplier = await Supplier.findOne({ where: { supplier_id: supplierId, is_deleted: 0, status: 1 }, transaction });
+  if (!supplier) ctx.throw(400, '请选择有效供应商');
+  const allowed = parseSupplierCostModes(supplier.purchase_cost_mode_allowed);
+  for (const [index, item] of items.entries()) {
+    if (Number(item.isUsedProduct ?? item.is_used_product ?? 0) === 1) continue;
+    const mode = String(item.grossProfitCostMode || item.gross_profit_cost_mode || supplier.purchase_cost_mode_default || 'PURCHASE_PRICE').toUpperCase();
+    if (!allowed.includes(mode)) {
+      const label = value => value === 'COMPANY_PRICE' ? '公司定价' : value === 'PURCHASE_PRICE' ? '采购价' : value;
+      ctx.throw(400, `第${index + 1}个商品的毛利成本口径不在供应商允许范围内；本次口径：${label(mode)}，供应商允许：${allowed.map(label).join('、')}`);
+    }
+  }
+}
+function validatePurchaseInvoiceType(ctx, value) {
+  const normalized = String(value || '').trim();
+  if (!normalized) ctx.throw(400, '请选择采购凭证类型');
+  if (!VALID_PURCHASE_INVOICE_TYPES.has(normalized)) ctx.throw(400, '采购凭证类型只允许选择“专票13%”或“收据”');
+  return normalized;
+}
+
+function stringifyNewProductPayload(item) {
+  const payload = item?.newProductPayload || item?.new_product_payload;
+  if (!payload) return null;
+  return typeof payload === 'string' ? payload : JSON.stringify(payload);
+}
+const { executeInbound, updateInventory, getAvailableQty, moveSnInventoryAggregate } = require('../inventory/controller');
+const { getAllocationSummary, getPayableRemaining, refreshPayableState } = require('../finance/settlementAllocation');
+const { assertActiveProducts } = require('../../utils/activeProduct');
+const { advance: advanceApproval } = require('../approval/businessRuntime');
+const { reduceInventoryCostForPurchaseReturn } = require('./purchaseReturnAccounting');
+
+const SN_PURCHASE_SOURCE_TYPES = new Set(['display_qty', 'rental_demo_qty']);
+const SN_PURCHASE_TARGET_TYPES = new Set(['normal_qty', 'demo_qty']);
+
+function getSnPurchaseFields(item = {}) {
+  const sourceSnId = String(item.sourceSnId || item.source_sn_id || '').trim();
+  const allocations = parsePurchaseAllocationArray(item.storeAllocations || item.store_allocations);
+  const firstLocation = allocations.flatMap(allocation => allocation.locationAllocations || allocation.location_allocations || [])
+    .find(location => location.locationId || location.location_id);
+  const targetLocationId = String(item.targetLocationId || item.target_location_id || firstLocation?.locationId || firstLocation?.location_id || '').trim();
+  return { sourceSnId, targetLocationId };
+}
+
+async function validateSnPurchaseConversion(ctx, items, storeId, transaction, { approval = false } = {}) {
+  const converted = (items || []).filter(item => getSnPurchaseFields(item).sourceSnId);
+  if (!converted.length) return [];
+  if (converted.length !== items.length || converted.length !== 1) {
+    ctx.throw(400, '特殊仓SN采购申请每单只能包含一个SN，且不能与普通采购商品混合');
+  }
+  const item = converted[0];
+  const { sourceSnId, targetLocationId } = getSnPurchaseFields(item);
+  if (Number(item.quantity || 0) !== 1) ctx.throw(400, '特殊仓SN采购数量必须为1');
+  if (!targetLocationId) ctx.throw(400, '请选择销售仓或样品仓作为目标库位');
+
+  const sn = await ProductSn.findOne({
+    where: { sn_id: sourceSnId, is_deleted: 0 },
+    transaction,
+    lock: transaction?.LOCK?.UPDATE
+  });
+  if (!sn) ctx.throw(404, '来源SN不存在');
+  if (String(sn.product_id) !== String(item.productId || item.product_id || '')) ctx.throw(409, '来源SN与采购商品不一致');
+  if (String(sn.store_id || '') !== String(storeId || '')) ctx.throw(409, '特殊仓SN只能采购至当前所在门店');
+  if (sn.status !== 'in_stock') ctx.throw(409, '来源SN已不在库，不能继续采购');
+
+  const [sourceLocation, targetLocation] = await Promise.all([
+    Location.findOne({ where: { location_id: sn.location_id, store_id: storeId, status: 1 }, transaction }),
+    Location.findOne({ where: { location_id: targetLocationId, store_id: storeId, status: 1 }, transaction })
+  ]);
+  if (!sourceLocation || !SN_PURCHASE_SOURCE_TYPES.has(String(sourceLocation.type || sn.inventory_type || ''))) {
+    ctx.throw(409, '只有铺货仓或租赁样机仓的在库SN可以发起该采购申请');
+  }
+  if (!targetLocation || !SN_PURCHASE_TARGET_TYPES.has(String(targetLocation.type || ''))) {
+    ctx.throw(400, '目标库位只能选择当前门店启用的销售仓或样品仓');
+  }
+
+  if (!approval) {
+    const duplicate = await PurchaseRequestItem.findOne({
+      where: { source_sn_id: sourceSnId },
+      include: [{ model: PurchaseRequest, where: { status: { [Op.in]: ['draft', 'pending'] } }, attributes: ['request_no'] }],
+      transaction
+    });
+    if (duplicate) ctx.throw(409, `该SN已有未结束的采购申请 ${duplicate.PurchaseRequest?.request_no || ''}`.trim());
+  }
+  return [{ item, sn, sourceLocation, targetLocation }];
+}
+
+function normalizeFileList(...values) {
+  const result = [];
+  const add = value => {
+    if (!value) return;
+    if (Array.isArray(value)) {
+      value.forEach(add);
+      return;
+    }
+    if (typeof value === 'object') {
+      add(value.fileID || value.fileId || value.file_id || value.url || value.fileUrl || value.file_url || value.cloudPath || value.cloud_path);
+      return;
+    }
+    const text = String(value).trim();
+    if (!text) return;
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed !== value) {
+        add(parsed);
+        return;
+      }
+    } catch (_) {
+      // 普通字符串按文件 ID 或 URL 处理。
+    }
+    if (!result.includes(text)) result.push(text);
+  };
+  values.forEach(add);
+  return result;
+}
+
+function toMoney(value) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount) || amount <= 0) return 0;
+  return Math.round(amount * 100) / 100;
+}
+
+function toSignedMoney(value) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return 0;
+  return Math.round(amount * 100) / 100;
+}
+
+function normalizeGrossProfitUpliftAmount(value, fallback = 0) {
+  const raw = value === undefined || value === null || value === '' ? fallback : value;
+  const amount = Number(raw);
+  if (!Number.isFinite(amount) || amount < 0) return null;
+  return Math.round(amount * 100) / 100;
+}
+
+function assertCanAdjustPurchase(ctx, request) {
+  const user = ctx.state.user || {};
+  const roles = getUserRoles(user);
+  if (roles.some(role => ['purchaser', 'admin', 'boss'].includes(role))) return;
+  const storeRoles = new Set(['clerk', 'staff', 'manager', 'store_manager', 'store_admin']);
+  const isStoreAccount = roles.length > 0 && roles.every(role => storeRoles.has(role));
+  if (!isStoreAccount) ctx.throw(403, '仅采购、管理员、BOSS 或采购申请所属门店账号可以办理退单/数量调整');
+
+  const staffId = user.staffId || user.id;
+  const staffMatches = staffId && [request.applicant_staff_id, request.operator_staff_id, request.apply_staff_id, request.submit_staff_id]
+    .some(id => id && Number(id) === Number(staffId));
+  const legacyIdentity = [user.name, user.phone, String(staffId || '')].filter(Boolean);
+  const identityMatches = [request.apply_user, request.submit_user, request.create_user]
+    .some(identity => identity && legacyIdentity.includes(String(identity)));
+  if (!staffMatches && !identityMatches) ctx.throw(403, '门店账号只能调整本门店自行发起的采购申请');
+}
+function assertStoreVisible(ctx, storeId) {
+  const allowed = ctx.state.user.accessibleStoreIds || [];
+  if (!allowed.includes('*') && !allowed.map(String).includes(String(storeId || ''))) {
+    ctx.throw(403, '无权访问该门店采购数据');
+  }
+}
+
+function assertPurchaseAllocationStoresVisible(ctx, items, fallbackStoreId) {
+  if (fallbackStoreId) assertStoreVisible(ctx, fallbackStoreId);
+  for (const item of items || []) {
+    const allocations = parsePurchaseAllocationArray(item.storeAllocations || item.store_allocations);
+    for (const allocation of allocations) {
+      assertStoreVisible(ctx, allocation.storeId || allocation.store_id || fallbackStoreId);
+    }
+  }
+}
+
+async function loadPurchaseProductSnapshots(items, transaction = null) {
+  const productIds = [...new Set((items || [])
+    .map(item => item.productId || item.product_id)
+    .filter(Boolean)
+    .map(String))];
+  if (productIds.length === 0) return new Map();
+
+  const products = await Product.findAll({
+    where: { product_id: { [Op.in]: productIds } },
+    attributes: ['product_id', 'product_code', 'manufacturer_code', 'gross_profit_cost_mode'],
+    include: [{ model: ProductPrice, attributes: ['standard_price'], required: false }],
+    ...(transaction ? { transaction } : {})
+  });
+  return new Map(products.map(product => [String(product.product_id), product]));
+}
+
+async function assertActivePurchaseProducts(items, transaction = null) {
+  const productIds = [...new Set((items || [])
+    .filter(item => Number(item?.isUsedProduct ?? item?.is_used_product ?? 0) !== 1)
+    .map(item => item.productId || item.product_id)
+    .filter(productId => productId && String(productId) !== '__USED_PRODUCT__')
+    .map(String))];
+  return assertActiveProducts(Product, productIds, transaction ? { transaction } : {});
+}
+
+async function assertNewPurchasePnsAvailable(items, transaction = null) {
+  for (const item of items || []) {
+    const isUsedProduct = Number(item?.isUsedProduct ?? item?.is_used_product ?? 0) === 1;
+    const productId = item?.productId || item?.product_id || '';
+    if (!isUsedProduct || productId) continue;
+    await assertPnAvailableForNewProduct({
+      pnCode: item?.pnCode || item?.pn_code || '',
+      transaction
+    });
+  }
+}
+
+function allocateRebateByItems(items, amount) {
+  const totalCents = Math.round(toMoney(amount) * 100);
+  const allocations = new Array(items.length).fill(0);
+  if (totalCents <= 0 || items.length === 0) return allocations;
+
+  const candidates = items
+    .map((item, index) => ({
+      index,
+      cap: Math.max(0, Math.round(Number(item.price || 0) * Number(item.quantity || 0) * 100))
+    }))
+    .filter(item => item.cap > 0);
+
+  if (candidates.length === 0) return allocations;
+
+  const cappedTotal = Math.min(totalCents, candidates.reduce((sum, item) => sum + item.cap, 0));
+  const base = Math.floor(cappedTotal / candidates.length);
+  let extra = cappedTotal % candidates.length;
+
+  for (const item of candidates) {
+    const share = base + (extra > 0 ? 1 : 0);
+    allocations[item.index] = Math.min(share, item.cap);
+    if (extra > 0) extra -= 1;
+  }
+
+  let remaining = cappedTotal - allocations.reduce((sum, value) => sum + value, 0);
+  for (const item of candidates) {
+    if (remaining <= 0) break;
+    const capacity = item.cap - allocations[item.index];
+    if (capacity <= 0) continue;
+    const add = Math.min(capacity, remaining);
+    allocations[item.index] += add;
+    remaining -= add;
+  }
+
+  return allocations.map(value => value / 100);
+}
+
+function normalizeSelectedResourceTypes(value) {
+  if (Array.isArray(value)) return [...new Set(value.filter(Boolean).map(String))];
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? [...new Set(parsed.filter(Boolean).map(String))] : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function assertUsedProductDirectInbound(ctx, item) {
+  const isUsedProduct = Boolean(item?.isUsedProduct || item?.is_used_product);
+  const directInbound = Boolean(item?.directInbound || item?.direct_inbound);
+  if (!isUsedProduct || !directInbound) return;
+
+  const quantity = Number(item?.quantity || 0);
+  const snCode = normalizeSnCode(item?.directInboundSnCode || item?.direct_inbound_sn_code || '');
+  const pnCode = String(item?.pnCode || item?.pn_code || '').trim();
+  if (quantity !== 1 || !snCode) {
+    ctx.throw(400, '二手商品勾选审批完成及入库时，数量必须为1且必须填写SN号');
+  }
+  if (!isUsablePnCode(pnCode)) {
+    ctx.throw(400, '二手商品勾选审批完成及入库时必须填写PN码');
+  }
+}
+
+function parsePurchaseAllocationArray(value) {
+  if (Array.isArray(value)) return value;
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function getLocationAllocations(allocation) {
+  const nested = allocation?.locationAllocations || allocation?.location_allocations;
+  if (Array.isArray(nested)) return nested;
+  if (allocation?.locationId || allocation?.location_id) {
+    return [{
+      locationId: allocation.locationId || allocation.location_id,
+      locationName: allocation.locationName || allocation.location_name || '',
+      quantity: allocation.quantity
+    }];
+  }
+  return [];
+}
+
+async function findDefaultPurchaseLocation(storeId, transaction = null) {
+  const query = { where: { store_id: storeId, status: 1, type: 'normal_qty' } };
+  if (transaction) query.transaction = transaction;
+  const salesLocation = await Location.findOne(query);
+  if (salesLocation) return salesLocation;
+
+  const fallbackQuery = { where: { store_id: storeId, status: 1, is_sellable: 1 } };
+  if (transaction) fallbackQuery.transaction = transaction;
+  return Location.findOne(fallbackQuery);
+}
+
+function parseInboundSnCodes(value) {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.map(item => String(item || '').trim()).filter(Boolean) : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function persistPurchaseAllocations(item, allocations) {
+  if (item.storeAllocations !== undefined) item.storeAllocations = allocations;
+  if (item.store_allocations !== undefined) {
+    item.store_allocations = JSON.stringify(allocations);
+    if (typeof item.changed === 'function') item.changed('store_allocations', true);
+  }
+}
+
+function flattenPurchaseAllocations(item, fallbackStoreId) {
+  const allocations = parsePurchaseAllocationArray(item.storeAllocations || item.store_allocations);
+  if (allocations.length === 0) {
+    return [{ storeId: fallbackStoreId, locationId: null, quantity: Number(item.quantity || 0) }];
+  }
+
+  const flattened = [];
+  for (const allocation of allocations) {
+    const storeId = allocation.storeId || allocation.store_id || fallbackStoreId;
+    const locationAllocations = getLocationAllocations(allocation);
+    if (locationAllocations.length === 0) {
+      flattened.push({
+        storeId,
+        locationId: allocation.locationId || allocation.location_id || null,
+        quantity: Number(allocation.quantity || 0)
+      });
+      continue;
+    }
+    for (const location of locationAllocations) {
+      flattened.push({
+        storeId,
+        locationId: location.locationId || location.location_id || null,
+        quantity: Number(location.quantity || 0)
+      });
+    }
+  }
+  return flattened.filter(item => item.quantity > 0);
+}
+
+async function validatePurchaseAllocations(items, fallbackStoreId, transaction = null) {
+  const defaultLocationByStore = new Map();
+  const allocationDistributorIds = new Set();
+  const getDefaultLocation = async storeId => {
+    const key = String(storeId || '');
+    if (!defaultLocationByStore.has(key)) {
+      defaultLocationByStore.set(key, findDefaultPurchaseLocation(storeId, transaction));
+    }
+    return defaultLocationByStore.get(key);
+  };
+
+  for (const item of items || []) {
+    const allocations = parsePurchaseAllocationArray(item.storeAllocations || item.store_allocations);
+    if (allocations.length === 0) {
+      throw new Error(`商品 ${item.productName || item.product_name || item.productId || item.product_id} 必须分配门店和库位`);
+    }
+
+    let totalQuantity = 0;
+    for (const allocation of allocations) {
+      const storeId = allocation.storeId || allocation.store_id || fallbackStoreId;
+      const storeQuantity = Number(allocation.quantity || 0);
+      let locationAllocations = getLocationAllocations(allocation);
+      if (locationAllocations.length === 0 && storeId && storeQuantity > 0) {
+        const defaultLocation = await getDefaultLocation(storeId);
+        if (defaultLocation) {
+          const defaultAllocation = {
+            locationId: defaultLocation.location_id,
+            locationName: defaultLocation.name || '',
+            quantity: storeQuantity
+          };
+          allocation.locationId = defaultAllocation.locationId;
+          allocation.locationName = defaultAllocation.locationName;
+          allocation.locationAllocations = [defaultAllocation];
+          locationAllocations = [defaultAllocation];
+        }
+      }
+      if (!storeId || storeQuantity <= 0 || locationAllocations.length === 0) {
+        throw new Error(`商品 ${item.productName || item.product_name || item.productId || item.product_id} 必须分配到有效库位`);
+      }
+
+      const allocationStore = await Store.findOne({
+        where: { store_id: storeId, is_deleted: 0, status: 1 },
+        attributes: ['store_id', 'distributor_id'],
+        transaction
+      });
+      if (!allocationStore) throw new Error(`门店 ${storeId} 不存在、已停用或未绑定经销商`);
+      if (allocationStore.distributor_id) allocationDistributorIds.add(String(allocationStore.distributor_id));
+      if (allocationDistributorIds.size > 1) throw new Error('同一采购申请不能跨经销商分配门店，请拆分采购申请');
+
+      let locationQuantity = 0;
+      for (const location of locationAllocations) {
+        const locationId = location.locationId || location.location_id;
+        const quantity = Number(location.quantity || 0);
+        if (!locationId || quantity <= 0) throw new Error('库位分配数量必须大于0');
+        const target = await Location.findOne({
+          where: { location_id: locationId, store_id: storeId, status: 1 },
+          transaction
+        });
+        if (!target) throw new Error(`库位 ${locationId} 不存在、已停用或不属于对应门店`);
+        locationQuantity += quantity;
+      }
+      if (locationQuantity !== storeQuantity) throw new Error('门店分配数量必须等于该门店的库位分配数量');
+      totalQuantity += storeQuantity;
+      persistPurchaseAllocations(item, allocations);
+    }
+    if (totalQuantity !== Number(item.quantity || 0)) throw new Error('门店分配总数必须等于采购数量');
+  }
+}
+
+function summarizePendingInboundItems(items = []) {
+  const summary = items.reduce((result, item) => {
+    const quantity = Math.max(0, Number(item.quantity || 0));
+    const receivedQuantity = Math.min(quantity, Math.max(0, Number(item.received_quantity || 0)));
+    result.totalQuantity += quantity;
+    result.receivedQuantity += receivedQuantity;
+    result.pendingQuantity += Math.max(0, quantity - receivedQuantity);
+    result.totalAmount += quantity * Number(item.unit_price || 0);
+    return result;
+  }, { totalQuantity: 0, receivedQuantity: 0, pendingQuantity: 0, totalAmount: 0 });
+
+  summary.status = summary.pendingQuantity > 0
+    ? 'pending'
+    : summary.receivedQuantity > 0
+      ? 'completed'
+      : 'cancelled';
+  summary.totalAmount = toSignedMoney(summary.totalAmount);
+  return summary;
+}
+
+async function refreshPendingInboundSummary(inbound, transaction) {
+  const items = await InboundItem.findAll({
+    where: { inbound_id: inbound.inbound_id },
+    transaction
+  });
+  const summary = summarizePendingInboundItems(items);
+  await inbound.update({
+    total_quantity: summary.totalQuantity,
+    total_amount: summary.totalAmount,
+    status: summary.status,
+    update_time: new Date()
+  }, { transaction });
+}
+
+function getPurchaseAdjustmentTotals(adjustments = []) {
+  let grossDelta = 0;
+  let actualDelta = 0;
+  let rebateDelta = 0;
+  for (const adjustment of adjustments || []) {
+    for (const item of adjustment.items || []) {
+      const quantityDelta = Number(item.quantity_delta || 0);
+      const unitPrice = Number(item.unit_price || 0);
+      const grossItemDelta = quantityDelta * unitPrice;
+      grossDelta += grossItemDelta;
+      actualDelta += Number(item.amount_delta || 0);
+      rebateDelta += grossItemDelta - Number(item.amount_delta || 0);
+    }
+  }
+  return {
+    grossDelta: toSignedMoney(grossDelta),
+    actualDelta: toSignedMoney(actualDelta),
+    rebateDelta: toSignedMoney(rebateDelta)
+  };
+}
+
+function getPurchaseAdjustmentItemDeltas(adjustments = []) {
+  const result = new Map();
+  for (const adjustment of adjustments || []) {
+    for (const item of adjustment.items || []) {
+      const key = String(item.request_item_id || '');
+      if (!key) continue;
+      const current = result.get(key) || { quantityDelta: 0, grossDelta: 0, actualDelta: 0, rebateDelta: 0 };
+      const quantityDelta = Number(item.quantity_delta || 0);
+      const unitPrice = Number(item.unit_price || 0);
+      const grossDelta = quantityDelta * unitPrice;
+      const actualDelta = Number(item.amount_delta || 0);
+      current.quantityDelta += quantityDelta;
+      current.grossDelta += grossDelta;
+      current.actualDelta += actualDelta;
+      current.rebateDelta += grossDelta - actualDelta;
+      result.set(key, current);
+    }
+  }
+  return result;
+}
+
+function buildNegativePurchaseOrders(adjustments = []) {
+  return (adjustments || [])
+    .filter(adjustment => Number(adjustment.total_quantity_delta || 0) < 0)
+    .map(adjustment => {
+      const row = typeof adjustment.toJSON === 'function' ? adjustment.toJSON() : { ...adjustment };
+      const financialItems = row.items || [];
+      const isSpecialWarehouseRepurchase = (row.items || []).some(item => String(item.remark || '').startsWith('special_warehouse_repurchase'));
+      return {
+        order_id: row.adjustment_id,
+        order_no: row.adjustment_no,
+        order_type: 'purchase_return',
+        order_type_name: isSpecialWarehouseRepurchase ? '特殊仓转新采购调整' : '采购退货负订单',
+        request_id: row.request_id,
+        request_no: row.request_no,
+        total_quantity: financialItems.reduce((sum, item) => sum + Number(item.quantity_delta || 0), 0),
+        total_amount: toSignedMoney(financialItems.reduce((sum, item) => sum + Number(item.amount_delta || 0), 0)),
+        reason: row.reason || '',
+        status: row.status || 'completed',
+        create_user: row.create_user || '',
+        create_time: row.create_time || null,
+        items: financialItems.map(item => ({
+          request_item_id: item.request_item_id,
+          inbound_id: item.inbound_id,
+          inbound_item_id: item.inbound_item_id,
+          product_id: item.product_id,
+          product_name: item.product_name || '',
+          quantity: Number(item.quantity_delta || 0),
+          unit_price: Number(item.unit_price || 0),
+          amount: toSignedMoney(item.amount_delta || 0),
+          remark: item.remark || ''
+        }))
+      };
+    });
+}
+
+function attachCurrentPurchaseItemAmounts(items = [], adjustments = []) {
+  const deltas = getPurchaseAdjustmentItemDeltas(adjustments);
+  return (items || []).map(item => {
+    const key = String(item.item_id || '');
+    const delta = deltas.get(key) || { quantityDelta: 0, grossDelta: 0, actualDelta: 0, rebateDelta: 0 };
+    const quantity = Number(item.quantity || 0);
+    const unitPrice = Number(item.unit_price || 0);
+    const originalSubtotal = Number(item.subtotal || quantity * unitPrice);
+    const originalRebate = Number(item.rebate_deduction || 0);
+    const originalActual = item.actual_amount === null || item.actual_amount === undefined
+      ? originalSubtotal - originalRebate
+      : Number(item.actual_amount || 0);
+    item.current_quantity = Math.max(0, quantity + delta.quantityDelta);
+    item.current_subtotal = toSignedMoney(Math.max(0, originalSubtotal + delta.grossDelta));
+    item.current_rebate_deduction = toSignedMoney(Math.max(0, originalRebate + delta.rebateDelta));
+    item.current_actual_amount = toSignedMoney(Math.max(0, originalActual + delta.actualDelta));
+    return item;
+  });
+}
+
+function attachCurrentPurchaseAmounts(target, adjustments = []) {
+  const totals = getPurchaseAdjustmentTotals(adjustments);
+  const originalTotal = Number(target.total_amount || 0);
+  const originalRebate = Number(target.rebate_deduction || 0);
+  const rawActual = Number(target.actual_total || 0);
+  const originalActual = target.actual_total === null || target.actual_total === undefined || (rawActual === 0 && originalTotal > 0)
+    ? originalTotal - originalRebate
+    : rawActual;
+  target.original_total_amount = toSignedMoney(originalTotal);
+  target.original_rebate_deduction = toSignedMoney(originalRebate);
+  target.original_actual_total = toSignedMoney(originalActual);
+  target.current_total_amount = toSignedMoney(Math.max(0, originalTotal + totals.grossDelta));
+  target.current_rebate_deduction = toSignedMoney(Math.max(0, originalRebate + totals.rebateDelta));
+  target.current_actual_total = toSignedMoney(Math.max(0, originalActual + totals.actualDelta));
+  return target;
+}
+
+async function getPaidPurchaseRequestIds() {
+  const [paidPayables, paidReimbursements] = await Promise.all([
+    Payable.findAll({
+      where: { source_type: 'purchase', status: 'paid', request_id: { [Op.ne]: null } },
+      attributes: ['request_id']
+    }),
+    Expense.findAll({
+      where: { source_type: 'purchase', status: 'paid', is_deleted: 0 },
+      attributes: ['source_id']
+    })
+  ]);
+  return new Set([
+    ...paidPayables.map(row => row.request_id),
+    ...paidReimbursements.map(row => row.source_id)
+  ].filter(Boolean).map(String));
+}
+
+function appendRequestIdCondition(where, condition) {
+  const existingConditions = Array.isArray(where[Op.and])
+    ? [...where[Op.and]]
+    : (where[Op.and] ? [where[Op.and]] : []);
+  if (Object.prototype.hasOwnProperty.call(where, 'request_id')) {
+    existingConditions.push({ request_id: where.request_id });
+    delete where.request_id;
+  }
+  existingConditions.push({ request_id: condition });
+  where[Op.and] = existingConditions;
+}
+
+function attachPurchasePaymentStatus(target, paidRequestIds = new Set()) {
+  const isApproved = target.status === 'approved';
+  const isPaid = isApproved && paidRequestIds.has(String(target.request_id));
+  target.payment_status = isApproved ? (isPaid ? 'paid' : 'pending_payment') : '';
+  target.display_status = isApproved ? target.payment_status : target.status;
+  return target;
+}
+
+function appendPurchaseWhereCondition(where, condition) {
+  const existingConditions = Array.isArray(where[Op.and])
+    ? [...where[Op.and]]
+    : (where[Op.and] ? [where[Op.and]] : []);
+  existingConditions.push(condition);
+  where[Op.and] = existingConditions;
+}
+
+async function findPurchaseRequestIdsByDocumentNo(documentNo) {
+  const text = String(documentNo || '').trim();
+  if (!text) return [];
+  const like = { [Op.like]: `%${text}%` };
+  const requestIds = new Set();
+  const sourceRequestNos = new Set();
+  const inboundIds = new Set();
+
+  const [requests, adjustments, inbounds, returns] = await Promise.all([
+    PurchaseRequest.findAll({ where: { request_no: like }, attributes: ['request_id'], raw: true }),
+    PurchaseAdjustment.findAll({ where: { adjustment_no: like }, attributes: ['request_id'], raw: true }),
+    Inbound.findAll({
+      where: { inbound_no: like },
+      attributes: ['inbound_id', 'purchase_request_id', 'source_no'],
+      raw: true
+    }),
+    ReturnStock.findAll({
+      where: { return_no: like },
+      attributes: ['purchase_request_id', 'inbound_id'],
+      raw: true
+    })
+  ]);
+
+  requests.forEach(row => row.request_id && requestIds.add(String(row.request_id)));
+  adjustments.forEach(row => row.request_id && requestIds.add(String(row.request_id)));
+  [...inbounds, ...returns].forEach(row => {
+    if (row.purchase_request_id) requestIds.add(String(row.purchase_request_id));
+    if (row.inbound_id) inboundIds.add(String(row.inbound_id));
+    if (row.source_no) sourceRequestNos.add(String(row.source_no));
+  });
+
+  if (inboundIds.size) {
+    const relatedInbounds = await Inbound.findAll({
+      where: { inbound_id: { [Op.in]: [...inboundIds] } },
+      attributes: ['purchase_request_id', 'source_no'],
+      raw: true
+    });
+    relatedInbounds.forEach(row => {
+      if (row.purchase_request_id) requestIds.add(String(row.purchase_request_id));
+      if (row.source_no) sourceRequestNos.add(String(row.source_no));
+    });
+  }
+
+  if (sourceRequestNos.size) {
+    const sourceRequests = await PurchaseRequest.findAll({
+      where: { request_no: { [Op.in]: [...sourceRequestNos] } },
+      attributes: ['request_id'],
+      raw: true
+    });
+    sourceRequests.forEach(row => row.request_id && requestIds.add(String(row.request_id)));
+  }
+  return [...requestIds];
+}
+
+function purchaseDocumentStatusLabel(status) {
+  return ({
+    draft: '草稿', pending: '待处理', approved: '已通过', completed: '已完成',
+    cancelled: '已取消', returned: '已退货', revoked: '已撤销', replaced: '已转新采购'
+  })[String(status || '').toLowerCase()] || status || '-';
+}
+
+function purchaseAdjustmentOperation(remark) {
+  const text = String(remark || '');
+  if (text.startsWith('stock_return')) return { code: 'stock_return', name: '已入库后退库' };
+  if (text.startsWith('special_warehouse_repurchase')) return { code: 'special_warehouse_repurchase', name: '特殊仓转新采购' };
+  return { code: 'pending_cancel', name: '取消待入库' };
+}
+
+function buildPurchaseDocumentRelations(request, returnStocks = []) {
+  const inbounds = request.Inbounds || [];
+  const adjustments = request.adjustments || [];
+  const inboundMap = new Map(inbounds.map(inbound => [String(inbound.inbound_id), inbound]));
+  const rows = [{
+    key: `request:${request.request_id}`,
+    depth: 0,
+    document_type: 'purchase_request',
+    document_type_name: '采购申请',
+    document_id: request.request_id,
+    document_no: request.request_no,
+    upstream_no: '',
+    business_action: '原采购申请',
+    product_summary: (request.items || []).map(item => `${item.product_name || item.product_id} ×${item.quantity || 0}`).join('；'),
+    quantity: (request.items || []).reduce((sum, item) => sum + Number(item.quantity || 0), 0),
+    amount: Number(request.total_amount || 0),
+    status: request.status,
+    status_name: purchaseDocumentStatusLabel(request.status),
+    operator: request.submit_user || request.apply_user || request.create_user || '',
+    event_time: request.create_time
+  }];
+
+  inbounds.forEach(inbound => rows.push({
+    key: `inbound:${inbound.inbound_id}`,
+    depth: 1,
+    document_type: 'inbound',
+    document_type_name: '入库单',
+    document_id: inbound.inbound_id,
+    document_no: inbound.inbound_no,
+    upstream_no: request.request_no,
+    business_action: '采购入库',
+    product_summary: (inbound.items || []).map(item => `${item.product_name || item.product_id} ×${item.quantity || 0}`).join('；'),
+    quantity: Number(inbound.total_quantity ?? (inbound.items || []).reduce((sum, item) => sum + Number(item.quantity || 0), 0)),
+    amount: Number(inbound.total_amount || 0),
+    status: inbound.status,
+    status_name: purchaseDocumentStatusLabel(inbound.status),
+    operator: inbound.receive_user || inbound.create_user || '',
+    event_time: inbound.receive_time || inbound.create_time
+  }));
+
+  adjustments.forEach(adjustment => {
+    rows.push({
+      key: `adjustment:${adjustment.adjustment_id}`,
+      depth: 1,
+      document_type: 'purchase_adjustment',
+      document_type_name: '采购退单/调整',
+      document_id: adjustment.adjustment_id,
+      document_no: adjustment.adjustment_no,
+      upstream_no: request.request_no,
+      business_action: (adjustment.items || []).length > 0 && (adjustment.items || []).every(item => String(item.remark || '').startsWith('stock_return'))
+        ? '采购退货（已完成退库）'
+        : '采购数量取消/调整',
+      product_summary: (adjustment.items || []).map(item => item.product_name || item.product_id).filter(Boolean).join('；'),
+      quantity: Number(adjustment.total_quantity_delta || 0),
+      amount: Number(adjustment.total_amount_delta || 0),
+      status: adjustment.status,
+      status_name: purchaseDocumentStatusLabel(adjustment.status),
+      operator: adjustment.create_user || '',
+      event_time: adjustment.create_time
+    });
+    (adjustment.items || []).forEach(item => {
+      const inbound = inboundMap.get(String(item.inbound_id || '')) || {};
+      const operation = purchaseAdjustmentOperation(item.remark);
+      rows.push({
+        key: `adjustment-link:${adjustment.adjustment_id}:${item.item_id || item.inbound_item_id}`,
+        depth: 2,
+        document_type: 'adjustment_inbound_link',
+        document_type_name: '关联入库明细',
+        document_id: inbound.inbound_id || item.inbound_id,
+        document_no: inbound.inbound_no || item.inbound_id || '-',
+        upstream_no: adjustment.adjustment_no,
+        business_action: operation.name,
+        operation_type: operation.code,
+        product_summary: item.product_name || item.product_id || '',
+        quantity: Number(item.quantity_delta || 0),
+        amount: Number(item.amount_delta || 0),
+        status: inbound.status || '',
+        status_name: purchaseDocumentStatusLabel(inbound.status),
+        operator: adjustment.create_user || '',
+        event_time: adjustment.create_time
+      });
+    });
+  });
+
+  returnStocks.forEach(returnStock => rows.push({
+    key: `return:${returnStock.return_id}`,
+    depth: 2,
+    document_type: 'return_stock',
+    document_type_name: '实际退库单',
+    document_id: returnStock.return_id,
+    document_no: returnStock.return_no,
+    upstream_no: inboundMap.get(String(returnStock.inbound_id || ''))?.inbound_no || returnStock.inbound_no || request.request_no,
+    business_action: '已入库后退回库存',
+    product_summary: (returnStock.items || []).map(item => `${item.product_name || item.product_id} ×${item.quantity || 0}`).join('；'),
+    quantity: -Math.abs(Number(returnStock.total_quantity || 0)),
+    amount: -Math.abs(Number(returnStock.total_amount || 0)),
+    status: returnStock.status,
+    status_name: purchaseDocumentStatusLabel(returnStock.status),
+    operator: returnStock.execute_user || returnStock.create_user || '',
+    event_time: returnStock.execute_time || returnStock.create_time
+  }));
+  return rows;
+}
+
+function buildPurchaseSubmitterCondition(value, staffIds = []) {
+  const text = String(value || '').trim();
+  const like = `%${text}%`;
+  return {
+    [Op.or]: [
+      { apply_user: { [Op.like]: like } },
+      { submit_user: { [Op.like]: like } },
+      { create_user: { [Op.like]: like } },
+      ...(staffIds.length ? [{ applicant_staff_id: { [Op.in]: staffIds } }] : [])
+    ]
+  };
+}
+
+function buildPurchaseOperatorCondition(operatorStaffId, operatorName = '') {
+  const conditions = [
+    { operator_staff_id: operatorStaffId },
+    // 历史采购单可能只保存经手人姓名，没有保存员工ID。
+    ...(operatorName ? [{ operator_name: operatorName }] : []),
+    // 旧数据未写入经手人字段时，用申请人/制单人作为兼容回退。
+    { applicant_staff_id: operatorStaffId },
+    { create_staff_id: operatorStaffId }
+  ];
+  return { [Op.or]: conditions };
+}
+
+function getPurchaseLifecycleStatus(requestStatus, inboundRows = []) {
+  if (requestStatus === 'revoked') return 'revoked';
+  if (requestStatus === 'replaced') return 'replaced';
+
+  const rows = Array.isArray(inboundRows) ? inboundRows.filter(Boolean) : [];
+  if (rows.some(item => item.status === 'pending')) return 'pending_inbound';
+
+  const hasReturned = rows.some(item => item.status === 'returned');
+  const allInboundClosed = rows.length > 0
+    && rows.every(item => ['returned', 'cancelled'].includes(item.status));
+  if (hasReturned && allInboundClosed) return 'returned';
+  if (hasReturned) return 'partial_return';
+
+  return requestStatus;
+}
+
+function canRevokePurchaseForUser(user, request) {
+  const currentStaffId = user.staffId || user.id;
+  const isApplicant = request.applicant_staff_id && currentStaffId
+    ? Number(request.applicant_staff_id) === Number(currentStaffId)
+    : [user.name, user.phone, String(currentStaffId || '')].filter(Boolean).includes(request.apply_user);
+  const roles = getUserRoles(user);
+  const isDistributorAccount = roles.some(role => ['admin', 'boss', 'distributor'].includes(role));
+  return Boolean(isApplicant || (isDistributorAccount && request.distributor_id
+    && canAccessDistributor(user, request.distributor_id)));
+}
+
+async function findPurchaseRequestIdsByLifecycleStatus(status) {
+  const inboundRows = await Inbound.findAll({
+    where: { purchase_request_id: { [Op.ne]: null } },
+    attributes: ['purchase_request_id', 'status'],
+    raw: true
+  });
+  const rowsByRequestId = new Map();
+  inboundRows.forEach(row => {
+    const requestId = String(row.purchase_request_id || '');
+    if (!requestId) return;
+    if (!rowsByRequestId.has(requestId)) rowsByRequestId.set(requestId, []);
+    rowsByRequestId.get(requestId).push(row);
+  });
+
+  return [...rowsByRequestId.entries()]
+    .filter(([, rows]) => getPurchaseLifecycleStatus('approved', rows) === status)
+    .map(([requestId]) => requestId);
+}
+
+function buildAdjustmentRows(request, inbounds, stores) {
+  const storeMap = new Map(stores.map(store => [String(store.store_id), store.name]));
+  const rows = [];
+  const receivedQuantityOf = (inbound, inboundItem) => {
+    const total = Math.max(Number(inboundItem.quantity || 0), 0);
+    const received = Math.max(Number(inboundItem.received_quantity || 0), 0);
+    return Math.min(total, received);
+  };
+  const pendingQuantityOf = (inbound, inboundItem) => Math.max(
+    Number(inboundItem.quantity || 0) - receivedQuantityOf(inbound, inboundItem),
+    0
+  );
+
+  for (const requestItem of request.items || []) {
+    const inboundItems = [];
+    for (const inbound of inbounds) {
+      for (const inboundItem of inbound.items || []) {
+        if (String(inboundItem.purchase_request_item_id || '') === String(requestItem.item_id)) {
+          inboundItems.push({ inbound, inboundItem });
+        }
+      }
+    }
+
+    const unitPrice = Number(requestItem.unit_price || 0);
+    const rebatePerUnit = Number(requestItem.quantity || 0) > 0
+      ? Number(requestItem.rebate_deduction || 0) / Number(requestItem.quantity)
+      : 0;
+
+    for (const { inbound, inboundItem } of inboundItems) {
+      const pendingQuantity = pendingQuantityOf(inbound, inboundItem);
+      const receivedQuantity = receivedQuantityOf(inbound, inboundItem);
+      const editable = inbound.status === 'pending' && pendingQuantity > 0;
+      const inStock = inbound.status === 'completed' && receivedQuantity > 0;
+      if (editable || inStock) {
+        const effectiveUnitPrice = unitPrice || Number(inboundItem.unit_price || 0);
+        rows.push({
+          request_item_id: requestItem.item_id,
+          inbound_id: inbound.inbound_id,
+          inbound_no: inbound.inbound_no,
+          inbound_item_id: inboundItem.item_id,
+          store_id: inbound.store_id,
+          store_name: storeMap.get(String(inbound.store_id)) || inbound.store_id || '',
+          product_id: requestItem.product_id,
+          product_name: requestItem.product_name || inboundItem.product_name || requestItem.product_id,
+          pn_code: requestItem.pn_code || inboundItem.pn_code || '',
+          unit_price: effectiveUnitPrice,
+          actual_unit_price: toSignedMoney(effectiveUnitPrice - rebatePerUnit),
+          original_quantity: Number(requestItem.quantity || 0),
+          received_quantity: receivedQuantity,
+          pending_quantity: pendingQuantity,
+          return_quantity: 0,
+          max_return_quantity: editable ? pendingQuantity : 0,
+          operation_type: editable ? 'pending_cancel' : 'in_stock',
+          need_sn: 0,
+          sn_options: [],
+          editable
+        });
+      }
+    }
+  }
+
+  return rows;
+}
 
 /**
  * 采购申请列表
  */
-async function getRequestList(ctx) {
-  const { storeId, status, page = 1, pageSize = 20 } = ctx.query;
+async function queryRequestList(ctx, { exportMode = false } = {}) {
+  const { status, scope, operatorStaffId, submitter, documentNo, requestNo, keyword, supplierId, page = 1, pageSize = 20 } = ctx.query;
   const user = ctx.state.user;
+  const roles = getUserRoles(user);
+  const paidRequestIds = await getPaidPurchaseRequestIds();
 
-  const where = {};
+  const where = { status: { [Op.ne]: 'deleted' } };
   const whereStore = {};
 
-  // 区域权限过滤
-  if (!user.regionCodes.includes('*')) {
-    whereStore.region_id = user.regionCodes;
+  if (scope === 'review' && !getUserRoles(user).some(role => ['purchaser', 'admin', 'boss'].includes(role))) {
+    where.request_id = '__NO_PURCHASE_APPROVAL_ACCESS__';
   }
-  if (storeId) whereStore.store_id = storeId;
+
+  // 区域权限过滤
+  if (!(user.accessibleStoreIds || []).includes('*')) {
+    whereStore.store_id = user.accessibleStoreIds || [];
+  }
 
   const stores = await Store.findAll({ where: whereStore });
   const storeIds = stores.map(s => s.store_id);
   where.store_id = storeIds;
 
-  if (status) where.status = status;
+  if (status === 'pending_inbound' || status === 'returned') {
+    const lifecycleRequestIds = await findPurchaseRequestIdsByLifecycleStatus(status);
+    appendRequestIdCondition(
+      where,
+      lifecycleRequestIds.length ? { [Op.in]: lifecycleRequestIds } : '__NO_MATCH__'
+    );
+    if (status === 'pending_inbound') where.status = 'approved';
+  } else if (status === 'pending_payment' || status === 'paid') {
+    where.status = 'approved';
+    if (status === 'paid') {
+      appendRequestIdCondition(where, paidRequestIds.size ? { [Op.in]: [...paidRequestIds] } : '__NO_MATCH__');
+    } else if (paidRequestIds.size) {
+      appendRequestIdCondition(where, { [Op.notIn]: [...paidRequestIds] });
+    }
+  } else if (status) {
+    where.status = status;
+  }
+  // 店员/普通员工固定只能查看本人申请；店长按下方 accessibleStoreIds 查看本店申请。
+  // 不依赖前端传入 scope，避免通过修改请求参数扩大可见范围。
+  if (scope === 'my' || roles.some(role => ['clerk', 'staff'].includes(role))) {
+    const staffId = user.staffId || user.id;
+    const identities = [user.name, user.phone, staffId && String(staffId)].filter(Boolean);
+    if (staffId) {
+      where[Op.and] = [{
+        [Op.or]: [
+          { applicant_staff_id: staffId },
+          ...(identities.length ? [{ applicant_staff_id: null, apply_user: { [Op.in]: identities } }] : [])
+        ]
+      }];
+    } else if (identities.length) {
+      where.apply_user = { [Op.in]: identities };
+    }
+  }
+  if (operatorStaffId) {
+    const operator = await Staff.findOne({
+      where: { staff_id: operatorStaffId, is_deleted: 0 },
+      attributes: ['staff_id', 'name'],
+      raw: true
+    });
+    appendPurchaseWhereCondition(
+      where,
+      buildPurchaseOperatorCondition(operatorStaffId, operator?.name || '')
+    );
+  }
+  if (submitter && String(submitter).trim()) {
+    const submitterText = String(submitter).trim();
+    const submitterStaffRows = await Staff.findAll({
+      where: {
+        [Op.or]: [
+          { name: { [Op.like]: `%${submitterText}%` } },
+          { phone: { [Op.like]: `%${submitterText}%` } }
+        ],
+        is_deleted: 0
+      },
+      attributes: ['staff_id'],
+      raw: true
+    });
+    appendPurchaseWhereCondition(
+      where,
+      buildPurchaseSubmitterCondition(
+        submitterText,
+        submitterStaffRows.map(row => row.staff_id).filter(Boolean)
+      )
+    );
+  }
+  const relatedDocumentNo = String(documentNo || requestNo || '').trim();
+  if (relatedDocumentNo) {
+    const relatedRequestIds = await findPurchaseRequestIdsByDocumentNo(relatedDocumentNo);
+    appendRequestIdCondition(where, relatedRequestIds.length ? { [Op.in]: relatedRequestIds } : '__NO_MATCH__');
+  }
+  if (supplierId) where.supplier_id = supplierId;
 
-  const { count, rows } = await PurchaseRequest.findAndCountAll({
+  if (keyword && String(keyword).trim()) {
+    const text = String(keyword).trim();
+    const productRows = await Product.findAll({
+      attributes: ['product_id'],
+      where: {
+        [Op.or]: [
+          { name: { [Op.like]: `%${text}%` } },
+          { product_code: { [Op.like]: `%${text}%` } },
+          { manufacturer_code: { [Op.like]: `%${text}%` } }
+        ]
+      }
+    });
+    const productIds = productRows.map(row => row.product_id);
+    const itemWhere = {
+      [Op.or]: [
+        { product_name: { [Op.like]: `%${text}%` } },
+        { pn_code: { [Op.like]: `%${text}%` } },
+        { product_id: { [Op.like]: `%${text}%` } },
+        ...(productIds.length ? [{ product_id: { [Op.in]: productIds } }] : [])
+      ]
+    };
+    const itemRows = await PurchaseRequestItem.findAll({ attributes: ['request_id'], where: itemWhere });
+    const requestIds = [...new Set(itemRows.map(row => row.request_id))];
+    appendRequestIdCondition(where, requestIds.length ? { [Op.in]: requestIds } : '__NO_MATCH__');
+  }
+
+  const requestQuery = {
     where,
     include: [
       { model: Store },
-      { model: Supplier }
+      {
+        model: Staff,
+        as: 'Applicant',
+        attributes: ['staff_id', 'name', 'role_code', 'store_id', 'distributor_id'],
+        required: false,
+        include: [
+          { model: Store, as: 'Store', attributes: ['store_id', 'name'], required: false },
+          { model: Distributor, attributes: ['distributor_id', 'name'], required: false }
+        ]
+      },
+      { model: Supplier },
+      { model: PurchaseRequestItem, as: 'items' },
+      {
+        model: Inbound,
+        attributes: ['inbound_id', 'inbound_no', 'store_id', 'source_no', 'status'],
+        separate: true,
+        include: [
+          { model: Store, attributes: ['store_id', 'name'], required: false },
+          { model: InboundItem, as: 'items', attributes: ['received_quantity'], required: false }
+        ]
+      }
     ],
-    order: [['create_time', 'DESC']],
-    ...paginate({}, { page, pageSize })
+    order: buildPendingFirstOrder(sequelize, {
+      statusColumn: 'PurchaseRequest.status',
+      pendingStatuses: ['draft', 'pending'],
+      dateColumns: ['PurchaseRequest.create_time'],
+      idColumn: 'PurchaseRequest.request_id'
+    })
+  };
+  const result = exportMode
+    ? { count: 0, rows: await PurchaseRequest.findAll(requestQuery) }
+    : await PurchaseRequest.findAndCountAll({ ...requestQuery, ...paginate({}, { page, pageSize }) });
+  const { count, rows } = result;
+
+  const requestIds = rows.map(row => row.request_id).filter(Boolean);
+  const adjustmentRows = requestIds.length
+    ? await PurchaseAdjustment.findAll({
+      where: { request_id: { [Op.in]: requestIds }, status: 'completed' },
+      attributes: [
+        'adjustment_id', 'adjustment_no', 'request_id', 'request_no',
+        'total_quantity_delta', 'total_amount_delta', 'reason', 'status',
+        'create_user', 'create_time'
+      ],
+      include: [{
+        model: PurchaseAdjustmentItem,
+        as: 'items',
+        attributes: [
+          'request_item_id', 'inbound_id', 'inbound_item_id', 'product_id',
+          'product_name', 'quantity_delta', 'unit_price', 'amount_delta', 'remark'
+        ]
+      }]
+    })
+    : [];
+  const adjustmentsByRequest = new Map();
+  adjustmentRows.forEach(adjustment => {
+    const key = String(adjustment.request_id);
+    if (!adjustmentsByRequest.has(key)) adjustmentsByRequest.set(key, []);
+    adjustmentsByRequest.get(key).push(adjustment);
   });
 
+  const formattedRows = rows.map(row => {
+    const result = row.toJSON();
+    const requestAdjustments = adjustmentsByRequest.get(String(result.request_id)) || [];
+    attachCurrentPurchaseAmounts(result, requestAdjustments);
+    result.negative_purchase_orders = buildNegativePurchaseOrders(requestAdjustments);
+    attachPurchasePaymentStatus(result, paidRequestIds);
+    result.store_name = result.Store?.name || '';
+    result.applicant_store_id = result.Applicant?.store_id || '';
+    result.applicant_store_name = result.Applicant?.Store?.name || '';
+    result.applicant_distributor_id = result.Applicant?.distributor_id || '';
+    result.applicant_distributor_name = result.Applicant?.Distributor?.name || '';
+    result.applicant_role_code = result.Applicant?.role_code || '';
+    result.supplier_name = result.Supplier?.name || '';
+    result.submitter_name = result.submitter_name || result.submit_user || result.apply_user || result.create_user || result.operator_name || '';
+    
+    // 汇总商品名称和数量用于前端展示
+    if (result.items && result.items.length > 0) {
+      result.items = attachCurrentPurchaseItemAmounts(result.items, adjustmentsByRequest.get(String(result.request_id)) || []);
+      result.items_summary = result.items.map(item => 
+        `${item.product_name || item.product_id} x ${item.current_quantity ?? item.quantity}`
+      ).join('; ');
+    } else {
+      result.items_summary = '';
+    }
+    const inboundRows = result.Inbounds || [];
+    result.inbound_status = inboundRows.some(item => item.status === 'completed')
+      ? 'completed'
+      : (inboundRows[0]?.status || '');
+    result.lifecycle_status = getPurchaseLifecycleStatus(result.status, inboundRows);
+    if (['pending_inbound', 'revoked', 'partial_return', 'returned'].includes(result.lifecycle_status)) {
+      result.display_status = result.lifecycle_status;
+    }
+    result.pending_inbounds = inboundRows
+      .filter(item => item.status === 'pending')
+      .map(item => ({
+        inbound_id: item.inbound_id,
+        inbound_no: item.inbound_no || '',
+        store_id: item.store_id || '',
+        store_name: item.Store?.name || ''
+      }));
+    result.has_completed_inbound = inboundRows.some(item => item.status === 'completed');
+    // 已通过申请按商品撤单；待审批申请仍可直接撤回。
+    result.can_revoke = canRevokePurchaseForUser(ctx.state.user, result)
+      && result.status === 'pending' && !result.has_completed_inbound;
+    
+    return result;
+  });
+
+  return { rows: formattedRows, count };
+}
+
+async function getRequestList(ctx) {
+  if (await require('../approval/businessRuntime').reviewList(ctx, 'purchase_request')) return;
+  const { page = 1, pageSize = 20 } = ctx.query;
+  const { rows, count } = await queryRequestList(ctx);
+  rows.forEach(row => { if (row.setDataValue) row.setDataValue('zero_cost_notice', require('./zeroCost').zeroCostNotice(row.items || [])); });
   ctx.body = formatPaginatedResult(rows, { page, pageSize, count });
+}
+
+async function exportRequestList(ctx) {
+  const { rows } = await queryRequestList(ctx, { exportMode: true });
+  const data = rows.map(row => ({
+    申请单号: row.request_no || '',
+    申请时间: row.create_time || '',
+    申请门店: row.store_name || '',
+    供应商: row.supplier_name || '',
+    付款方式: row.payment_method || '',
+    发票类型: row.invoice_type || '',
+    货型: row.product_type || '',
+    商品摘要: row.items_summary || '',
+    采购原价: Number(row.total_amount || 0),
+    抵扣金额: Number(row.rebate_deduction || 0),
+    申请金额: Number(row.current_actual_total ?? row.actual_total ?? row.total_amount ?? 0),
+    状态: row.display_status || row.status || '',
+    备注: row.remark || row.reason || ''
+  }));
+  sendExcel(ctx, data, [
+    '申请单号', '申请时间', '申请门店', '供应商', '付款方式', '发票类型',
+    '货型', '商品摘要', '采购原价', '抵扣金额', '申请金额', '状态', '备注'
+  ], `采购申请_${new Date().toISOString().slice(0, 10)}.xlsx`, '采购申请');
+}
+
+/**
+ * 获取采购申请详情
+ */
+async function getRequestDetail(ctx) {
+  const { requestId } = ctx.params;
+
+  const request = await PurchaseRequest.findOne({
+    where: { request_id: requestId, status: { [Op.ne]: 'deleted' } },
+    include: [
+      { model: Store },
+      {
+        model: Staff,
+        as: 'Applicant',
+        attributes: ['staff_id', 'name', 'role_code', 'store_id', 'distributor_id'],
+        required: false,
+        include: [
+          { model: Store, as: 'Store', attributes: ['store_id', 'name'], required: false },
+          { model: Distributor, attributes: ['distributor_id', 'name'], required: false }
+        ]
+      },
+      { model: Supplier },
+      { model: PurchaseRequestItem, as: 'items' },
+      { model: Inbound, include: [{ model: InboundItem, as: 'items' }] },
+      { model: PurchaseAdjustment, as: 'adjustments', include: [{ model: PurchaseAdjustmentItem, as: 'items' }] }
+    ]
+  });
+
+  if (!request) {
+    ctx.throw(404, '采购申请不存在');
+  }
+  assertStoreVisible(ctx, request.store_id);
+  if (String(ctx.query.trace || '') === '1') {
+    const requestData = request.toJSON();
+    if (!canViewSnTraceReference(ctx.state.user, {
+      store_id: request.store_id,
+      distributor_id: requestData.Store?.distributor_id,
+      creator_names: [request.apply_user]
+    })) {
+      ctx.throw(403, '无权查看该采购原始订单');
+    }
+  }
+
+  const result = request.toJSON();
+  attachCurrentPurchaseAmounts(result, result.adjustments || []);
+  result.negative_purchase_orders = buildNegativePurchaseOrders(result.adjustments || []);
+  attachPurchasePaymentStatus(result, await getPaidPurchaseRequestIds());
+  result.store_name = result.Store?.name || '';
+  result.applicant_store_id = result.Applicant?.store_id || '';
+  result.applicant_store_name = result.Applicant?.Store?.name || '';
+  result.applicant_distributor_id = result.Applicant?.distributor_id || '';
+  result.applicant_distributor_name = result.Applicant?.Distributor?.name || '';
+  result.applicant_role_code = result.Applicant?.role_code || '';
+  result.supplier_name = result.Supplier?.name || '';
+
+  // 解析门店分配，并关联门店名称
+  if (result.items && result.items.length > 0) {
+    const productSnapshots = await loadPurchaseProductSnapshots(result.items);
+    // 获取所有门店
+    const stores = await Store.findAll();
+    const storeMap = new Map();
+    stores.forEach(s => storeMap.set(s.store_id, s.name));
+    const sourceSnIds = result.items.map(item => item.source_sn_id).filter(Boolean);
+    const targetLocationIds = result.items.map(item => item.target_location_id).filter(Boolean);
+    const [sourceSns, targetLocations] = await Promise.all([
+      sourceSnIds.length ? ProductSn.findAll({ where: { sn_id: { [Op.in]: sourceSnIds } }, attributes: ['sn_id', 'sn_code'] }) : [],
+      targetLocationIds.length ? Location.findAll({ where: { location_id: { [Op.in]: targetLocationIds } }, attributes: ['location_id', 'name', 'type'] }) : []
+    ]);
+    const sourceSnMap = new Map(sourceSns.map(sn => [String(sn.sn_id), sn.sn_code]));
+    const targetLocationMap = new Map(targetLocations.map(location => [String(location.location_id), location]));
+
+    result.items = attachCurrentPurchaseItemAmounts(result.items, result.adjustments || []).map(item => {
+      const itemJson = item;
+      const productSnapshot = productSnapshots.get(String(itemJson.product_id || ''));
+      if (!itemJson.product_code && productSnapshot) itemJson.product_code = productSnapshot.product_code || '';
+      if (!itemJson.manufacturer_code && productSnapshot) itemJson.manufacturer_code = productSnapshot.manufacturer_code || '';
+      itemJson.source_sn_code = sourceSnMap.get(String(itemJson.source_sn_id || '')) || '';
+      itemJson.target_location_name = targetLocationMap.get(String(itemJson.target_location_id || ''))?.name || '';
+      let storeAllocations = [];
+      if (itemJson.store_allocations) {
+        try {
+          storeAllocations = JSON.parse(itemJson.store_allocations);
+        } catch (e) {
+          // ignore
+        }
+      }
+      // 添加门店名称
+      itemJson.store_allocations_parsed = storeAllocations.map(alloc => ({
+        ...alloc,
+        storeName: storeMap.get(alloc.storeId) || alloc.storeId
+      }));
+      return itemJson;
+    });
+  }
+
+  const inboundIds = (result.Inbounds || []).map(inbound => inbound.inbound_id).filter(Boolean);
+  const returnWhere = [{ purchase_request_id: request.request_id }];
+  if (inboundIds.length) returnWhere.push({ inbound_id: { [Op.in]: inboundIds } });
+  const returnStocks = await ReturnStock.findAll({
+    where: { [Op.or]: returnWhere },
+    include: [{ model: ReturnStockItem, as: 'items' }],
+    order: [['create_time', 'ASC'], ['return_id', 'ASC']]
+  });
+  result.document_relations = buildPurchaseDocumentRelations(
+    result,
+    returnStocks.map(row => row.toJSON())
+  );
+
+  result.action_logs = await listBusinessActions('purchase_request', request.request_id);
+
+  result.zero_cost_notice = require('./zeroCost').zeroCostNotice(result.items || []);
+  result.rebate_cost_breakdown = require('./rebateCostBasis').purchaseBreakdown(result);
+  // The persisted purchase remark is reason; expose the shared detail field too.
+  result.remark = result.reason || '';
+  ctx.body = { code: 0, data: result };
 }
 
 /**
  * 创建采购申请
  */
+async function updateRequestRemark(ctx) {
+  const request = await PurchaseRequest.findByPk(ctx.params.requestId);
+  if (!request) ctx.throw(404, '采购申请不存在');
+  assertStoreVisible(ctx, request.store_id);
+  const remark = String(ctx.request.body?.remark || '').trim().slice(0, 1000);
+  await request.update({ reason: remark, update_time: new Date() });
+  ctx.body = { code: 0, message: '采购申请备注已更新', data: { request_id: request.request_id, remark } };
+}
+
 async function createRequest(ctx) {
   const user = ctx.state.user;
-  const { storeId, supplierId, reason, items } = ctx.request.body;
+  const {
+    supplierId,
+    remark,
+    items,
+    storeId,
+    invoiceType,
+    expressNo,
+    paymentMethod,
+    goodsTypeId,
+    productType,
+    rebateDeduction,
+    supplierChatScreenshotIds,
+    supplierChatScreenshotUrls,
+    supplierChatScreenshotUrl,
+    supplier_chat_screenshot_ids,
+    supplier_chat_screenshot_urls,
+    supplier_chat_screenshot_url,
+    freightPlatformId,
+    freightPlatformName,
+    freightAmount,
+    freight_platform_id,
+    freight_platform_name,
+    freight_amount,
+    saveDraft = false
+  } = ctx.request.body;
+  const isDraft = Boolean(saveDraft);
+  const normalizedInvoiceType = isDraft && !String(invoiceType || '').trim()
+    ? ''
+    : validatePurchaseInvoiceType(ctx, invoiceType);
+  if (isDraft && (items || []).some(item => getSnPurchaseFields(item).sourceSnId)) {
+    ctx.throw(400, '特殊仓SN采购请直接提交审批，不支持保存草稿');
+  }
+
+  const screenshotIds = normalizeFileList(supplierChatScreenshotIds, supplier_chat_screenshot_ids);
+  const screenshotUrls = normalizeFileList(
+    supplierChatScreenshotUrls,
+    supplierChatScreenshotUrl,
+    supplier_chat_screenshot_urls,
+    supplier_chat_screenshot_url
+  );
+  const screenshotDisplayValues = screenshotUrls.length ? screenshotUrls : screenshotIds;
+
+  if (!items || items.length === 0) {
+    ctx.throw(400, '请添加商品明细');
+  }
+
+  if (!supplierId && !isDraft) {
+    ctx.throw(400, '请选择供应商');
+  }
+  const normalizedPaymentMethod = paymentMethod || 'COMPANY_CREDIT';
+  if (!['COMPANY_CREDIT', 'PERSONAL_ADVANCE'].includes(normalizedPaymentMethod)) {
+    ctx.throw(400, '付款方式无效');
+  }
+
+  const firstTypedItem = items.find(item => item.goodsTypeId || item.goods_type_id || item.productType || item.product_type) || {};
+  const requestedGoodsTypeId = goodsTypeId || firstTypedItem.goodsTypeId || firstTypedItem.goods_type_id || '';
+  const requestedProductType = productType || firstTypedItem.productType || firstTypedItem.product_type || '';
+  const goodsType = requestedGoodsTypeId
+    ? await GoodsType.findOne({ where: { goods_type_id: requestedGoodsTypeId, status: 1 } })
+    : await GoodsType.findOne({ where: { name: requestedProductType, status: 1 } });
+  if (!goodsType && !isDraft) {
+    ctx.throw(400, '请选择有效且已启用的货型');
+  }
+  const canonicalGoodsTypeId = goodsType?.goods_type_id || requestedGoodsTypeId || null;
+  const canonicalProductType = goodsType?.name || requestedProductType || '';
+
+  for (const item of items) {
+    const isUsedProduct = Boolean(item.isUsedProduct || item.is_used_product);
+    assertUsedProductDirectInbound(ctx, item);
+    if (isUsedProduct && (!String(item.productName || item.product_name || '').trim() || Number(item.quantity || 0) <= 0 || Number(item.price || 0) < 0)) {
+      ctx.throw(400, '二手商品名称、价格和数量不能为空');
+    }
+    if (!isUsedProduct && !item.productId && !item.product_id) ctx.throw(400, '请选择采购商品');
+    const itemType = item.productType || item.product_type || canonicalProductType;
+    const itemTypeId = item.goodsTypeId || item.goods_type_id || canonicalGoodsTypeId;
+    if (!isDraft && (String(itemType) !== String(canonicalProductType) || String(itemTypeId) !== String(canonicalGoodsTypeId))) {
+      ctx.throw(400, '同一采购申请中的商品货型必须保持一致');
+    }
+  }
+
+  const selectedTypeSet = new Set();
+  for (const item of items) {
+    normalizeSelectedResourceTypes(item.selectedResourceTypes || item.selected_resource_types).forEach(type => selectedTypeSet.add(type));
+  }
+  if (selectedTypeSet.size > 0) {
+    const validCategories = await ResourceCategory.findAll({
+      where: { category_code: { [Op.in]: [...selectedTypeSet] }, status: 1, supports_purchase_select: 1 }
+    });
+    const validSet = new Set(validCategories.map(row => row.category_code));
+    for (const type of selectedTypeSet) {
+      if (!validSet.has(type)) ctx.throw(400, `资源权益 ${type} 不存在、已停用或不允许采购勾选`);
+    }
+  }
 
   const requestNo = generateRequestNo();
   const requestId = generateUUID();
 
-  const totalAmount = items.reduce((sum, item) => sum + Number(item.subtotal), 0);
+  const totalAmount = toMoney(items.reduce((sum, item) => sum + Number(item.price || 0) * Number(item.quantity || 0), 0));
+  const rawItemDeductions = items.map(item => toMoney(item.rebateDeduction || 0));
+  const itemDeductionTotal = toMoney(rawItemDeductions.reduce((sum, amount) => sum + amount, 0));
+  const itemRebateAllocations = itemDeductionTotal > 0
+    ? rawItemDeductions.map((amount, index) => Math.min(amount, toMoney(Number(items[index].price || 0) * Number(items[index].quantity || 0))))
+    : allocateRebateByItems(items, Math.min(toMoney(rebateDeduction || 0), totalAmount));
+  const deduction = itemDeductionTotal > 0
+    ? Math.min(toMoney(itemRebateAllocations.reduce((sum, amount) => sum + amount, 0)), totalAmount)
+    : Math.min(toMoney(rebateDeduction || 0), totalAmount);
+  const actualTotal = totalAmount - deduction;
+  const normalizedFreightPlatformId = freightPlatformId || freight_platform_id || '';
+  const normalizedFreightPlatformName = freightPlatformName || freight_platform_name || '';
+  const normalizedFreightAmount = toMoney(freightAmount === undefined ? freight_amount : freightAmount);
 
-  await PurchaseRequest.create({
-    request_id: requestId,
-    request_no: requestNo,
-    store_id: storeId || user.storeId,
-    supplier_id: supplierId,
-    reason,
-    total_amount: totalAmount,
-    status: 'pending',
-    apply_user: user.name
+  // 经销商级账号不再有当前门店；门店必须由表单明确选择，或由门店分配明细提供。
+  const targetStoreId = storeId || (isStoreScopedAccount(getUserRoles(user)) ? user.storeId : '');
+  
+  // 查找第一个有效的门店
+  let finalStoreId = targetStoreId;
+  if (!finalStoreId) {
+    for (const item of items) {
+      if (item.storeAllocations && item.storeAllocations.length > 0) {
+        finalStoreId = item.storeAllocations[0].storeId;
+        break;
+      }
+    }
+  }
+  
+  if (!finalStoreId) ctx.throw(400, '请选择门店或完善门店分配');
+  assertPurchaseAllocationStoresVisible(ctx, items, finalStoreId);
+
+  const purchaseStore = await Store.findOne({
+    where: { store_id: finalStoreId, is_deleted: 0, status: 1 },
+    attributes: ['store_id', 'distributor_id', 'region_id']
   });
+  if (!purchaseStore?.distributor_id) ctx.throw(400, '采购门店未绑定经销商');
 
-  // 创建明细
-  for (const item of items) {
-    await PurchaseRequestItem.create({
-      request_id: requestId,
-      product_id: item.productId,
-      product_name: item.productName,
-      pn_code: item.pnCode,
-      quantity: item.quantity,
-      unit_price: item.unitPrice,
-      subtotal: item.subtotal
-    });
+  try {
+    await validatePurchaseAllocations(items, finalStoreId);
+  } catch (error) {
+    ctx.throw(400, error.message);
   }
 
-  ctx.body = { requestId, requestNo, message: '采购申请提交成功' };
+  const now = new Date();
+  const submitterName = user.name || user.phone || String(user.staffId || '');
+  const currentStaffId = user.staffId || user.id || null;
+
+  await sequelize.transaction(async transaction => {
+    await validateSnPurchaseConversion(ctx, items, finalStoreId, transaction);
+    if (!isDraft) await assertNewPurchasePnsAvailable(items, transaction);
+    await assertActivePurchaseProducts(items, transaction);
+    const productSnapshots = await loadPurchaseProductSnapshots(items, transaction);
+    applyIncomingCostModes(items, ctx.request.body, productSnapshots);
+    if (!isDraft) await assertSupplierCostModes(ctx, supplierId, items.map(item => ({
+      grossProfitCostMode: item.grossProfitCostMode || item.gross_profit_cost_mode || productSnapshots.get(String(item.productId || item.product_id || ''))?.gross_profit_cost_mode || 'PURCHASE_PRICE',
+      isUsedProduct: item.isUsedProduct || item.is_used_product
+    })), transaction);
+    const purchaseItemModeByProduct = new Map();
+    items.forEach((item, index) => {
+      const productId = String(item.productId || item.product_id || '');
+      if (!productId) return;
+      const productSnapshot = productSnapshots.get(productId);
+      const mode = String(item.grossProfitCostMode || item.gross_profit_cost_mode || productSnapshot?.gross_profit_cost_mode || 'PURCHASE_PRICE').toUpperCase();
+      const previousMode = purchaseItemModeByProduct.get(productId);
+      if (previousMode && previousMode !== mode) ctx.throw(400, `同一采购申请中的同一商品不能选择不同毛利成本口径（第${index + 1}项）`);
+      purchaseItemModeByProduct.set(productId, mode);
+    });
+    // 表头、明细、返利、运费和审计记录必须原子提交，避免明细写入失败后留下可审批的空采购单。
+    if (deduction > 0 && !isDraft) {
+      const currentBalance = await _getRebateBalance(supplierId, transaction);
+      if (deduction > currentBalance) {
+        ctx.throw(400, `返利余额不足，当前余额 ¥${currentBalance.toFixed(2)}`);
+      }
+      await recordRebateDeduction(
+        supplierId,
+        '',
+        deduction,
+        requestNo,
+        `采购申请 ${requestNo} 返利抵扣`,
+        user.name || user.phone,
+        transaction
+      );
+    }
+
+    await PurchaseRequest.create({
+      request_id: requestId,
+      request_no: requestNo,
+      store_id: finalStoreId,
+      distributor_id: purchaseStore.distributor_id,
+      supplier_id: supplierId || null,
+      gross_profit_use_standard_price: null,
+      gross_profit_pricing_reason: null,
+      goods_type_id: canonicalGoodsTypeId,
+      product_type: canonicalProductType,
+      invoice_type: normalizedInvoiceType,
+      express_no: String(expressNo || '').trim() || null,
+      payment_method: normalizedPaymentMethod,
+      supplier_chat_screenshot_ids: screenshotIds.length ? JSON.stringify(screenshotIds) : null,
+      supplier_chat_screenshot_urls: screenshotDisplayValues.length ? JSON.stringify(screenshotDisplayValues) : null,
+      reason: remark || '',
+      total_amount: totalAmount,
+      rebate_deduction: deduction,
+      actual_total: actualTotal,
+      freight_platform_id: normalizedFreightPlatformId || null,
+      freight_platform_name: normalizedFreightPlatformName || null,
+      freight_amount: normalizedFreightAmount,
+      status: isDraft ? 'draft' : 'pending',
+      apply_user: submitterName,
+      applicant_staff_id: currentStaffId,
+      operator_staff_id: currentStaffId,
+      operator_name: submitterName,
+      create_staff_id: currentStaffId,
+      create_user: submitterName,
+      submit_user: isDraft ? null : submitterName,
+      submit_time: isDraft ? null : now,
+      create_time: now,
+      update_time: now
+    }, { transaction });
+
+    for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
+      const item = items[itemIndex];
+      const productId = item.productId || '';
+      const productSnapshot = productSnapshots.get(String(productId));
+      const submittedCostMode = String(item.grossProfitCostMode || item.gross_profit_cost_mode || productSnapshot?.gross_profit_cost_mode || 'PURCHASE_PRICE').toUpperCase();
+      if (!['COMPANY_PRICE', 'PURCHASE_PRICE'].includes(submittedCostMode)) ctx.throw(400, `第${itemIndex + 1}个商品的毛利成本口径无效`);
+      if (!isDraft && submittedCostMode === 'COMPANY_PRICE' && (!productSnapshot?.ProductPrice || Number(productSnapshot.ProductPrice.standard_price || 0) <= 0)) {
+        ctx.throw(400, `第${itemIndex + 1}个商品选择按公司定价，但商品未维护有效公司定价`);
+      }
+      const isUsedProduct = Boolean(item.isUsedProduct || item.is_used_product);
+      const quantity = item.quantity || 0;
+      const unitPrice = item.price || 0;
+      const subtotal = unitPrice * quantity;
+
+      await PurchaseRequestItem.create({
+        request_id: requestId,
+        product_id: productId || null,
+        product_name: item.productName || '',
+        product_code: isUsedProduct ? (item.productCode || '') : (productSnapshot?.product_code || item.productCode || ''),
+        manufacturer_code: isUsedProduct ? (item.manufacturerCode || '') : (productSnapshot?.manufacturer_code || item.manufacturerCode || ''),
+        pn_code: item.pnCode || '',
+        is_used_product: Boolean(item.isUsedProduct || item.is_used_product) ? 1 : 0,
+        gross_profit_cost_mode: submittedCostMode,
+        direct_inbound: Boolean(item.directInbound || item.direct_inbound) ? 1 : 0,
+        direct_inbound_sn_code: normalizeSnCode(item.directInboundSnCode || item.direct_inbound_sn_code || '') || null,
+        source_sn_id: getSnPurchaseFields(item).sourceSnId || null,
+        target_location_id: getSnPurchaseFields(item).targetLocationId || null,
+        quantity: quantity,
+        unit_price: unitPrice,
+        subtotal: subtotal,
+        rebate_deduction: itemRebateAllocations[itemIndex] || 0,
+        goods_type_id: canonicalGoodsTypeId,
+        product_type: canonicalProductType,
+        store_allocations: item.storeAllocations ? JSON.stringify(item.storeAllocations) : null,
+        selected_resource_types: JSON.stringify(normalizeSelectedResourceTypes(item.selectedResourceTypes || item.selected_resource_types)),
+        new_product_payload: isUsedProduct ? stringifyNewProductPayload(item) : null
+      }, { transaction });
+    }
+
+    await syncFreightRecord({
+      sourceType: 'purchase',
+      sourceId: requestId,
+      sourceNo: requestNo,
+      platformId: normalizedFreightPlatformId,
+      platformName: normalizedFreightPlatformName,
+      amount: normalizedFreightAmount,
+      storeId: finalStoreId,
+      items,
+      status: isDraft ? 'draft' : 'pending',
+      user,
+      transaction
+    });
+
+    await recordBusinessAction({
+      businessType: 'purchase_request',
+      businessId: requestId,
+      businessNo: requestNo,
+      action: isDraft ? 'draft_created' : 'submitted',
+      toStatus: isDraft ? 'draft' : 'pending',
+      user,
+      transaction
+    });
+
+  });
+
+  ctx.body = {
+    code: 0,
+    message: isDraft ? '采购申请草稿已保存' : '采购申请提交成功',
+    requestId,
+    requestNo,
+    status: isDraft ? 'draft' : 'pending'
+  };
+}
+
+async function saveRequestDraft(ctx) {
+  ctx.request.body = { ...(ctx.request.body || {}), saveDraft: true };
+  return createRequest(ctx);
+}
+
+function canSubmitDraft(user, request) {
+  const roles = Array.isArray(user?.roles) ? user.roles : [user?.roleCode].filter(Boolean);
+  const privileged = roles.some(role => ['boss', 'admin', 'manager', 'store_manager'].includes(role));
+  const operatorNames = [user?.name, user?.phone].filter(Boolean).map(String);
+  return privileged || operatorNames.includes(String(request.apply_user || ''));
+}
+
+async function validateDraftSubmission(request, ctx) {
+  if (!request.supplier_id) ctx.throw(400, '提交采购申请前请选择供应商');
+  validatePurchaseInvoiceType(ctx, request.invoice_type);
+  if (!request.items || request.items.length === 0) ctx.throw(400, '请添加商品明细');
+  assertPurchaseAllocationStoresVisible(ctx, request.items, request.store_id);
+  try {
+    await validatePurchaseAllocations(request.items, request.store_id);
+  } catch (error) {
+    ctx.throw(400, error.message);
+  }
+
+  const goodsType = request.goods_type_id
+    ? await GoodsType.findOne({ where: { goods_type_id: request.goods_type_id, status: 1 } })
+    : await GoodsType.findOne({ where: { name: request.product_type, status: 1 } });
+  if (!goodsType) ctx.throw(400, '请选择有效且已启用的货型');
+
+  const selectedTypeSet = new Set();
+  for (const item of request.items) {
+    if ((!item.product_id && !Number(item.is_used_product)) || (Number(item.is_used_product) && !String(item.product_name || '').trim()) || Number(item.quantity) <= 0) ctx.throw(400, '商品名称、价格和数量不能为空');
+    assertUsedProductDirectInbound(ctx, item);
+    if (!item.product_id && !Number(item.is_used_product)) ctx.throw(400, '商品名称、价格和数量不能为空');
+    if (Number(item.quantity) <= 0) ctx.throw(400, '商品名称、价格和数量不能为空');
+    const itemType = item.product_type || request.product_type;
+    const itemTypeId = item.goods_type_id || request.goods_type_id;
+    if (String(itemType) !== String(goodsType.name) || String(itemTypeId) !== String(goodsType.goods_type_id)) {
+      ctx.throw(400, '同一采购申请中的商品货型必须保持一致');
+    }
+    normalizeSelectedResourceTypes(item.selected_resource_types).forEach(type => selectedTypeSet.add(type));
+  }
+  if (selectedTypeSet.size > 0) {
+    const validCategories = await ResourceCategory.findAll({
+      where: { category_code: { [Op.in]: [...selectedTypeSet] }, status: 1, supports_purchase_select: 1 }
+    });
+    const validSet = new Set(validCategories.map(row => row.category_code));
+    for (const type of selectedTypeSet) {
+      if (!validSet.has(type)) ctx.throw(400, `资源权益 ${type} 不存在、已停用或不允许采购勾选`);
+    }
+  }
+  return goodsType;
+}
+
+async function submitRequestDraft(ctx) {
+  const { requestId } = ctx.params;
+  const user = ctx.state.user;
+  const request = await PurchaseRequest.findByPk(requestId, {
+    include: [{ model: PurchaseRequestItem, as: 'items' }]
+  });
+  if (!request) ctx.throw(404, '采购申请不存在');
+  assertStoreVisible(ctx, request.store_id);
+  if (request.status !== 'draft') ctx.throw(400, '只有草稿状态的采购申请可以提交');
+  if (!canSubmitDraft(user, request)) ctx.throw(403, '只有草稿创建人、店长或管理员可以提交');
+
+  const usedDraftItems = (request.items || []).filter(item => Number(item.is_used_product) === 1 && !item.product_id);
+  usedDraftItems.forEach(item => { item.product_id = '__USED_PRODUCT__'; });
+  const goodsType = await validateDraftSubmission(request, ctx);
+  await assertSupplierCostModes(ctx, request.supplier_id, request.items || []);
+  const draftProductSnapshots = await loadPurchaseProductSnapshots(request.items || []);
+  for (const [index, item] of (request.items || []).entries()) {
+    if (Number(item.is_used_product) === 1 || item.gross_profit_cost_mode !== 'COMPANY_PRICE') continue;
+    const product = draftProductSnapshots.get(String(item.product_id || ''));
+    if (!product?.ProductPrice || Number(product.ProductPrice.standard_price || 0) <= 0) {
+      ctx.throw(400, `第${index + 1}个商品选择按公司定价，但商品未维护有效公司定价`);
+    }
+  }
+  usedDraftItems.forEach(item => { item.product_id = null; });
+  await assertNewPurchasePnsAvailable(request.items);
+  await assertActivePurchaseProducts(request.items);
+  const deduction = Math.min(toMoney(request.rebate_deduction || 0), toMoney(request.total_amount || 0));
+  if (deduction > 0) {
+    const currentBalance = await _getRebateBalance(request.supplier_id);
+    if (deduction > currentBalance) ctx.throw(400, `返利余额不足，当前余额：￥${currentBalance.toFixed(2)}`);
+    await recordRebateDeduction(
+      request.supplier_id,
+      '',
+      deduction,
+      request.request_no,
+      `采购申请 ${request.request_no} 返利抵扣`,
+      user.name || user.phone
+    );
+  }
+
+  request.goods_type_id = goodsType.goods_type_id;
+  request.product_type = goodsType.name;
+  request.status = 'pending';
+  request.operator_staff_id = request.operator_staff_id || user.staffId || user.id || null;
+  request.operator_name = request.operator_name || user.name || user.phone || String(user.staffId || user.id || '');
+  request.submit_user = user.name || user.phone || String(user.staffId || '');
+  request.submit_time = new Date();
+  request.update_time = new Date();
+  await request.save();
+  await syncFreightRecord({
+    sourceType: 'purchase',
+    sourceId: request.request_id,
+    sourceNo: request.request_no,
+    platformId: request.freight_platform_id,
+    platformName: request.freight_platform_name,
+    amount: request.freight_amount,
+    storeId: request.store_id,
+    items: request.items,
+    status: 'pending',
+    user
+  });
+  await recordBusinessAction({
+    businessType: 'purchase_request',
+    businessId: request.request_id,
+    businessNo: request.request_no,
+    action: 'submitted',
+    fromStatus: 'draft',
+    toStatus: 'pending',
+    user
+  });
+
+  ctx.body = { code: 0, message: '采购申请提交成功', requestId, requestNo: request.request_no, status: 'pending' };
+}
+
+async function deleteRequestDraft(ctx) {
+  const { requestId } = ctx.params;
+  const user = ctx.state.user;
+  const request = await PurchaseRequest.findByPk(requestId);
+  if (!request) ctx.throw(404, '采购申请不存在');
+  assertStoreVisible(ctx, request.store_id);
+  if (request.status !== 'draft' || request.submit_time) ctx.throw(400, '只有从未提交过的采购申请草稿可以删除');
+  if (!canSubmitDraft(user, request)) ctx.throw(403, '只有草稿创建人、店长或管理员可以删除');
+
+  await request.update({ status: 'deleted', update_time: new Date() });
+  await recordBusinessAction({
+    businessType: 'purchase_request',
+    businessId: request.request_id,
+    businessNo: request.request_no,
+    action: 'deleted',
+    fromStatus: 'draft',
+    toStatus: 'deleted',
+    user
+  });
+  ctx.body = { code: 0, message: '采购申请草稿已删除', requestId };
+}
+
+async function updateRequestDraft(ctx) {
+  const { requestId } = ctx.params;
+  const user = ctx.state.user;
+  const { supplierId, remark, items, invoiceType, expressNo, paymentMethod, goodsTypeId, productType, rebateDeduction,
+    freightPlatformId, freightPlatformName, freightAmount, freight_platform_id, freight_platform_name, freight_amount } = ctx.request.body;
+  const request = await PurchaseRequest.findByPk(requestId);
+  const usedProductPlaceholder = '__USED_PRODUCT__';
+  if (Array.isArray(items)) {
+    items.forEach(item => {
+      if ((item.isUsedProduct || item.is_used_product) && !item.productId) item.productId = usedProductPlaceholder;
+    });
+  }
+  if (!request) ctx.throw(404, '采购申请不存在');
+  assertStoreVisible(ctx, request.store_id);
+  if (request.status !== 'draft') ctx.throw(400, '只有草稿状态的采购申请可以编辑');
+  if (!canSubmitDraft(user, request)) ctx.throw(403, '只有草稿创建人、店长或管理员可以编辑');
+  if (!Array.isArray(items) || items.length === 0) ctx.throw(400, '请添加商品明细');
+  if (!['COMPANY_CREDIT', 'PERSONAL_ADVANCE'].includes(paymentMethod || 'COMPANY_CREDIT')) {
+    ctx.throw(400, '付款方式无效');
+  }
+  const normalizedInvoiceType = String(invoiceType || '').trim()
+    ? validatePurchaseInvoiceType(ctx, invoiceType)
+    : '';
+  for (const item of items) {
+    if (!item.productId || Number(item.quantity) <= 0) ctx.throw(400, '商品名称、价格和数量不能为空');
+  }
+  assertPurchaseAllocationStoresVisible(ctx, items, request.store_id);
+  try {
+    await validatePurchaseAllocations(items, request.store_id);
+  } catch (error) {
+    ctx.throw(400, error.message);
+  }
+
+  for (const item of items) {
+    const isUsedProduct = Number(item.isUsedProduct || item.is_used_product) === 1;
+    assertUsedProductDirectInbound(ctx, item);
+    if ((!item.productId && !isUsedProduct) || (isUsedProduct && !String(item.productName || item.product_name || '').trim()) || Number(item.quantity) <= 0) ctx.throw(400, '商品名称、价格和数量不能为空');
+  }
+  const goodsType = goodsTypeId
+    ? await GoodsType.findOne({ where: { goods_type_id: goodsTypeId, status: 1 } })
+    : await GoodsType.findOne({ where: { name: productType, status: 1 } });
+  const canonicalGoodsTypeId = goodsType?.goods_type_id || goodsTypeId || null;
+  const canonicalProductType = goodsType?.name || productType || '';
+  const totalAmount = toMoney(items.reduce((sum, item) => sum + Number(item.price || 0) * Number(item.quantity || 0), 0));
+  const rawItemDeductions = items.map(item => toMoney(item.rebateDeduction || 0));
+  const itemDeductionTotal = toMoney(rawItemDeductions.reduce((sum, amount) => sum + amount, 0));
+  const itemRebateAllocations = itemDeductionTotal > 0
+    ? rawItemDeductions.map((amount, index) => Math.min(amount, toMoney(Number(items[index].price || 0) * Number(items[index].quantity || 0))))
+    : allocateRebateByItems(items, Math.min(toMoney(rebateDeduction || 0), totalAmount));
+  const deduction = itemDeductionTotal > 0
+    ? Math.min(toMoney(itemRebateAllocations.reduce((sum, amount) => sum + amount, 0)), totalAmount)
+    : Math.min(toMoney(rebateDeduction || 0), totalAmount);
+  const normalizedFreightPlatformId = freightPlatformId || freight_platform_id || '';
+  const normalizedFreightPlatformName = freightPlatformName || freight_platform_name || '';
+  const normalizedFreightAmount = toMoney(freightAmount === undefined ? freight_amount : freightAmount);
+
+  await sequelize.transaction(async transaction => {
+    await assertActivePurchaseProducts(items, transaction);
+    const productSnapshots = await loadPurchaseProductSnapshots(items, transaction);
+    applyIncomingCostModes(items, ctx.request.body, productSnapshots);
+    if (supplierId) await assertSupplierCostModes(ctx, supplierId, items.map(item => ({
+      grossProfitCostMode: item.grossProfitCostMode || item.gross_profit_cost_mode || productSnapshots.get(String(item.productId || item.product_id || ''))?.gross_profit_cost_mode || 'PURCHASE_PRICE',
+      isUsedProduct: item.isUsedProduct || item.is_used_product
+    })), transaction);
+    const purchaseItemModeByProduct = new Map();
+    items.forEach((item, index) => {
+      const productId = String(item.productId || item.product_id || '');
+      if (!productId) return;
+      const productSnapshot = productSnapshots.get(productId);
+      const mode = String(item.grossProfitCostMode || item.gross_profit_cost_mode || productSnapshot?.gross_profit_cost_mode || 'PURCHASE_PRICE').toUpperCase();
+      const previousMode = purchaseItemModeByProduct.get(productId);
+      if (previousMode && previousMode !== mode) ctx.throw(400, `同一采购申请中的同一商品不能选择不同毛利成本口径（第${index + 1}项）`);
+      purchaseItemModeByProduct.set(productId, mode);
+    });
+    await request.update({
+      supplier_id: supplierId || null,
+      gross_profit_use_standard_price: null,
+      gross_profit_pricing_reason: null,
+      invoice_type: normalizedInvoiceType,
+      express_no: String(expressNo || '').trim() || null,
+      payment_method: paymentMethod || 'COMPANY_CREDIT',
+      goods_type_id: canonicalGoodsTypeId,
+      product_type: canonicalProductType,
+      reason: remark || '',
+      total_amount: totalAmount,
+      rebate_deduction: deduction,
+      actual_total: totalAmount - deduction,
+      freight_platform_id: normalizedFreightPlatformId || null,
+      freight_platform_name: normalizedFreightPlatformName || null,
+      freight_amount: normalizedFreightAmount,
+      update_time: new Date()
+    }, { transaction });
+    await PurchaseRequestItem.destroy({ where: { request_id: requestId }, transaction });
+    for (let index = 0; index < items.length; index += 1) {
+      const item = items[index];
+      const productId = item.productId || item.product_id || '';
+      const isUsedProduct = Number(item.isUsedProduct || item.is_used_product) ? 1 : 0;
+      const productSnapshot = productSnapshots.get(String(productId));
+      const submittedCostMode = String(item.grossProfitCostMode || item.gross_profit_cost_mode || productSnapshot?.gross_profit_cost_mode || 'PURCHASE_PRICE').toUpperCase();
+      if (!['COMPANY_PRICE', 'PURCHASE_PRICE'].includes(submittedCostMode)) ctx.throw(400, `第${index + 1}个商品的毛利成本口径无效`);
+      await PurchaseRequestItem.create({
+        request_id: requestId,
+        product_id: isUsedProduct ? null : (productId || null),
+        product_name: item.productName || '',
+        product_code: isUsedProduct ? (item.productCode || item.product_code || '') : (productSnapshot?.product_code || item.productCode || item.product_code || ''),
+        manufacturer_code: isUsedProduct ? (item.manufacturerCode || item.manufacturer_code || '') : (productSnapshot?.manufacturer_code || item.manufacturerCode || item.manufacturer_code || ''),
+        pn_code: item.pnCode || '',
+        is_used_product: isUsedProduct,
+        gross_profit_cost_mode: submittedCostMode,
+        direct_inbound: Number(item.directInbound || item.direct_inbound) ? 1 : 0,
+        direct_inbound_sn_code: normalizeSnCode(item.directInboundSnCode || item.direct_inbound_sn_code || '') || null,
+        quantity: Number(item.quantity),
+        unit_price: Number(item.price || 0),
+        subtotal: Number(item.price || 0) * Number(item.quantity || 0),
+        rebate_deduction: itemRebateAllocations[index] || 0,
+        goods_type_id: canonicalGoodsTypeId,
+        product_type: canonicalProductType,
+        store_allocations: item.storeAllocations ? JSON.stringify(item.storeAllocations) : null,
+        selected_resource_types: JSON.stringify(normalizeSelectedResourceTypes(item.selectedResourceTypes || item.selected_resource_types)),
+        new_product_payload: isUsedProduct ? stringifyNewProductPayload(item) : null
+      }, { transaction });
+    }
+    await syncFreightRecord({
+      sourceType: 'purchase',
+      sourceId: requestId,
+      sourceNo: request.request_no,
+      platformId: normalizedFreightPlatformId,
+      platformName: normalizedFreightPlatformName,
+      amount: normalizedFreightAmount,
+      storeId: request.store_id,
+      items,
+      status: 'draft',
+      user,
+      transaction
+    });
+  });
+
+  await recordBusinessAction({
+    businessType: 'purchase_request',
+    businessId: request.request_id,
+    businessNo: request.request_no,
+    action: 'draft_saved',
+    fromStatus: 'draft',
+    toStatus: 'draft',
+    user
+  });
+  ctx.body = { code: 0, message: '采购申请草稿已保存', requestId, requestNo: request.request_no, status: 'draft' };
+}
+
+async function ensurePayableForApprovedRequest(request, user, transaction = null) {
+  if (request.payment_method === 'PERSONAL_ADVANCE') return;
+  if (!request.supplier_id) return;
+
+  const amount = parseFloat(
+    request.actual_total !== null && request.actual_total !== undefined
+      ? request.actual_total
+      : request.total_amount
+  ) || 0;
+  if (amount <= 0) return;
+
+  const existingPayable = await Payable.findOne({
+    where: { request_id: request.request_id },
+    transaction
+  });
+
+  if (existingPayable) {
+    if (existingPayable.status !== 'paid') {
+      await existingPayable.update({
+        supplier_id: request.supplier_id,
+        request_no: request.request_no,
+        total_amount: amount,
+        paid_amount: existingPayable.status === 'unpaid' ? 0 : existingPayable.paid_amount
+      }, { transaction });
+    }
+    return;
+  }
+
+  const supplier = await Supplier.findByPk(request.supplier_id, { transaction });
+  const store = request.store_id
+    ? await Store.findByPk(request.store_id, { attributes: ['region_id', 'distributor_id'], transaction })
+    : null;
+  await Payable.create({
+    payable_id: generateUUID(),
+    supplier_id: request.supplier_id,
+    supplier_name: supplier ? supplier.name : '',
+    request_id: request.request_id,
+    request_no: request.request_no,
+    payee_type: 'supplier',
+    payee_id: request.supplier_id,
+    payee_name: supplier ? supplier.name : '',
+    source_type: 'purchase',
+    source_id: request.request_id,
+    source_no: request.request_no,
+    region_id: store?.region_id || null,
+    distributor_id: request.distributor_id || store?.distributor_id || null,
+    total_amount: amount,
+    paid_amount: 0,
+    status: 'unpaid',
+    create_time: new Date()
+  }, { transaction });
 }
 
 /**
@@ -84,40 +2000,1052 @@ async function createRequest(ctx) {
  */
 async function approveRequest(ctx) {
   const { requestId } = ctx.params;
-  const { status, comment } = ctx.request.body;
+  const { status, comment, newProductCategories } = ctx.request.body;
   const user = ctx.state.user;
 
-  const request = await PurchaseRequest.findByPk(requestId);
+  const request = await PurchaseRequest.findByPk(requestId, {
+    include: [{ model: PurchaseRequestItem, as: 'items' }]
+  });
   if (!request) {
     ctx.throw(404, '采购申请不存在');
   }
+  assertStoreVisible(ctx, request.store_id);
+  if (!['approved', 'rejected'].includes(status)) ctx.throw(400, '审批动作无效');
+  if (status === 'approved' && (!request.items || request.items.length === 0)) {
+    ctx.throw(400, '采购申请缺少商品明细，无法审批通过，请重新创建采购申请');
+  }
+  const productCategoryByItemId = new Map((Array.isArray(newProductCategories) ? newProductCategories : [])
+    .filter(item => item && item.itemId && item.categoryId)
+    .map(item => [String(item.itemId), String(item.categoryId)]));
 
-  await request.update({
+  const transaction = await sequelize.transaction();
+  let transactionCommitted = false;
+  const directInboundExecutions = [];
+  const items = request.items.map(item => ({
+    productId: item.product_id,
+    productName: item.product_name,
+    pnCode: item.pn_code,
+    grossProfitCostMode: item.gross_profit_cost_mode || 'PURCHASE_PRICE',
+    quantity: item.quantity,
+    isUsedProduct: item.is_used_product,
+    directInbound: item.direct_inbound,
+    directInboundSnCode: item.direct_inbound_sn_code,
+    sourceSnId: item.source_sn_id,
+    targetLocationId: item.target_location_id
+  }));
+  for (const item of items) {
+    const isUsedProduct = Number(item.isUsedProduct || item.is_used_product) === 1;
+    assertUsedProductDirectInbound(ctx, item);
+    if ((!item.productId && !isUsedProduct) || (isUsedProduct && !String(item.productName || item.product_name || '').trim()) || Number(item.quantity) <= 0) ctx.throw(400, '商品名称、价格和数量不能为空');
+  }
+  try {
+  // 审批状态校验和入库单生成必须串行执行，避免重复点击或客户端重试
+  // 同时通过两次审批并各自生成一套入库单。
+  const lockedRequest = await PurchaseRequest.findByPk(requestId, {
+    transaction,
+    lock: transaction.LOCK.UPDATE
+  });
+  if (!lockedRequest) ctx.throw(404, '采购申请不存在');
+  if (lockedRequest.status === status) {
+    await transaction.commit();
+    transactionCommitted = true;
+    ctx.body = { code: 0, message: '审批已完成，请勿重复提交' };
+    return;
+  }
+  if (lockedRequest.status !== 'pending') {
+    ctx.throw(409, '采购申请已处理，不能重复审批');
+  }
+  if (status === 'approved') {
+    const existingInbound = await Inbound.findOne({
+      where: { purchase_request_id: requestId },
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (existingInbound) {
+      ctx.throw(409, `采购申请已生成入库单 ${existingInbound.inbound_no}，不能重复审批`);
+    }
+  }
+
+  const finalApprovalStep = await advanceApproval(ctx, 'purchase_request', lockedRequest, transaction, status, comment);
+  if (status === 'approved' && ctx.request.body.purchaseEdits !== undefined) {
+    request.set({ invoice_type: lockedRequest.invoice_type, payment_method: lockedRequest.payment_method });
+    request.items = await PurchaseRequestItem.findAll({ where: { request_id: requestId }, transaction, lock: transaction.LOCK.UPDATE });
+    await applyPurchaseApprovalEdits(ctx, request, transaction);
+  }
+  if (!finalApprovalStep) {
+    await transaction.commit(); transactionCommitted = true; return;
+  }
+  const previousStatus = lockedRequest.status;
+  const approveTime = new Date();
+  await lockedRequest.update({
     status,
     approve_user: user.name,
-    approve_comment: comment
+    approve_time: approveTime,
+    approve_comment: comment,
+    update_time: approveTime
+  }, { transaction });
+  await setFreightRecordStatus('purchase', requestId, status === 'approved' ? 'active' : 'cancelled', user, transaction);
+  await recordBusinessAction({
+    businessType: 'purchase_request',
+    businessId: request.request_id,
+    businessNo: request.request_no,
+    action: status === 'approved' ? 'approved' : 'rejected',
+    fromStatus: previousStatus,
+    toStatus: status,
+    user,
+    comment: comment || '',
+    transaction
   });
 
-  ctx.body = { message: '审批完成' };
+  // 如果审批通过，自动生成入库单
+  if (status === 'approved' && request.items && request.items.length > 0) {
+    const snPurchaseConversions = await validateSnPurchaseConversion(ctx, request.items, request.store_id, transaction, { approval: true });
+    let originalPurchaseAdjustment = null;
+    for (const item of request.items) {
+      if (!Number(item.is_used_product) || item.product_id) continue;
+      const directInbound = Number(item.direct_inbound) === 1;
+      const snCode = normalizeSnCode(item.direct_inbound_sn_code || '');
+      if (directInbound && (!snCode || Number(item.quantity || 0) !== 1)) {
+        ctx.throw(400, '二手商品勾选审批完成及入库时，数量必须为1且必须填写SN号');
+      }
+      let newProductPayload = {};
+      try { newProductPayload = JSON.parse(item.new_product_payload || '{}'); } catch (_) { newProductPayload = {}; }
+      const created = await createProductRecord({
+        ...newProductPayload,
+        categoryId: newProductPayload.categoryId || newProductPayload.category_id || productCategoryByItemId.get(String(item.item_id)) || '',
+        name: newProductPayload.name || item.product_name,
+        manualName: newProductPayload.manualName || item.product_name,
+        pnCode: newProductPayload.pnCode || item.pn_code || '',
+        barcodes: newProductPayload.barcodes || (item.pn_code ? [{ type: 'manufacturer', code: item.pn_code }] : []),
+        needSn: directInbound ? 1 : Number(newProductPayload.needSn ?? 1),
+        needImei: Number(newProductPayload.needImei || 0),
+        unit: newProductPayload.unit || '台',
+        remark: newProductPayload.remark || '采购申请审批生成的二手商品',
+        isUsedProduct: true,
+        grossProfitCostMode: item.gross_profit_cost_mode || 'PURCHASE_PRICE'
+      }, transaction);
+      await item.update({ product_id: created.productId, product_name: created.productName, pn_code: item.pn_code || null }, { transaction });
+    }
+    await require('./zeroCost').recordApproval(request, request.items, user, transaction);
+    await assertActiveProducts(Product, request.items.map(item => item.product_id).filter(Boolean), { transaction });
+    const productIds = request.items.map(item => item.product_id).filter(Boolean);
+    const products = productIds.length ? await Product.findAll({
+      where: { product_id: { [Op.in]: productIds } }, transaction
+    }) : [];
+    const productMap = new Map(products.map(product => [String(product.product_id), product]));
+    const purchaseSupplier = request.supplier_id
+      ? await Supplier.findByPk(request.supplier_id, { attributes: ['supplier_id', 'gross_profit_uplift_amount'], transaction })
+      : null;
+    const purchaseUpliftFor = item => Number(item.is_used_product) === 1
+      ? 0
+      : Math.max(0, Number(purchaseSupplier?.gross_profit_uplift_amount || 0));
+    await ensurePayableForApprovedRequest(request, user, transaction);
+    await validatePurchaseAllocations(request.items, request.store_id, transaction);
+    for (const item of request.items) {
+      if (typeof item.changed === 'function' && item.changed('store_allocations')) {
+        await item.save({ transaction, fields: ['store_allocations'] });
+      }
+    }
+
+    if (snPurchaseConversions.length) {
+      const conversion = snPurchaseConversions[0];
+      originalPurchaseAdjustment = await adjustOriginalPurchaseForSpecialSn({
+        conversion,
+        newRequest: request,
+        user,
+        transaction
+      });
+      const conversionSupplier = request.supplier_id
+        ? await Supplier.findByPk(request.supplier_id, { transaction })
+        : null;
+      const targetInventoryType = await moveSnInventoryAggregate({
+        sn: conversion.sn,
+        storeId: request.store_id,
+        oldLocationId: String(conversion.sn.location_id || ''),
+        oldLocation: conversion.sourceLocation,
+        targetLocation: conversion.targetLocation,
+        transaction
+      });
+      await conversion.sn.update({
+        location_id: conversion.targetLocation.location_id,
+        inventory_type: targetInventoryType,
+        inbound_price: conversion.item.unit_price,
+        supplier_id: request.supplier_id,
+        supplier_name: conversionSupplier?.name || conversion.sn.supplier_name || '',
+        gross_profit_use_standard_price: conversion.item.gross_profit_cost_mode === 'COMPANY_PRICE' ? 1 : 0,
+        gross_profit_uplift_amount: purchaseUpliftFor(conversion.item),
+        source_type: 'PURCHASED_FROM_SPECIAL_WAREHOUSE',
+        update_time: new Date()
+      }, { transaction });
+      await SnLog.create({
+        log_id: generateUUID(),
+        sn_id: conversion.sn.sn_id,
+        sn_code: conversion.sn.sn_code,
+        product_id: conversion.sn.product_id,
+        product_name: conversion.item.product_name || '',
+        store_id: request.store_id,
+        action: 'special_warehouse_purchase',
+        remark: `采购申请 ${request.request_no} 审批通过：${conversion.sourceLocation.name} → ${conversion.targetLocation.name}（免再次入库）`,
+        create_user: user.name || user.phone || '-'
+      }, { transaction });
+      await recordBusinessAction({
+        businessType: 'purchase_request',
+        businessId: request.request_id,
+        businessNo: request.request_no,
+        action: 'special_warehouse_converted',
+        fromStatus: conversion.sourceLocation.type,
+        toStatus: conversion.targetLocation.type,
+        user,
+        comment: originalPurchaseAdjustment
+          ? `${conversion.sn.sn_code}；原采购单 ${originalPurchaseAdjustment.requestNo} 已生成调整单 ${originalPurchaseAdjustment.adjustmentNo}`
+          : conversion.sn.sn_code,
+        transaction
+      });
+    }
+
+    // 特殊仓SN采购已在同一事务内完成库位转换，不再生成待入库单。
+    if (snPurchaseConversions.length) {
+      await createPurchaseReimbursementAfterInbound(request, user, transaction, { allowWithoutInbound: true });
+      await transaction.commit();
+      transactionCommitted = true;
+      ctx.body = {
+        code: 0,
+        message: originalPurchaseAdjustment
+          ? `审批完成，SN已转入目标仓库；原采购单 ${originalPurchaseAdjustment.requestNo} 已同步调整`
+          : '审批完成，SN已转入目标仓库，无需再次入库'
+      };
+      return;
+    }
+
+    // 按照门店分配创建入库单
+    const storeItemsMap = new Map();
+
+    // 解析门店分配并按门店分组
+    for (const item of request.items) {
+      const allocations = flattenPurchaseAllocations(item, request.store_id);
+
+      // 确保商品名称存在
+      let productName = item.product_name;
+      if (!productName || productName.trim() === '') {
+        const product = productMap.get(item.product_id);
+        if (product) {
+          productName = product.name;
+        }
+      }
+
+      for (const alloc of allocations) {
+        const storeId = alloc.storeId || request.store_id;
+        if (!storeItemsMap.has(storeId)) {
+          storeItemsMap.set(storeId, []);
+        }
+        storeItemsMap.get(storeId).push({
+          ...item.toJSON(),
+          product_name: productName,
+          allocatedQuantity: alloc.quantity || item.quantity,
+          locationId: alloc.locationId || null,
+          selected_resource_types: item.selected_resource_types || '[]',
+          purchase_request_item_id: item.item_id
+        });
+      }
+    }
+
+    // 为每个门店创建入库单
+    for (const [storeId, items] of storeItemsMap.entries()) {
+      const inboundNo = generateInboundNo();
+      const inboundId = generateUUID();
+
+      const totalQuantity = items.reduce((sum, item) => sum + (item.allocatedQuantity || item.quantity), 0);
+      const totalAmount = items.reduce((sum, item) => 
+        sum + (item.unit_price || 0) * (item.allocatedQuantity || item.quantity), 0);
+
+      // 创建入库单
+      await Inbound.create({
+        inbound_id: inboundId,
+        inbound_no: inboundNo,
+        store_id: storeId,
+        source_type: 'purchase',
+        source_no: request.request_no,
+        purchase_request_id: request.request_id,
+        total_amount: totalAmount,
+        total_quantity: totalQuantity,
+        status: 'pending',
+        create_user: request.apply_user || request.submit_user || request.create_user || user.name,
+        create_time: new Date(),
+        update_time: new Date()
+      }, { transaction });
+
+      // 创建入库明细
+      for (const item of items) {
+        const createdInboundItem = await InboundItem.create({
+          inbound_id: inboundId,
+          product_id: item.product_id,
+          product_name: item.product_name,
+          pn_code: item.pn_code,
+          sn_code: Number(item.direct_inbound) === 1 ? item.direct_inbound_sn_code : null,
+          unit_price: item.unit_price,
+          gross_profit_use_standard_price: item.gross_profit_cost_mode === 'COMPANY_PRICE' ? 1 : 0,
+          gross_profit_uplift_amount: purchaseUpliftFor(item),
+          quantity: item.allocatedQuantity || item.quantity,
+          product_type: item.product_type || '',
+          location_id: item.locationId || null,
+          selected_resource_types: item.selected_resource_types || '[]',
+          purchase_request_item_id: item.purchase_request_item_id || item.item_id,
+          store_allocations: JSON.stringify([{
+            storeId: storeId,
+            locationId: item.locationId || null,
+            quantity: item.allocatedQuantity || item.quantity
+          }])
+        }, { transaction });
+        if (Number(item.direct_inbound) === 1) item._inboundItemId = createdInboundItem.item_id;
+      }
+      const directItems = items.filter(item => Number(item.direct_inbound) === 1 && item.direct_inbound_sn_code);
+      if (directItems.length) {
+        directInboundExecutions.push({
+          inboundId,
+          items: directItems.map(item => {
+            let productPayload = {};
+            try { productPayload = JSON.parse(item.new_product_payload || '{}'); } catch (_) { productPayload = {}; }
+            return {
+              productId: item.product_id,
+              inboundItemId: item._inboundItemId,
+              quantity: item.allocatedQuantity || item.quantity,
+              locationId: item.locationId || null,
+              pnCode: item.pn_code || '',
+              snCode: item.direct_inbound_sn_code,
+              imei1: productPayload.imei1 || '',
+              imei2: productPayload.imei2 || ''
+            };
+          })
+        });
+      }
+    }
+  }
+
+  await transaction.commit();
+  transactionCommitted = true;
+  for (const execution of directInboundExecutions) {
+    await executeInbound({
+      request: { body: execution },
+      state: { user },
+      throw(statusCode, message) {
+        const error = new Error(message);
+        error.status = statusCode;
+        throw error;
+      }
+    });
+  }
+  ctx.body = { code: 0, message: '审批完成' };
+  } catch (error) {
+    if (!transactionCommitted) await transaction.rollback();
+    throw error;
+  }
+}
+
+/**
+ * 获取采购退单/采购数量调整预览
+ */
+async function getAdjustmentPreview(ctx) {
+  const { requestId } = ctx.params;
+  const request = await PurchaseRequest.findByPk(requestId, {
+    include: [
+      { model: Supplier },
+      { model: PurchaseRequestItem, as: 'items' },
+      { model: Inbound, include: [{ model: InboundItem, as: 'items' }] }
+    ]
+  });
+
+  if (!request) ctx.throw(404, '采购申请不存在');
+  assertCanAdjustPurchase(ctx, request);
+  assertStoreVisible(ctx, request.store_id);
+  if (request.status !== 'approved') ctx.throw(400, '只有已通过的采购订单才能办理退单/数量调整');
+
+  const inbounds = request.Inbounds || [];
+  const rows = buildAdjustmentRows(request, inbounds, await Store.findAll());
+  const inboundIds = inbounds.map(inbound => inbound.inbound_id).filter(Boolean);
+  const historicalReturns = inboundIds.length
+    ? await ReturnStockItem.findAll({ include: [{ model: ReturnStock, where: { status: 'completed', inbound_id: { [Op.in]: inboundIds } }, attributes: [] }] })
+    : [];
+  const returnedByInboundItem = new Map();
+  historicalReturns.forEach(item => {
+    if (!item.inbound_item_id) return;
+    const key = String(item.inbound_item_id);
+    returnedByInboundItem.set(key, (returnedByInboundItem.get(key) || 0) + Number(item.quantity || 0));
+  });
+  const completedAdjustments = await PurchaseAdjustment.findAll({
+    where: { request_id: requestId, status: 'completed' }, attributes: ['adjustment_id']
+  });
+  const adjustmentIds = completedAdjustments.map(item => item.adjustment_id);
+  const adjustedItems = adjustmentIds.length ? await PurchaseAdjustmentItem.findAll({
+    where: { adjustment_id: { [Op.in]: adjustmentIds }, quantity_delta: { [Op.lt]: 0 } },
+    attributes: ['request_item_id', 'quantity_delta']
+  }) : [];
+  const returnedByRequestItem = new Map();
+  adjustedItems.forEach(item => {
+    const key = String(item.request_item_id);
+    returnedByRequestItem.set(key, (returnedByRequestItem.get(key) || 0) - Number(item.quantity_delta || 0));
+  });
+  const requestedQuantity = new Map((request.items || []).map(item => [String(item.item_id), Number(item.quantity || 0)]));
+  for (const row of rows) {
+    const alreadyReturned = returnedByInboundItem.get(String(row.inbound_item_id)) || 0;
+    row.already_returned_quantity = alreadyReturned;
+    row.in_stock_quantity = row.operation_type === 'in_stock'
+      ? Math.max(0, Number(row.received_quantity || 0) - alreadyReturned) : 0;
+    const remainingRequestQuantity = Math.max(0, (requestedQuantity.get(String(row.request_item_id)) || 0)
+      - (returnedByRequestItem.get(String(row.request_item_id)) || 0));
+    row.max_return_quantity = Math.min(remainingRequestQuantity,
+      Math.max(0, Number(row.max_return_quantity || 0) - alreadyReturned));
+  }
+  const hasInStockItems = inbounds.some(inbound => inbound.status === 'completed'
+    && (inbound.items || []).some(item => Number(item.received_quantity || item.quantity || 0)
+      > (returnedByInboundItem.get(String(item.item_id)) || 0)));
+  const visibleRows = rows.filter(row => row.operation_type !== 'in_stock' || row.in_stock_quantity > 0);
+  if (!visibleRows.some(row => row.editable && row.max_return_quantity > 0) && !hasInStockItems) {
+    ctx.throw(400, hasInStockItems
+      ? '商品已入库，请先在入库单管理退库，再回到采购申请撤单'
+      : '该采购订单没有可撤单的待入库商品');
+  }
+
+  ctx.body = {
+    code: 0,
+    data: {
+      request_id: request.request_id,
+      request_no: request.request_no,
+      store_id: request.store_id,
+      distributor_id: request.distributor_id || request.Store?.distributor_id || null,
+      supplier_id: request.supplier_id,
+      supplier_name: request.Supplier?.name || '',
+      payment_method: request.payment_method,
+      has_in_stock_items: hasInStockItems,
+      rows: visibleRows
+    }
+  };
+}
+
+async function recordPurchaseAdjustmentRebate({ request, adjustmentNo, rebateDelta, user, transaction }) {
+  const amount = Math.abs(toSignedMoney(rebateDelta));
+  if (amount <= 0 || !request.supplier_id) return;
+
+  const currentBalance = await _getRebateBalance(request.supplier_id, transaction);
+  if (rebateDelta > 0 && amount > currentBalance) {
+    const error = new Error(`返利余额不足，当前余额 ¥${currentBalance.toFixed(2)}`);
+    error.status = 400;
+    throw error;
+  }
+
+  const supplier = await Supplier.findByPk(request.supplier_id, { transaction });
+  const newBalance = toSignedMoney(currentBalance + (rebateDelta > 0 ? -amount : amount));
+  await SupplierRebate.create({
+    rebate_id: generateUUID(),
+    supplier_id: request.supplier_id,
+    supplier_name: supplier?.name || '',
+    type: rebateDelta > 0 ? 'debit' : 'credit',
+    amount,
+    balance: newBalance,
+    related_no: adjustmentNo,
+    remark: rebateDelta > 0 ? `采购调整 ${adjustmentNo} 增加数量，追加返利抵扣` : `采购调整 ${adjustmentNo} 减少数量，退回返利抵扣`,
+    status: 'active',
+    source_type: 'purchase_adjustment',
+    create_user: user.name || user.phone
+  }, { transaction });
+  await recordSupplierRebateAccountTransaction(
+    request.supplier_id,
+    rebateDelta > 0 ? 'expense' : 'income',
+    amount,
+    rebateDelta > 0 ? '采购调整追加返利抵扣' : '采购调整退回返利抵扣',
+    adjustmentNo,
+    user.name || user.phone,
+    transaction
+  );
+}
+
+async function findOriginalPurchaseSourceForSn(sn, transaction) {
+  const binding = await InboundItemSn.findOne({
+    where: { sn_id: sn.sn_id },
+    order: [['inbound_item_sn_id', 'DESC']],
+    transaction,
+    lock: transaction.LOCK.UPDATE
+  });
+  let inboundItem = binding
+    ? await InboundItem.findByPk(binding.inbound_item_id, { transaction, lock: transaction.LOCK.UPDATE })
+    : null;
+  if (!inboundItem) {
+    inboundItem = await InboundItem.findOne({
+      where: {
+        [Op.or]: [
+          { sn_id: sn.sn_id },
+          { sn_code: sn.sn_code }
+        ]
+      },
+      order: [['item_id', 'DESC']],
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+  }
+  if (!inboundItem) return null;
+  const inbound = await Inbound.findByPk(inboundItem.inbound_id, { transaction, lock: transaction.LOCK.UPDATE });
+  if (!inbound?.purchase_request_id || String(inbound.source_type || '').toLowerCase() !== 'purchase') return null;
+  const request = await PurchaseRequest.findByPk(inbound.purchase_request_id, {
+    include: [{ model: PurchaseRequestItem, as: 'items' }, { model: Supplier }],
+    transaction,
+    lock: transaction.LOCK.UPDATE
+  });
+  if (!request) return null;
+  let requestItem = (request.items || []).find(item => String(item.item_id) === String(inboundItem.purchase_request_item_id || ''));
+  if (!requestItem) {
+    const candidates = (request.items || []).filter(item => String(item.product_id || '') === String(inboundItem.product_id || ''));
+    if (candidates.length === 1) requestItem = candidates[0];
+  }
+  return requestItem ? { request, requestItem, inbound, inboundItem } : null;
+}
+
+async function adjustOriginalPurchaseForSpecialSn({ conversion, newRequest, user, transaction }) {
+  const source = await findOriginalPurchaseSourceForSn(conversion.sn, transaction);
+  if (!source || String(source.request.request_id) === String(newRequest.request_id)) return null;
+  const { request, requestItem, inbound, inboundItem } = source;
+  const marker = `special_warehouse_repurchase:${newRequest.request_id}:${conversion.sn.sn_id}`;
+  const duplicate = await PurchaseAdjustmentItem.findOne({ where: { request_item_id: requestItem.item_id, remark: marker }, transaction });
+  if (duplicate) return null;
+
+  const completedAdjustments = await PurchaseAdjustment.findAll({
+    where: { request_id: request.request_id, status: 'completed' },
+    attributes: ['adjustment_id', 'total_quantity_delta'],
+    transaction,
+    lock: transaction.LOCK.UPDATE
+  });
+  const adjustmentIds = completedAdjustments.map(row => row.adjustment_id);
+  const itemQuantityDelta = adjustmentIds.length
+    ? Number(await PurchaseAdjustmentItem.sum('quantity_delta', {
+      where: { adjustment_id: { [Op.in]: adjustmentIds }, request_item_id: requestItem.item_id },
+      transaction
+    }) || 0)
+    : 0;
+  const currentQuantity = Math.max(0, Number(requestItem.quantity || 0) + itemQuantityDelta);
+  if (currentQuantity < 1) return null;
+
+  const originalQuantity = Math.max(1, Number(requestItem.quantity || 0));
+  const unitPrice = Number(requestItem.unit_price || inboundItem.unit_price || 0);
+  const rebatePerUnit = Number(requestItem.rebate_deduction || 0) / originalQuantity;
+  const amountDelta = toSignedMoney(-(unitPrice - rebatePerUnit));
+  const rebateDelta = toSignedMoney(-rebatePerUnit);
+  const adjustmentId = generateUUID();
+  const adjustmentNo = generateId('PRA');
+  const reason = `特殊仓SN ${conversion.sn.sn_code} 转入新采购申请 ${newRequest.request_no}，仅调整原采购订单，不变更库存`;
+
+  await PurchaseAdjustment.create({
+    adjustment_id: adjustmentId,
+    adjustment_no: adjustmentNo,
+    request_id: request.request_id,
+    request_no: request.request_no,
+    store_id: request.store_id,
+    distributor_id: request.distributor_id || null,
+    supplier_id: request.supplier_id,
+    supplier_name: request.Supplier?.name || '',
+    total_quantity_delta: -1,
+    total_amount_delta: amountDelta,
+    reason,
+    status: 'completed',
+    create_user: user.name || user.phone,
+    create_time: new Date()
+  }, { transaction });
+  await PurchaseAdjustmentItem.create({
+    adjustment_id: adjustmentId,
+    request_item_id: requestItem.item_id,
+    inbound_id: inbound.inbound_id,
+    inbound_item_id: inboundItem.item_id,
+    store_id: inbound.store_id,
+    product_id: requestItem.product_id,
+    product_name: requestItem.product_name || inboundItem.product_name || '',
+    unit_price: unitPrice,
+    original_quantity: originalQuantity,
+    received_quantity: 1,
+    pending_quantity_before: 0,
+    target_quantity: Math.max(0, currentQuantity - 1),
+    quantity_delta: -1,
+    amount_delta: amountDelta,
+    remark: marker
+  }, { transaction });
+  await recordPurchaseAdjustmentRebate({ request, adjustmentNo, rebateDelta, user, transaction });
+
+  let payableId = '';
+  if (request.payment_method === 'PERSONAL_ADVANCE') {
+    const expense = await Expense.findOne({ where: { source_type: 'purchase', source_id: request.request_id }, transaction, lock: transaction.LOCK.UPDATE });
+    if (expense?.status === 'paid') {
+      const error = new Error(`原采购单 ${request.request_no} 的个人垫付已付款，不能自动转采购`);
+      error.status = 400;
+      throw error;
+    }
+    if (expense) {
+      const nextAmount = toSignedMoney(Number(expense.amount || 0) + amountDelta);
+      await expense.update({
+        amount: Math.max(0, nextAmount),
+        status: nextAmount <= 0 ? 'cancelled' : expense.status,
+        review_comment: `${expense.review_comment || ''}${expense.review_comment ? '；' : ''}${reason}`,
+        update_time: new Date()
+      }, { transaction });
+    }
+  } else if (Math.abs(amountDelta) > 0) {
+    payableId = generateUUID();
+    const store = request.store_id ? await Store.findByPk(request.store_id, { attributes: ['region_id', 'distributor_id'], transaction }) : null;
+    await Payable.create({
+      payable_id: payableId,
+      supplier_id: request.supplier_id,
+      supplier_name: request.Supplier?.name || '',
+      request_id: request.request_id,
+      request_no: request.request_no,
+      payee_type: 'supplier',
+      payee_id: request.supplier_id,
+      payee_name: request.Supplier?.name || '',
+      source_type: 'purchase_adjustment',
+      source_id: adjustmentId,
+      source_no: adjustmentNo,
+      region_id: store?.region_id || null,
+      distributor_id: request.distributor_id || store?.distributor_id || null,
+      total_amount: amountDelta,
+      offset_amount: 0,
+      paid_amount: 0,
+      status: 'credit',
+      create_time: new Date()
+    }, { transaction });
+    const originalPayable = await Payable.findOne({
+      where: { request_id: request.request_id, source_type: 'purchase', total_amount: { [Op.gt]: 0 } },
+      order: [['create_time', 'ASC']],
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (originalPayable) {
+      const allocation = (await getAllocationSummary([originalPayable.payable_id], transaction)).get(String(originalPayable.payable_id)) || { amount: 0 };
+      if (Number(allocation.amount || 0) <= 0.005 && Number(originalPayable.paid_amount || 0) <= 0.005) {
+        const remaining = Math.max(0, getPayableRemaining(originalPayable.total_amount, allocation.amount, originalPayable.offset_amount));
+        const offsetAmount = Math.min(Math.abs(amountDelta), remaining);
+        if (offsetAmount > 0) {
+          await originalPayable.update({ offset_amount: toSignedMoney(Number(originalPayable.offset_amount || 0) + offsetAmount) }, { transaction });
+          await Payable.update({ offset_amount: offsetAmount, offset_payable_id: originalPayable.payable_id, status: Math.abs(amountDelta) <= offsetAmount + 0.005 ? 'offset' : 'credit' }, { where: { payable_id: payableId }, transaction });
+          await refreshPayableState(originalPayable.payable_id, transaction);
+        }
+      }
+    }
+  }
+
+  const originalTotalQuantity = (request.items || []).reduce((sum, item) => sum + Math.max(0, Number(item.quantity || 0)), 0);
+  const previousQuantityDelta = completedAdjustments.reduce((sum, row) => sum + Number(row.total_quantity_delta || 0), 0);
+  const fullyReplaced = originalTotalQuantity + previousQuantityDelta - 1 <= 0;
+  if (fullyReplaced) await request.update({ status: 'replaced', update_time: new Date() }, { transaction });
+  await recordBusinessAction({
+    businessType: 'purchase_request',
+    businessId: request.request_id,
+    businessNo: request.request_no,
+    action: 'special_warehouse_repurchase_adjusted',
+    fromStatus: 'approved',
+    toStatus: fullyReplaced ? 'replaced' : 'approved',
+    user,
+    comment: reason,
+    transaction
+  });
+  return { requestNo: request.request_no, adjustmentNo, payableId, fullyReplaced };
+}
+
+/**
+ * 创建采购退单/采购数量调整单。
+ * 只调整待入库明细；已完成入库的明细仅用于校验和追溯。
+ */
+async function createPurchaseAdjustment(ctx, parentTransaction = null) {
+  // Koa supplies `next` as argument two; only an explicit Sequelize transaction is reusable.
+  if (typeof parentTransaction === 'function') parentTransaction = null;
+  const { requestId, reason = '', items = [] } = ctx.request.body || {};
+  const user = ctx.state.user;
+
+  if (!requestId) ctx.throw(400, '缺少采购订单ID');
+  if (!Array.isArray(items) || items.length === 0) ctx.throw(400, '请填写需要调整的商品数量');
+
+  const transaction = parentTransaction || await sequelize.transaction();
+  try {
+    const request = await PurchaseRequest.findByPk(requestId, {
+      include: [
+        { model: Supplier },
+        { model: PurchaseRequestItem, as: 'items' },
+        { model: Inbound, include: [{ model: InboundItem, as: 'items' }] }
+      ],
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!request) ctx.throw(404, '采购申请不存在');
+    assertCanAdjustPurchase(ctx, request);
+    assertStoreVisible(ctx, request.store_id);
+    if (request.status !== 'approved') ctx.throw(400, '只有已通过的采购订单才能办理退单/数量调整');
+    if ((request.items || []).some(item => item.source_sn_id)) {
+      ctx.throw(400, '特殊仓SN采购已完成免入库转换，不能按待入库采购单调整');
+    }
+
+    const inbounds = await Inbound.findAll({
+      where: { purchase_request_id: requestId },
+      include: [{ model: InboundItem, as: 'items' }],
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    const requestItemMap = new Map((request.items || []).map(item => [String(item.item_id), item]));
+    const inboundItemMap = new Map();
+    for (const inbound of inbounds) {
+      for (const inboundItem of inbound.items || []) {
+        inboundItemMap.set(String(inboundItem.item_id), { inbound, inboundItem });
+      }
+    }
+
+    const submitted = new Map();
+    for (const row of items) {
+      const inboundItemId = String(row.inboundItemId || row.inbound_item_id || '');
+      if (!inboundItemId) continue;
+      if (submitted.has(inboundItemId)) ctx.throw(400, '退单明细重复');
+      const returnQuantity = Number(row.returnQuantity ?? row.return_quantity ?? 0);
+      if (!Number.isInteger(returnQuantity) || returnQuantity < 0) {
+        ctx.throw(400, '退库数量必须是大于等于0的整数');
+      }
+      const snIds = [...new Set((row.snIds || row.sn_ids || []).map(String).filter(Boolean))];
+      if (snIds.length) ctx.throw(400, '待入库商品撤单无需选择SN');
+      submitted.set(inboundItemId, { returnQuantity, snIds });
+    }
+    if (submitted.size === 0) ctx.throw(400, '没有有效的退单明细');
+
+    // A returned unit may have a replacement pending inbound. That placeholder is
+    // not another purchased unit and must not create a second negative payable.
+    const completedForRequest = await PurchaseAdjustment.findAll({
+      where: { request_id: requestId, status: 'completed' },
+      attributes: ['adjustment_id'], transaction, lock: transaction.LOCK.UPDATE
+    });
+    const completedIds = completedForRequest.map(row => row.adjustment_id);
+    const previousReturns = completedIds.length
+      ? await PurchaseAdjustmentItem.findAll({
+        where: { adjustment_id: { [Op.in]: completedIds }, quantity_delta: { [Op.lt]: 0 } },
+        attributes: ['request_item_id', 'quantity_delta'], transaction
+      }) : [];
+    const returnedByRequestItem = new Map();
+    previousReturns.forEach(row => {
+      const key = String(row.request_item_id);
+      returnedByRequestItem.set(key, (returnedByRequestItem.get(key) || 0) - Number(row.quantity_delta || 0));
+    });
+    for (const [inboundItemId, input] of submitted) {
+      const matched = inboundItemMap.get(inboundItemId);
+      if (!matched || input.returnQuantity <= 0) continue;
+      const key = String(matched.inboundItem.purchase_request_item_id || '');
+      const requestItem = requestItemMap.get(key);
+      const nextReturned = (returnedByRequestItem.get(key) || 0) + input.returnQuantity;
+      if (!requestItem || nextReturned > Number(requestItem.quantity || 0)) {
+        ctx.throw(409, '该采购明细已全部退单，不能再次生成负向采购单');
+      }
+      returnedByRequestItem.set(key, nextReturned);
+    }
+
+    const receivedByRequestItem = new Map();
+    for (const inbound of inbounds) {
+      if (inbound.status !== 'completed') continue;
+      for (const inboundItem of inbound.items || []) {
+        const key = String(inboundItem.purchase_request_item_id || '');
+        receivedByRequestItem.set(key, (receivedByRequestItem.get(key) || 0) + Math.max(0, Number(inboundItem.quantity || 0)));
+      }
+    }
+
+    const adjustmentId = generateUUID();
+    const adjustmentNo = generateId('PRA');
+    let totalQuantityDelta = 0;
+    let totalAmountDelta = 0;
+    let totalRebateDelta = 0;
+    let changedItemCount = 0;
+    let payableAmountDelta = 0;
+
+    for (const [inboundItemId, input] of submitted.entries()) {
+      const matched = inboundItemMap.get(inboundItemId);
+      if (!matched) ctx.throw(400, '待入库明细不存在或不属于该采购订单');
+      const { inbound, inboundItem } = matched;
+
+      const requestItem = requestItemMap.get(String(inboundItem.purchase_request_item_id || ''));
+      if (!requestItem) ctx.throw(400, '采购明细不存在');
+      const returnQuantity = input.returnQuantity;
+      if (returnQuantity === 0) continue;
+
+      const originalQuantity = Math.max(0, Number(requestItem.quantity || 0));
+      const unitPrice = Number(requestItem.unit_price || inboundItem.unit_price || 0);
+      const rebatePerUnit = originalQuantity > 0
+        ? Number(requestItem.rebate_deduction || 0) / originalQuantity
+        : 0;
+      const amountDelta = toSignedMoney(-returnQuantity * (unitPrice - rebatePerUnit));
+      const rebateDelta = toSignedMoney(-returnQuantity * rebatePerUnit);
+      const receivedQuantity = receivedByRequestItem.get(String(requestItem.item_id)) || 0;
+      if (inbound.status === 'pending') {
+        const pendingQuantity = Math.max(Number(inboundItem.quantity || 0) - Number(inboundItem.received_quantity || 0), 0);
+        if (returnQuantity > pendingQuantity) ctx.throw(400, `商品 ${inboundItem.product_name || inboundItem.product_id} 可取消待入库数量不足`);
+        await inboundItem.update({ quantity: Math.max(Number(inboundItem.quantity || 0) - returnQuantity, 0) }, { transaction });
+      } else if (inbound.status === 'completed') {
+        ctx.throw(409, '商品已入库，请先在入库单管理办理退库，再回到采购申请撤单');
+      } else {
+        ctx.throw(400, '当前入库单状态不允许退单');
+      }
+      await PurchaseAdjustmentItem.create({
+        adjustment_id: adjustmentId,
+        request_item_id: requestItem.item_id,
+        inbound_id: inbound.inbound_id,
+        inbound_item_id: inboundItem.item_id,
+        store_id: inbound.store_id,
+        product_id: requestItem.product_id,
+        product_name: requestItem.product_name || inboundItem.product_name || '',
+        unit_price: unitPrice,
+        original_quantity: originalQuantity,
+        received_quantity: receivedQuantity,
+        pending_quantity_before: inbound.status === 'pending' ? Math.max(Number(inboundItem.quantity || 0) + returnQuantity, 0) : 0,
+        target_quantity: inbound.status === 'pending' ? Math.max(Number(inboundItem.quantity || 0), 0) : 0,
+        quantity_delta: -returnQuantity,
+        amount_delta: amountDelta,
+        remark: `pending_cancel${reason ? `；${reason}` : ''}`
+      }, { transaction });
+
+      totalQuantityDelta -= returnQuantity;
+      totalAmountDelta = toSignedMoney(totalAmountDelta + amountDelta);
+      payableAmountDelta = toSignedMoney(payableAmountDelta + amountDelta);
+      totalRebateDelta = toSignedMoney(totalRebateDelta + rebateDelta);
+      changedItemCount += 1;
+    }
+
+    if (changedItemCount === 0) ctx.throw(400, '调整后数量未发生变化');
+
+    for (const inbound of inbounds.filter(item => item.status === 'pending')) {
+      await refreshPendingInboundSummary(inbound, transaction);
+    }
+
+    await PurchaseAdjustment.create({
+      adjustment_id: adjustmentId,
+      adjustment_no: adjustmentNo,
+      request_id: request.request_id,
+      request_no: request.request_no,
+      store_id: request.store_id,
+      distributor_id: request.distributor_id || null,
+      supplier_id: request.supplier_id,
+      supplier_name: request.Supplier?.name || '',
+      total_quantity_delta: totalQuantityDelta,
+      total_amount_delta: totalAmountDelta,
+      reason: reason || '',
+      status: 'completed',
+      create_user: user.name || user.phone,
+      create_time: new Date()
+    }, { transaction });
+
+    await recordPurchaseAdjustmentRebate({
+      request,
+      adjustmentNo,
+      rebateDelta: totalRebateDelta,
+      user,
+      transaction
+    });
+
+    let payableId = '';
+    if (request.payment_method === 'PERSONAL_ADVANCE') {
+      const expense = await Expense.findOne({
+        where: { source_type: 'purchase', source_id: request.request_id },
+        transaction,
+        lock: transaction.LOCK.UPDATE
+      });
+      if (expense && expense.status === 'paid') ctx.throw(400, '个人垫付采购已完成付款，不能再调整');
+      if (expense) {
+        const nextAmount = toSignedMoney(Number(expense.amount || 0) + totalAmountDelta);
+        await expense.update({
+          amount: Math.max(0, nextAmount),
+          status: nextAmount <= 0 ? 'cancelled' : expense.status,
+          review_comment: `${expense.review_comment || ''}${expense.review_comment ? '；' : ''}采购调整 ${adjustmentNo}`,
+          update_time: new Date()
+        }, { transaction });
+      }
+    } else if (Math.abs(payableAmountDelta) > 0) {
+      payableId = generateUUID();
+      await Payable.create({
+        payable_id: payableId,
+        supplier_id: request.supplier_id,
+        supplier_name: request.Supplier?.name || '',
+        request_id: request.request_id,
+        request_no: request.request_no,
+        payee_type: 'supplier',
+        payee_id: request.supplier_id,
+        payee_name: request.Supplier?.name || '',
+        source_type: 'purchase_adjustment',
+        source_id: adjustmentId,
+        source_no: adjustmentNo,
+        region_id: request.store_id ? (await Store.findByPk(request.store_id, { attributes: ['region_id'], transaction }))?.region_id || null : null,
+        distributor_id: request.distributor_id || request.Store?.distributor_id || null,
+        total_amount: payableAmountDelta,
+        offset_amount: 0,
+        paid_amount: 0,
+        status: payableAmountDelta < 0 ? 'credit' : 'unpaid',
+        create_time: new Date()
+      }, { transaction });
+    }
+
+    const fullyCancelled = (request.items || []).length > 0
+      && (request.items || []).every(item => (returnedByRequestItem.get(String(item.item_id)) || 0) >= Number(item.quantity || 0));
+    if (fullyCancelled) {
+      await request.update({
+        status: 'revoked', revoke_user: user.name || user.phone || '', revoke_time: new Date(),
+        revoke_comment: reason || '', update_time: new Date()
+      }, { transaction });
+      await setFreightRecordStatus('purchase', request.request_id, 'cancelled', user, transaction);
+    }
+    await recordBusinessAction({
+      businessType: 'purchase_request', businessId: request.request_id, businessNo: request.request_no,
+      action: fullyCancelled ? 'revoked_by_adjustment' : 'partially_cancelled',
+      fromStatus: 'approved', toStatus: fullyCancelled ? 'revoked' : 'approved',
+      user, comment: `${adjustmentNo}${reason ? `；${reason}` : ''}`, transaction
+    });
+
+    if (!parentTransaction) await transaction.commit();
+    const adjustmentMessage = payableId
+      ? (payableAmountDelta < 0 ? '采购退单完成，负向采购单及负向应付已生成' : '采购数量调整完成，正向应付已生成')
+      : '采购退单完成，负向采购单已生成；请核对个人垫付报销金额';
+    ctx.body = {
+      code: 0,
+      message: adjustmentMessage,
+      data: { adjustmentId, adjustmentNo, payableId, totalQuantityDelta, totalAmountDelta, returns: [] }
+    };
+  } catch (error) {
+    if (!parentTransaction && !transaction.finished) await transaction.rollback();
+    throw error;
+  }
+}
+
+/**
+ * 撤销采购申请
+ */
+async function revokeRequest(ctx) {
+  const { requestId } = ctx.params;
+  const { comment = '' } = ctx.request.body || {};
+  const user = ctx.state.user;
+  const operatorName = user.name || user.phone || String(user.staffId || user.id || '');
+
+  const request = await PurchaseRequest.findOne({
+    where: { request_id: requestId },
+    include: [
+      { model: PurchaseRequestItem, as: 'items' },
+      { model: Inbound, include: [{ model: InboundItem, as: 'items' }] }
+    ]
+  });
+  if (!request) ctx.throw(404, '采购申请不存在');
+  assertStoreVisible(ctx, request.store_id);
+
+  if (!canRevokePurchaseForUser(user, request)) ctx.throw(403, '只有发起人或经销商账号可以撤销该采购申请');
+
+  const inbounds = request.Inbounds || [];
+  if (request.status === 'approved') ctx.throw(400, '已通过的采购申请请使用“撤单”选择商品；已入库商品需先退库');
+  if (request.status !== 'pending') {
+    ctx.throw(400, '仅待审批申请或商品已全部退回的采购申请可以撤销');
+  }
+  if (inbounds.some(inbound => inbound.status === 'completed')) {
+    ctx.throw(400, '该采购申请已有商品入库，无法撤销，请先办理退库');
+  }
+
+  const transaction = await sequelize.transaction();
+  let transactionCommitted = false;
+  try {
+    for (const inbound of inbounds) {
+      await InboundItem.destroy({ where: { inbound_id: inbound.inbound_id }, transaction });
+      await Inbound.destroy({ where: { inbound_id: inbound.inbound_id }, transaction });
+    }
+
+    const settlements = await Settlement.findAll({
+      where: {
+        source_type: 'purchase',
+        source_id: requestId,
+        is_deleted: 0,
+        status: { [Op.ne]: 'voided' }
+      },
+      transaction
+    });
+    for (const settlement of settlements) {
+      await createSettlementReversal(settlement, user, transaction, comment || '采购申请已撤销');
+    }
+
+    const purchaseExpenses = await Expense.findAll({
+      where: { source_type: 'purchase', source_id: requestId, is_deleted: 0 },
+      transaction
+    });
+    for (const expense of purchaseExpenses) {
+      await cancelExpenseRecord(expense, user, transaction, comment || '采购申请已撤销');
+    }
+
+    await Payable.update(
+      { status: 'cancelled' },
+      { where: { request_id: requestId }, transaction }
+    );
+
+    if (request.rebate_deduction && parseFloat(request.rebate_deduction) > 0) {
+      const currentBalance = await _getRebateBalance(request.supplier_id, transaction);
+      const newBalance = currentBalance + parseFloat(request.rebate_deduction);
+      const supplier = await Supplier.findByPk(request.supplier_id, { transaction });
+      await SupplierRebate.create({
+        rebate_id: generateUUID(),
+        supplier_id: request.supplier_id,
+        supplier_name: (supplier && supplier.name) || '',
+        type: 'credit',
+        amount: parseFloat(request.rebate_deduction),
+        balance: newBalance,
+        related_no: request.request_no,
+        remark: `采购申请 ${request.request_no} 撤销，退回返利抵扣`,
+        status: 'active',
+        source_type: 'purchase_reversal',
+        create_user: operatorName
+      }, { transaction });
+      await recordSupplierRebateAccountTransaction(
+        request.supplier_id, 'income', request.rebate_deduction,
+        '采购撤销退回返利抵扣', request.request_no, operatorName, transaction
+      );
+    }
+
+    await request.update({
+      status: 'draft',
+      revoke_user: operatorName,
+      revoke_time: new Date(),
+      revoke_comment: String(comment || '').trim(),
+      submit_time: null,
+      submit_user: null,
+      update_time: new Date()
+    }, { transaction });
+    await setFreightRecordStatus('purchase', requestId, 'draft', user, transaction);
+    await recordBusinessAction({
+      businessType: 'purchase_request',
+      businessId: request.request_id,
+      businessNo: request.request_no,
+      action: 'revoked_to_draft',
+      fromStatus: request.status,
+      toStatus: 'draft',
+      user,
+      comment: comment || '',
+      transaction
+    });
+
+    await transaction.commit();
+    ctx.body = { code: 0, message: '采购申请已撤回并退回草稿' };
+  } catch (error) {
+    if (!transactionCommitted) await transaction.rollback();
+    throw error;
+  }
 }
 
 /**
  * 供应商列表
  */
 async function getSupplierList(ctx) {
-  const { keyword, page = 1, pageSize = 20 } = ctx.query;
+  const { keyword, status, page = 1, pageSize = 20 } = ctx.query;
 
   const where = { is_deleted: 0 };
+  if (status !== undefined && status !== '') {
+    where.status = Number(status);
+  }
   if (keyword) {
     where[Op.or] = [
       { name: { [Op.like]: `%${keyword}%` } },
-      { contact: { [Op.like]: `%${keyword}%` } }
+      { contact: { [Op.like]: `%${keyword}%` } },
+      { phone: { [Op.like]: `%${keyword}%` } }
     ];
   }
 
   const { count, rows } = await Supplier.findAndCountAll({
     where,
-    order: [['create_time', 'DESC']],
+    include: [{ model: SupplierPaymentAccount, as: 'paymentAccounts', where: { is_deleted: 0 }, required: false }],
+    order: [['sort_order', 'ASC'], ['create_time', 'DESC']],
+    distinct: true,
     ...paginate({}, { page, pageSize })
   });
 
@@ -125,25 +3053,59 @@ async function getSupplierList(ctx) {
 }
 
 /**
+ * 获取所有供应商（不分页，用于下拉选择）
+ */
+async function getAllSuppliers(ctx) {
+  const where = { is_deleted: 0, status: 1 };
+
+  const rows = await Supplier.findAll({
+    where,
+    include: [{ model: SupplierPaymentAccount, as: 'paymentAccounts', where: { is_deleted: 0 }, required: false }],
+    order: [['sort_order', 'ASC'], ['create_time', 'DESC']]
+  });
+
+  ctx.body = { code: 0, data: rows };
+}
+
+/**
  * 创建供应商
  */
 async function createSupplier(ctx) {
-  const { name, contact, phone, address, remark, status = 1 } = ctx.request.body;
+  const {
+    name, contact, phone, address, invoiceType, remark, status = 1, paymentAccounts = [],
+    isServiceProvider = true, grossProfitUpliftAmount = 0,
+    purchaseCostModeDefault = null, purchaseCostModeAllowed = PURCHASE_COST_MODES
+  } = ctx.request.body;
 
   if (!name) {
     ctx.throw(400, '供应商名称不能为空');
   }
+  const normalizedUplift = normalizeGrossProfitUpliftAmount(grossProfitUpliftAmount);
+  if (normalizedUplift === null) ctx.throw(400, '毛利上浮额度必须是大于或等于0的金额');
+  const costRule = validateSupplierCostRule(ctx, purchaseCostModeDefault, purchaseCostModeAllowed);
 
   const supplierId = generateId('SP');
 
-  await Supplier.create({
-    supplier_id: supplierId,
-    name,
-    contact: contact || '',
-    phone: phone || '',
-    address: address || '',
-    remark: remark || '',
-    status
+  await sequelize.transaction(async (transaction) => {
+    await Supplier.create({
+      supplier_id: supplierId,
+      name,
+      contact: contact || '',
+      phone: phone || '',
+      address: address || '',
+      invoice_type: invoiceType || '',
+      is_service_provider: isServiceProvider ? 1 : 0,
+      gross_profit_uplift_amount: normalizedUplift,
+      purchase_cost_mode_default: costRule.defaultMode,
+      purchase_cost_mode_allowed: costRule.allowedModes,
+      remark: remark || '',
+      sort_order: await Supplier.count({ where: { is_deleted: 0 }, transaction }),
+      status,
+      create_time: new Date(),
+      update_time: new Date()
+    }, { transaction });
+
+    await saveSupplierPaymentAccounts(supplierId, paymentAccounts, transaction);
   });
 
   ctx.body = { code: 0, message: '创建成功' };
@@ -154,7 +3116,87 @@ async function createSupplier(ctx) {
  */
 async function updateSupplier(ctx) {
   const { id } = ctx.params;
-  const { name, contact, phone, address, remark, status } = ctx.request.body;
+  const {
+    name, contact, phone, address, invoiceType, remark, sortOrder, status, paymentAccounts,
+    isServiceProvider, grossProfitUpliftAmount, purchaseCostModeDefault, purchaseCostModeAllowed
+  } = ctx.request.body;
+
+  const supplier = await Supplier.findOne({
+    where: { supplier_id: id, is_deleted: 0 }
+  });
+
+  if (!supplier) {
+    ctx.throw(404, '供应商不存在');
+  }
+  const normalizedUplift = normalizeGrossProfitUpliftAmount(
+    grossProfitUpliftAmount,
+    supplier.gross_profit_uplift_amount
+  );
+  if (normalizedUplift === null) ctx.throw(400, '毛利上浮额度必须是大于或等于0的金额');
+  const costRule = validateSupplierCostRule(ctx,
+    purchaseCostModeDefault !== undefined ? purchaseCostModeDefault : supplier.purchase_cost_mode_default,
+    purchaseCostModeAllowed !== undefined ? purchaseCostModeAllowed : supplier.purchase_cost_mode_allowed);
+
+  await sequelize.transaction(async (transaction) => {
+    await supplier.update({
+      name: name || supplier.name,
+      contact: contact !== undefined ? contact : supplier.contact,
+      phone: phone !== undefined ? phone : supplier.phone,
+      address: address !== undefined ? address : supplier.address,
+      invoice_type: invoiceType !== undefined ? invoiceType : supplier.invoice_type,
+      is_service_provider: isServiceProvider !== undefined
+        ? (isServiceProvider ? 1 : 0)
+        : supplier.is_service_provider,
+      gross_profit_uplift_amount: normalizedUplift,
+      purchase_cost_mode_default: costRule.defaultMode,
+      purchase_cost_mode_allowed: costRule.allowedModes,
+      remark: remark !== undefined ? remark : supplier.remark,
+      sort_order: sortOrder !== undefined ? sortOrder : supplier.sort_order,
+      status: status !== undefined ? status : supplier.status,
+      update_time: new Date()
+    }, { transaction });
+
+    if (Array.isArray(paymentAccounts)) {
+      await saveSupplierPaymentAccounts(id, paymentAccounts, transaction);
+    }
+  });
+
+  ctx.body = { code: 0, message: '更新成功' };
+}
+
+async function saveSupplierPaymentAccounts(supplierId, paymentAccounts, transaction) {
+  await SupplierPaymentAccount.update(
+    { is_deleted: 1, status: 0, update_time: new Date() },
+    { where: { supplier_id: supplierId }, transaction }
+  );
+
+  const validAccounts = (paymentAccounts || []).filter(acc =>
+    acc.companyName || acc.company_name || acc.taxNo || acc.tax_no || acc.bankName || acc.bank_name || acc.accountNumber || acc.account_number || acc.remark
+  );
+
+  for (const [index, acc] of validAccounts.entries()) {
+    await SupplierPaymentAccount.create({
+      account_id: generateUUID(),
+      supplier_id: supplierId,
+      company_name: acc.companyName || acc.company_name || '',
+      tax_no: acc.taxNo || acc.tax_no || '',
+      bank_name: acc.bankName || acc.bank_name || '',
+      account_number: acc.accountNumber || acc.account_number || '',
+      remark: acc.remark || '',
+      sort_order: index,
+      status: 1,
+      is_deleted: 0,
+      create_time: new Date(),
+      update_time: new Date()
+    }, { transaction });
+  }
+}
+
+/**
+ * 删除供应商
+ */
+async function deleteSupplier(ctx) {
+  const { id } = ctx.params;
 
   const supplier = await Supplier.findOne({
     where: { supplier_id: id, is_deleted: 0 }
@@ -164,16 +3206,66 @@ async function updateSupplier(ctx) {
     ctx.throw(404, '供应商不存在');
   }
 
-  await supplier.update({
-    name: name || supplier.name,
-    contact: contact !== undefined ? contact : supplier.contact,
-    phone: phone !== undefined ? phone : supplier.phone,
-    address: address !== undefined ? address : supplier.address,
-    remark: remark !== undefined ? remark : supplier.remark,
-    status: status !== undefined ? status : supplier.status
-  });
-
-  ctx.body = { code: 0, message: '更新成功' };
+  await supplier.update({ is_deleted: 1 });
+  ctx.body = { code: 0, message: '删除成功' };
 }
 
-module.exports = { getRequestList, createRequest, approveRequest, getSupplierList, createSupplier, updateSupplier };
+async function sortSuppliers(ctx) {
+  const { items } = ctx.request.body;
+  if (!Array.isArray(items)) {
+    ctx.throw(400, '排序数据格式无效');
+  }
+
+  await sequelize.transaction(async (transaction) => {
+    for (const item of items) {
+      if (!item.id) continue;
+      await Supplier.update(
+        { sort_order: item.sortOrder, update_time: new Date() },
+        { where: { supplier_id: item.id, is_deleted: 0 }, transaction }
+      );
+    }
+  });
+
+  ctx.body = { code: 0, message: '排序更新成功' };
+}
+
+module.exports = {
+  getRequestList,
+  exportRequestList,
+  getRequestDetail,
+  updateRequestRemark,
+  createRequest,
+  saveRequestDraft,
+  updateRequestDraft,
+  submitRequestDraft,
+  deleteRequestDraft,
+  approveRequest,
+  revokeRequest,
+  getAdjustmentPreview,
+  createPurchaseAdjustment,
+  getSupplierList,
+  getAllSuppliers,
+  createSupplier,
+  updateSupplier,
+  deleteSupplier,
+  sortSuppliers,
+  _test: {
+    assertSupplierCostModes,
+    getSnPurchaseFields,
+    flattenPurchaseAllocations,
+    validatePurchaseAllocations,
+    getPurchaseAdjustmentTotals,
+    getPurchaseAdjustmentItemDeltas,
+    buildNegativePurchaseOrders,
+    attachCurrentPurchaseItemAmounts,
+    attachCurrentPurchaseAmounts,
+    attachPurchasePaymentStatus,
+    getPurchaseLifecycleStatus,
+    buildPurchaseSubmitterCondition,
+    buildPurchaseOperatorCondition,
+    findPurchaseRequestIdsByDocumentNo,
+    summarizePendingInboundItems,
+    purchaseAdjustmentOperation,
+    buildPurchaseDocumentRelations
+  }
+};

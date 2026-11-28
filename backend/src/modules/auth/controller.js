@@ -3,8 +3,10 @@
  */
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
-const { Staff, Role, Menu, RoleMenu, StaffRole, Store, Region } = require('../../models');
+const { Staff, Role, Menu, RoleMenu, StaffRole, Store, Region, Distributor } = require('../../models');
 const config = require('../../config');
+const { resolveAccessibleStoreIds, resolvePrimaryStoreId, resolveConfiguredRegions, isStoreScopedAccount } = require('../../utils/storePermissions');
+const { resolveStaffDistributorIds } = require('../../utils/distributorScope');
 
 /**
  * 登录
@@ -20,7 +22,7 @@ async function login(ctx) {
   const staff = await Staff.findOne({
     where: { phone, is_deleted: 0 },
     include: [
-      { model: Role, as: 'Roles', through: { attributes: [] } },
+      { model: Role, as: 'Roles', where: { status: 1 }, required: false },
       { model: Store, as: 'Store', include: [{ model: Region, as: 'Region' }] }
     ]
   });
@@ -37,32 +39,40 @@ async function login(ctx) {
 
   // 检查状态
   if (staff.status !== 1) {
-    ctx.throw(401, '账号已被禁用');
+    ctx.throw(401, '账号已停用');
   }
 
-  // 获取角色信息
-  const roles = staff.Roles || [];
-  const roleCodes = roles.map(r => r.role_code);
+  // 获取角色信息 - 优先从关联表, 回退到 staff.role_code
+  let roles = staff.Roles || [];
+  if (roles.length === 0 && staff.role_code) {
+    roles = await Role.findAll({
+      where: { role_code: staff.role_code, status: 1 }
+    });
+  }
+  const roleCodes = roles.map(r => String(r.role_code || '').trim().toLowerCase()).filter(Boolean);
+  const roleNames = roles.map(r => r.name);
+  const assignedStoreIds = await resolveAccessibleStoreIds(staff, roleCodes);
+  const effectiveStoreId = isStoreScopedAccount(roleCodes)
+    ? resolvePrimaryStoreId(staff, assignedStoreIds)
+    : null;
+  const effectiveStore = effectiveStoreId
+    ? await Store.findByPk(effectiveStoreId, { attributes: ['store_id', 'name'] })
+    : null;
 
   // 查询菜单权限
   const roleIds = roles.map(r => r.role_id);
   const roleMenus = await RoleMenu.findAll({
     where: { role_id: roleIds },
-    include: [{ model: Menu }]
+    attributes: ['menu_id']
   });
   const menuIds = [...new Set(roleMenus.map(rm => rm.menu_id))];
   const menus = await Menu.findAll({
     where: { menu_id: menuIds, status: 1 },
-    order: [['sort_order', 'ASC']]
+    order: [['sort_order', 'ASC'], ['menu_id', 'ASC']]
   });
 
-  // 老板角色拥有所有区域权限
-  let regionCodes = [];
-  if (roleCodes.includes('boss')) {
-    regionCodes = ['*'];
-  } else if (staff.region_id) {
-    regionCodes = [staff.region_id];
-  }
+  const configuredRegions = await resolveConfiguredRegions(staff, roleCodes);
+  const accessibleDistributorIds = roleCodes.includes('boss') ? ['*'] : await resolveStaffDistributorIds(staff);
 
   // 生成 token
   const token = jwt.sign(
@@ -75,6 +85,10 @@ async function login(ctx) {
     { expiresIn: config.jwt.expiresIn }
   );
 
+  const distributor = staff.distributor_id
+    ? await Distributor.findByPk(staff.distributor_id, { attributes: ['distributor_id', 'name'] })
+    : null;
+
   ctx.body = {
     token,
     userInfo: {
@@ -82,12 +96,20 @@ async function login(ctx) {
       name: staff.name,
       phone: staff.phone,
       roleCode: staff.role_code,
-      roleName: roles[0]?.name || '员工',
+      roleName: roleNames.join('、') || '员工',
+      roleNames,
       roles: roleCodes,
-      storeId: staff.store_id,
-      storeName: staff.Store?.name,
+      distributorId: staff.distributor_id || '',
+      distributorIds: accessibleDistributorIds,
+      accessibleDistributorIds,
+      distributorName: distributor?.name || '',
+      scopeType: isStoreScopedAccount(roleCodes) ? 'store' : (roleCodes.includes('boss') ? 'global' : 'distributor'),
+      storeId: effectiveStoreId,
+      storeName: effectiveStore?.name || '',
       regionId: staff.region_id,
-      regionCodes,
+      regionCodes: configuredRegions.codes,
+      regionIds: configuredRegions.ids,
+      storeIds: assignedStoreIds,
       menus: buildMenuTree(menus)
     }
   };
@@ -101,7 +123,7 @@ async function getUserInfo(ctx) {
 
   const staff = await Staff.findByPk(user.staffId, {
     include: [
-      { model: Role, as: 'Roles', through: { attributes: [] } },
+      { model: Role, as: 'Roles', where: { status: 1 }, required: false },
       { model: Store, as: 'Store', include: [{ model: Region, as: 'Region' }] }
     ]
   });
@@ -111,7 +133,12 @@ async function getUserInfo(ctx) {
   }
 
   // 查询角色和菜单
-  const roles = staff.Roles || [];
+  let roles = staff.Roles || [];
+  if (roles.length === 0 && staff.role_code) {
+    roles = await Role.findAll({
+      where: { role_code: staff.role_code, status: 1 }
+    });
+  }
   const roleIds = roles.map(r => r.role_id);
   const roleMenus = await RoleMenu.findAll({
     where: { role_id: roleIds }
@@ -120,21 +147,43 @@ async function getUserInfo(ctx) {
   const menuIds = [...new Set(roleMenus.map(rm => rm.menu_id))];
   const menus = await Menu.findAll({
     where: { menu_id: menuIds, status: 1 },
-    order: [['sort_order', 'ASC']]
+    order: [['sort_order', 'ASC'], ['menu_id', 'ASC']]
   });
 
-  const roleCodes = roles.map(r => r.role_code);
+  const roleCodes = roles.map(r => String(r.role_code || '').trim().toLowerCase()).filter(Boolean);
+  const roleNames = roles.map(r => r.name);
+  const assignedStoreIds = await resolveAccessibleStoreIds(staff, roleCodes);
+  const configuredRegions = await resolveConfiguredRegions(staff, roleCodes);
+  const accessibleDistributorIds = roleCodes.includes('boss') ? ['*'] : await resolveStaffDistributorIds(staff);
+  const effectiveStoreId = isStoreScopedAccount(roleCodes)
+    ? resolvePrimaryStoreId(staff, assignedStoreIds)
+    : null;
+  const effectiveStore = effectiveStoreId
+    ? await Store.findByPk(effectiveStoreId, { attributes: ['store_id', 'name'] })
+    : null;
+  const distributor = staff.distributor_id
+    ? await Distributor.findByPk(staff.distributor_id, { attributes: ['distributor_id', 'name'] })
+    : null;
 
   ctx.body = {
     staffId: staff.staff_id,
     name: staff.name,
     phone: staff.phone,
     roleCode: staff.role_code,
+    roleName: roleNames.join('、') || '员工',
+    roleNames,
     roles: roleCodes,
-    storeId: staff.store_id,
-    storeName: staff.Store?.name,
+    distributorId: staff.distributor_id || '',
+    distributorIds: accessibleDistributorIds,
+    accessibleDistributorIds,
+    distributorName: distributor?.name || '',
+    scopeType: isStoreScopedAccount(roleCodes) ? 'store' : (roleCodes.includes('boss') ? 'global' : 'distributor'),
+    storeId: effectiveStoreId,
+    storeName: effectiveStore?.name || '',
     regionId: staff.region_id,
-    regionCodes: user.regionCodes,
+    regionCodes: configuredRegions.codes,
+    regionIds: configuredRegions.ids,
+    storeIds: assignedStoreIds,
     menus: buildMenuTree(menus)
   };
 }
@@ -146,8 +195,16 @@ async function changePassword(ctx) {
   const user = ctx.state.user;
   const { oldPassword, newPassword } = ctx.request.body;
 
-  if (!oldPassword || !newPassword) {
+  if (typeof oldPassword !== 'string' || typeof newPassword !== 'string' || !oldPassword || !newPassword) {
     ctx.throw(400, '请输入旧密码和新密码');
+  }
+
+  if (newPassword.length < 6) {
+    ctx.throw(400, '新密码至少 6 位');
+  }
+
+  if (oldPassword === newPassword) {
+    ctx.throw(400, '新密码不能与旧密码相同');
   }
 
   const staff = await Staff.findByPk(user.staffId);
@@ -186,7 +243,7 @@ function buildMenuTree(menus) {
   menus.forEach(menu => {
     if (menu.parent_id && menuMap[menu.parent_id]) {
       menuMap[menu.parent_id].children.push(menuMap[menu.menu_id]);
-    } else if (!menu.parent_id) {
+    } else {
       rootMenus.push(menuMap[menu.menu_id]);
     }
   });

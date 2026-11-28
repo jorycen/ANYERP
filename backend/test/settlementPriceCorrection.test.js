@@ -1,0 +1,524 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { Op } = require('sequelize');
+const M = require('../src/models');
+const GP = require('../src/modules/sales/grossProfit');
+const C = require('../src/modules/report/settlementPriceCorrection');
+const controller = require('../src/modules/report/profitAdjustmentController');
+const runtime = require('../src/modules/approval/businessRuntime');
+const tx = { LOCK: { UPDATE: 'UPDATE' } };
+test('开票纠错下拉值与后台类型一致，切换后必须手填金额，空值不能预览或提交', async () => {
+  const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
+  const view = fs.readFileSync(path.join(__dirname, '../../frontend/web/src/views/Reports.vue'), 'utf8');
+  const selectedType = view.match(/label="补开票／开票金额调整" value="([^"]+)"/)[1];
+  assert.equal(selectedType, C.INVOICE_TYPE);
+  assert.match(view, new RegExp(`v-if="adjustmentForm.adjustmentType === '${selectedType}'" label="正确开票金额" required`));
+  const warnings = [];
+  const ctx = { adjustmentForm: { adjustmentType: selectedType, invoiceAmount: 6000, confirmZero: true }, ElMessage: { warning(message) { warnings.push(message); } } };
+  const changeStart = view.indexOf('const onCorrectionTypeChange =');
+  vm.runInNewContext(view.slice(changeStart, view.indexOf('const previewCorrection', changeStart)) + '\nglobalThis.change = onCorrectionTypeChange;', ctx);
+  ctx.change();
+  assert.equal(ctx.adjustmentForm.invoiceAmount, undefined);
+  assert.equal(ctx.adjustmentForm.confirmZero, false);
+  const previewStart = view.indexOf('const previewCorrection =');
+  vm.runInNewContext(view.slice(previewStart, view.indexOf('const resetAdjustmentForm', previewStart)) + '\nglobalThis.preview = previewCorrection;', ctx);
+  const submitStart = view.indexOf('const submitAdjustment =');
+  // The empty-value guard must return before accessing any order, preview or API.
+  const submitGuard = view.slice(submitStart, view.indexOf("  if (!adjustmentOrder", submitStart));
+  vm.runInNewContext(submitGuard + '\n}\nglobalThis.submit = submitAdjustment;', ctx);
+  await ctx.preview(); await ctx.submit();
+  assert.equal(warnings.length, 2);
+  assert.ok(warnings.every(message => message.includes('开票金额')));
+});
+test('纠错审批补齐快照商品及金额依据，但不泄露采购成本和附件存储路径', () => {
+  const data = { adjustment_type: C.TYPE, store_id: 'S', attachments: [{ attachment_id: 'A', original_name: '凭据.pdf', file_path: '/private/file' }],
+    correction_data: { evidence: '依据001', result: { itemId: 'I', salesBefore: 100, salesAfter: 200, salesDelta: 100,
+      productBefore: 999, productAfter: 899, productDelta: -100,
+      before: { snapshot: { receivable_amount: 6000, invoice_amount: 0, product_pricing_amount: 5500, vat_amount: 0, purchase_cost: 9999 },
+        orderItems: [{ item_id: 'I', product_name: '电脑', pn_code: 'PN1', sn_code: 'SN1', quantity: 1, sale_price: 6000, subtotal: 6000, purchase_cost: 9999 }] },
+      after: { snapshot: { product_pricing_amount: 5400, vat_amount: 0 } } } } };
+  const shown = C.display(data, { roles: ['clerk'], accessibleStoreIds: ['S'] });
+  assert.equal(shown.correction_scope, '指定商品结算定价');
+  assert.equal(shown.correction_receivable_amount, 6000);
+  assert.equal(shown.correction_order_items[0].unit_price, 6000);
+  assert.equal(shown.correction_invoice_amount, 0);
+  assert.equal(shown.correction_taxable_before, null);
+  assert.equal(shown.correction_order_items[0].correction_target, '本次纠错商品');
+  assert.equal(shown.correction_order_items[0].pn_code, 'PN1');
+  assert.equal(shown.correction_product_before, null);
+  assert.equal(shown.correction_data, undefined);
+  assert.ok(!JSON.stringify(shown).includes('9999'));
+  assert.equal(shown.attachments[0].file_path, undefined);
+});
+function row(value) { return { ...value, toJSON() { return JSON.parse(JSON.stringify(Object.fromEntries(Object.entries(this).filter(([, value]) => typeof value !== 'function')))); }, async update(patch, options) { assert.equal(options.transaction, tx); Object.assign(this, patch); } }; }
+function context(body = {}) { return { state: { user: { staffId: 7, name: '审核人', roles: ['admin'], accessibleStoreIds: ['S'] } }, query: {}, params: {}, files: [], request: { body }, throw(status, message) { throw Object.assign(new Error(message), { status }); } }; }
+function fixture(t, extra = {}) {
+  const line = { itemId: 9, productName: '笔记本', snCode: 'SN1', quantity: 1, unitPricing: 5500, pricingAmount: 5500, isCompanyPriced: true, source: 'product_standard_price', grossProfitUpliftAmount: 0, externalAdjustmentRuleVersion: 'SUPPLIER_UPLIFT_V2' };
+  const computed = GP.calculateGrossProfitValues({ receivableAmount: 6000, productPricingDetails: [line] });
+  const snapshot = row({ gross_profit_id: 'GP', order_id: 'O', formula_version: GP.FORMULA_VERSION, snapshot_status: 'final',
+    receivable_amount: 6000, gross_profit_amount: computed.grossProfitAmount, payment_fee_amount: 0,
+    payment_fee_details: [], product_pricing_details: [line], product_pricing_amount: 5500,
+    invoice_amount: 0, vat_taxable_amount: 0, vat_amount: 0, supplement_amount: 0, freight_cost_amount: 0, supplement_details: [] });
+  const order = row({ order_id: 'O', order_no: 'ORDER', order_status: '已归档', store_id: 'S', create_user: '员工', create_time: '2026-10-01T01:00:00Z', is_deleted: 0 });
+  const settlement = row({ settlement_id: 'PS', source_order_id: 'O', business_date: '2026-10-01T01:00:00Z', status: 'posted', gross_profit_amount: 500, product_pricing_amount: 5500, purchase_cost_amount: 5000 });
+  const item = row({ settlement_item_id: 1, source_order_item_id: 9, quantity: 1, product_unit_price: 5500, purchase_unit_cost: 5000, purchase_cost_amount: 5000, gross_profit_amount: 500, cost_status: 'ready' });
+  const original = row({ item_id: 9, product_id: 'P', product_name: '笔记本', sn_code: 'SN1', quantity: 1, subtotal: 6000, sales_settlement_cost: 5500, sales_gross_profit: 500 });
+  const logs = [];
+  const approved=[];
+  t.mock.method(M.PerformanceProfitAdjustment,'findAll',async()=>approved);
+  t.mock.method(M.ExpenseAccountingPeriod,'findOne',async()=>null);
+  t.mock.method(M.Order, 'findByPk', async () => order);
+  t.mock.method(M.Order, 'findOne', async () => order);
+  t.mock.method(M.Store, 'findByPk', async () => row({ store_id: 'S' }));
+  t.mock.method(M.SalesReturnRequest, 'findAll', async () => extra.returns || []);
+  t.mock.method(M.OrderGrossProfit, 'findOne', async () => snapshot);
+  t.mock.method(M.ProductSettlementOrder, 'findOne', async () => settlement);
+  t.mock.method(M.ProductSettlementItem, 'findAll', async () => [item]);
+  t.mock.method(M.OrderItem, 'findAll', async () => [original]);
+  t.mock.method(M.sequelize, 'query', async () => extra.closed ? [{ MONTH_KEY: '2026-10' }] : []);
+  t.mock.method(M.BusinessActionLog, 'create', async (value, options) => { assert.equal(options.transaction, tx); logs.push(value); return value; });
+  t.mock.method(M.sequelize, 'transaction', async (options, callback) => {
+    const tracked = [order, snapshot, settlement, item, original, ...(extra.tracked || [])];
+    const saved = tracked.map(value => value.toJSON());
+    try { return await (callback || options)(tx); } catch (error) {
+      tracked.forEach((value, index) => { for (const key of Object.keys(value)) if (typeof value[key] !== 'function') delete value[key]; Object.assign(value, saved[index]); });
+      logs.length = 0;
+      throw error;
+    }
+  });
+  return { snapshot, order, settlement, item, original, logs,approved };
+}
+async function adjustmentFor(ctx) {
+  const input = C.validate({ itemId: 9, unitPrice: 5300 });
+  const selected = await C.select(ctx, 'O', input);
+  return row({ adjustment_id: 'A', adjustment_no: 'PPA1', adjustment_type: C.TYPE, order_id: 'O', store_id: 'S',
+    signed_amount: 0, status: 'pending_finance', reason: '原定价通知录错',
+    correction_data: { input, evidence: '定价通知001', previewHash: selected.previewHash, result: selected.result } });
+}
+
+test('旧申请依据相同可兼容，商场上报不阻塞，真实定价变化仍拦截', async t => {
+ const f=fixture(t),ctx=context(),a=await adjustmentFor(ctx);
+ const saved=a.correction_data;
+ delete saved.result.orderBasis;
+ saved.previewHash='123c249bb51eaf4cd3cc86b9b1698a1b3b51d6f835e63081e4aa2e4f91c7ee5a';
+ f.order.mall_report_status='reported'; f.order.mall_report_staff_id=24;
+ const selected=await C.select(ctx,'O',saved.input);
+ const F=require('../src/modules/report/correctionFingerprint');
+ assert.equal(F.matchesSavedBasis(saved,selected,a),true);
+ saved.result.before.snapshot.product_pricing_amount=5499;
+ assert.equal(F.matchesSavedBasis(saved,selected,a),false);
+});
+
+test('legacy missing embedded basis reads confirmed foundation without rewriting original amounts or timestamps',async t=>{
+ const f=fixture(t),ctx=context();f.order.order_no='ORD202611040615237456';f.snapshot.order_no=f.order.order_no;
+ const before=JSON.stringify(f.snapshot.toJSON()),basis={version:require('../src/modules/sales/purchaseVat').VERSION,status:'confirmed',invoiceType:'收据',purchaseAmount:5000,basisId:'B',basisRevision:2};
+ let calls=0;
+ t.mock.method(require('../src/modules/inventory/foundation'),'syncStoredSalesTaxBasis',async(order,lines)=>{calls++;return lines.map(l=>({...l,purchaseTaxBasis:basis}));});
+ t.mock.method(f.snapshot,'update',async()=>{throw Error('preview must not write')});
+ const first=await C.select(ctx,'O',{itemId:'9',unitPrice:5300});
+ assert.equal(JSON.stringify(f.snapshot.toJSON()),before);
+ f.snapshot.update_time='new maintenance time';f.snapshot.calculated_at='new calculation time';f.order.update_time='new maintenance time';
+ const next=await C.select(ctx,'O',{itemId:'9',unitPrice:5300},tx);
+ assert.equal(first.previewHash,next.previewHash);assert.equal(calls,2);assert.equal(f.snapshot.gross_profit_amount,500);
+ assert.equal(next.result.before.snapshot.product_pricing_details[0].purchaseTaxBasis.basisId,'B');
+ basis.basisRevision=3;
+ assert.notEqual((await C.select(ctx,'O',{itemId:'9',unitPrice:5300})).previewHash,first.previewHash);
+});
+
+test('price validation rejects missing, signed, excess precision, exponent and unconfirmed zero', () => {
+  for (const unitPrice of [undefined, null, '', true, -1, '1.001', '1e3']) assert.throws(() => C.validate({ itemId: 9, unitPrice }));
+  assert.throws(() => C.validate({ itemId: 9, unitPrice: 0 }), /零元/);
+  assert.equal(C.validate({ itemId: 9, unitPrice: 0, confirmZero: true }).unitPrice, 0);
+});
+test('read-only preview conserves internal transfer and does not touch prices or snapshots', async t => {
+  const f = fixture(t), ctx = context();
+  const selected = await C.select(ctx, 'O', { itemId: '9', unitPrice: 5300 });
+  assert.equal(selected.result.salesDelta, 200); assert.equal(selected.result.productDelta, -200);
+  assert.equal(selected.result.salesAfter + selected.result.productAfter, 1000);
+  assert.equal(f.snapshot.gross_profit_amount, 500); assert.equal(f.item.product_unit_price, 5500);
+  assert.equal(f.logs.length, 0);
+  f.settlement.gross_profit_amount = 999;
+  await assert.rejects(C.select(ctx, 'O', { itemId: '9', unitPrice: 5300 }), /明细与汇总金额不一致/);
+  f.settlement.gross_profit_amount = 500; f.item.purchase_unit_cost = null;
+  await assert.rejects(C.select(ctx, 'O', { itemId: '9', unitPrice: 5300 }), /未完整确认/);
+});
+test('preview preserves archived fee rates, invoices, supplements and freight; recalculates tax dependencies', () => {
+  const lines = [{ itemId: 9, quantity: 2, unitPricing: 5500, pricingAmount: 11000, source: 'product_standard_price', isCompanyPriced: true }];
+  const payments = [{ method: '微信', amount: 12000, taxRate: 0.6 }];
+  const supplements = [{ amount: 100, amountType: 'increase' }], freight = [{ amount: 20, source: 'freight_cost' }];
+  const v = GP.calculateGrossProfitValues({ receivableAmount: 12000, invoiceAmount: 12000, productPricingDetails: lines, paymentDetails: payments, supplementDetails: supplements, freightCostDetails: freight });
+  const frozen = { formula_version: GP.FORMULA_VERSION, snapshot_status: 'final', receivable_amount: 12000, invoice_amount: 12000,
+    product_pricing_details: lines, payment_fee_details: payments, supplement_details: [...supplements, ...freight],
+    gross_profit_amount: v.grossProfitAmount, product_pricing_amount: v.productPricingAmount, vat_taxable_amount: v.vatTaxableAmount,
+    supplement_amount: v.supplementAmount, freight_cost_amount: v.freightCostAmount, payment_fee_amount: v.paymentFeeAmount, vat_amount: v.vatAmount };
+  const patch = C.snapshotPatch(frozen, 9, 5300);
+  assert.equal(patch.product_pricing_amount, 10600); assert.equal(patch.vat_amount, 182);
+  assert.equal(patch.gross_profit_amount - frozen.gross_profit_amount, 348);
+  assert.equal(frozen.product_pricing_details[0].unitPricing, 5500);
+  assert.throws(() => C.snapshotPatch({ ...frozen, gross_profit_amount: 999 }, 9, 5300), /归档计算依据/);
+  assert.throws(() => C.snapshotPatch({ ...frozen, formula_version: 'OLD' }, 9, 5300), /现行归档/);
+  assert.throws(() => C.snapshotPatch({ ...frozen, vat_amount: null }, 9, 5300), /不完整/);
+  assert.throws(() => C.snapshotPatch({ ...frozen, payment_fee_details: 'invalid' }, 9, 5300), /不完整/);
+});
+test('unknown cost, purchase-price mode, closed period, returns and forbidden stores fail closed', async t => {
+  for (const extra of [{ closed: true }, { returns: [{ return_id: 'R' }] }]) await t.test(JSON.stringify(extra), async sub => {
+    fixture(sub, extra); await assert.rejects(C.select(context(), 'O', { itemId: '9', unitPrice: 5300 }));
+  });
+  await t.test('scope', async sub => { fixture(sub); const ctx = context(); ctx.state.user.accessibleStoreIds = ['OTHER']; await assert.rejects(C.select(ctx, 'O'), /无权/); });
+  await t.test('unknown cost', async sub => { const f = fixture(sub); f.item.cost_status = 'pending'; await assert.rejects(C.select(context(), 'O'), /未完整确认/); });
+  await t.test('purchase price remains eligible', async sub => { const f = fixture(sub); f.snapshot.product_pricing_details[0].isCompanyPriced = false; const selected = await C.select(context(), 'O', { itemId: '9', unitPrice: 5300 }); assert.equal(selected.result.salesDelta, 200); });
+});
+test('final approval posts signed differences and preserves archived sales and product facts', async t => {
+  const f = fixture(t), ctx = context(), a = await adjustmentFor(ctx);
+  t.mock.method(M.PerformanceProfitAdjustment, 'findByPk', async () => a);
+  t.mock.method(runtime, 'advance', async () => true);
+  ctx.params.adjustmentId = a.adjustment_id;
+  await controller.approveProfitAdjustment(ctx);
+  assert.equal(a.status, 'approved'); assert.equal(a.signed_amount, 200);
+  assert.equal(f.snapshot.gross_profit_amount, 500); assert.equal(f.settlement.gross_profit_amount, 500);
+  assert.equal(f.original.sales_settlement_cost, 5500); assert.equal(f.item.product_unit_price, 5500);
+  assert.equal(f.item.purchase_unit_cost, 5000); assert.equal(a.correction_data.result.before.snapshot.gross_profit_amount, 500);
+  assert.equal(a.correction_data.result.after.snapshot.product_pricing_details[0].correctionId, 'A'); assert.equal(f.logs.length, 1);
+  const displayed = C.display(a.toJSON(), ctx.state.user); assert.equal(displayed.correction_sales_delta, 200); assert.equal(displayed.correction_product_delta, -200);
+  assert.equal(displayed.correction_data, undefined);
+  const restricted = C.display(a.toJSON(), { roles: ['clerk'] });
+  assert.equal(restricted.correction_product_delta, null); assert.equal(restricted.correction_data, undefined);
+  assert.equal(restricted.correction_sales_delta, 200);
+  const publicPreview = C.previewResponse(a.correction_data.result, { roles: ['manager'] });
+  assert.equal(publicPreview.productBefore, null); assert.equal(publicPreview.before, undefined); assert.equal(publicPreview.after, undefined);
+});
+test('intermediate approval and rejection do not change either profit source', async t => {
+  const f = fixture(t), ctx = context(), a = await adjustmentFor(ctx);
+  t.mock.method(M.PerformanceProfitAdjustment, 'findByPk', async () => a);
+  ctx.params.adjustmentId = a.adjustment_id;
+  t.mock.method(runtime, 'advance', async () => false);
+  await controller.approveProfitAdjustment(ctx);
+  assert.equal(f.snapshot.gross_profit_amount, 500); assert.equal(f.settlement.gross_profit_amount, 500); assert.equal(a.status, 'pending_finance');
+  t.mock.method(runtime, 'advance', async () => true);
+  ctx.request.body.comment = '依据不足'; await controller.rejectProfitAdjustment(ctx);
+  assert.equal(a.status, 'rejected'); assert.equal(f.snapshot.gross_profit_amount, 500); assert.equal(f.logs.length, 0);
+});
+test('stale prices or failed product update roll back final approval effects', async t => {
+  await t.test('stale', async sub => {
+    const f = fixture(sub), ctx = context(), a = await adjustmentFor(ctx);
+    f.order.total_amount = 6001;
+    await assert.rejects(C.apply(ctx, a, tx), /已变化/); assert.equal(f.snapshot.gross_profit_amount, 500);
+  });
+  await t.test('rollback', async sub => {
+    const f = fixture(sub), ctx = context(), a = await adjustmentFor(ctx);
+    sub.mock.method(M.PerformanceProfitAdjustment, 'findByPk', async () => a);
+    sub.mock.method(runtime, 'advance', async () => true);
+    sub.mock.method(a, 'update', async () => { throw new Error('write failed'); });
+    ctx.params.adjustmentId = 'A'; await assert.rejects(controller.approveProfitAdjustment(ctx), /write failed/);
+    assert.equal(f.snapshot.gross_profit_amount, 500); assert.equal(f.settlement.gross_profit_amount, 500); assert.equal(a.status, 'pending_finance');
+  });
+});
+test('manual arbitrary increase is rejected; existing manual pending applications cannot be approved', async t => {
+  const ctx = context({ orderId: 'O', adjustmentType: 'increase', amount: 100, reason: '奖励' });
+  await assert.rejects(controller.createProfitAdjustment(ctx), /不再支持/);
+  fixture(t);
+  t.mock.method(M.PerformanceProfitAdjustment, 'findByPk', async () => row({ adjustment_type: 'increase', store_id: 'S', status: 'pending_finance' }));
+  await assert.rejects(controller.approveProfitAdjustment(ctx), /历史手工增减/);
+});
+test('submission uses server preview, requires evidence, rejects stale or duplicate pending requests without changing profit', async t => {
+  const f = fixture(t), ctx = context();
+  const input = { itemId: '9', unitPrice: 5300 };
+  const preview = await C.select(ctx, 'O', input);
+  const saved = [];
+  t.mock.method(M.PerformanceProfitAdjustment, 'findOne', async () => null);
+  t.mock.method(M.PerformanceProfitAdjustment, 'create', async value => { saved.push(value); return row(value); });
+  ctx.request.body = { orderId: 'O', adjustmentType: C.TYPE, ...input, reason: '原定价录错', evidence: '定价通知001', previewHash: preview.previewHash };
+  await controller.createProfitAdjustment(ctx);
+  assert.equal(saved.length, 1); assert.equal(saved[0].signed_amount, 0); assert.equal(saved[0].amount, 200);
+  assert.equal(saved[0].correction_data.evidence, '定价通知001');
+  assert.equal(f.snapshot.gross_profit_amount, 500); assert.equal(f.settlement.gross_profit_amount, 500);
+  ctx.request.body.evidence = ''; await assert.rejects(controller.createProfitAdjustment(ctx), /定价依据/);
+  ctx.request.body.evidence = '凭据001'; ctx.request.body.previewHash = 'old'; await assert.rejects(controller.createProfitAdjustment(ctx), /已变化/);
+  ctx.request.body.previewHash = preview.previewHash;
+  t.mock.method(M.PerformanceProfitAdjustment, 'findOne', async () => saved[0]);
+  await assert.rejects(controller.createProfitAdjustment(ctx), /已有待审批/); assert.equal(saved.length, 1);
+});
+test('reversal is another evidenced price correction; original approved facts remain traceable', async t => {
+  const f = fixture(t), ctx = context(), a = await adjustmentFor(ctx);
+  await C.apply(ctx, a, tx);
+  f.approved.push(a);
+  const selected = await C.select(ctx, 'O', { itemId: '9', unitPrice: 5500 });
+  const reversal = row({ ...a.toJSON(), adjustment_id: 'B', adjustment_no: 'PPA2', correction_data: {
+    input: { itemId: '9', unitPrice: 5500 }, evidence: '原定价通知重新核实', previewHash: selected.previewHash, result: selected.result
+  } });
+  await C.apply(ctx, reversal, tx);
+  assert.equal(f.snapshot.gross_profit_amount, 500); assert.equal(f.settlement.gross_profit_amount, 500);
+  assert.equal(a.correction_data.result.beforeUnitPrice, 5500); assert.equal(a.correction_data.result.afterUnitPrice, 5300);
+  assert.equal(f.logs.length, 2);
+});
+
+function invoiceFixture(t, extra = {}) {
+  const f = fixture(t, extra);
+  Object.assign(f.order, { invoice_amount: 0, invoice_status: '专票13%', total_amount: 6000, actual_payment: 6000 });
+  return f;
+}
+
+test('补开票保留原归档毛利，仅在审批月记录一次税费差额', async t => {
+  const f = invoiceFixture(t);
+  f.order.invoice_status = '不开票';
+  f.order.invoice_amount = 6000;
+  f.snapshot.invoice_amount = 6000;
+  t.mock.method(M.ExpenseAccountingPeriod, 'findOne', async () => null);
+  const events = [];
+  t.mock.method(M.PerformanceProfitAdjustment, 'create', async (value, options) => { assert.equal(options.transaction, tx); events.push(value); return value; });
+  const input = C.validate({adjustmentType:C.INVOICE_TYPE,invoiceAmount:6000,invoiceStatus:'普通发票',periodMode:'current'});
+  const ctx = context();
+  const preview = await C.select(ctx,'O',input);
+  assert.equal(preview.result.beforeInvoiceStatus,'不开票');
+  assert.equal(preview.result.afterInvoiceStatus,'普通发票');
+  assert.equal(preview.result.vatAfter,65);
+  assert.equal(preview.result.salesDelta,-65);
+  const adjustment = row({adjustment_id:'SUPPLEMENT',adjustment_no:'PPA-SUPPLEMENT',order_id:'O',adjustment_type:C.INVOICE_TYPE,
+    applicant_staff_id:1,applicant_name:'申请人',reason:'补开发票',signed_amount:0,
+    correction_data:{input,previewHash:preview.previewHash,result:preview.result}});
+  await C.apply(ctx,adjustment,tx);
+  assert.equal(f.order.invoice_status,'普通发票');
+  assert.equal(f.snapshot.gross_profit_amount,500);
+  assert.equal(f.snapshot.product_pricing_amount,5500);
+  assert.equal(f.settlement.gross_profit_amount,500);
+  if(preview.result.targetMonth !== preview.result.originalMonth){
+    assert.equal(events.length,0);
+    assert.equal(adjustment.signed_amount,-65);
+    assert.equal(f.snapshot.gross_profit_amount+adjustment.signed_amount,435);
+  }
+  assert.throws(()=>C.validate({adjustmentType:C.INVOICE_TYPE,invoiceAmount:6000,invoiceStatus:'不开票'}),/不能改为不开票/);
+});
+
+test('旧客户端指定原月也统一使用审批月，审批月锁定阻止写入', async t => {
+  const f=invoiceFixture(t); f.order.invoice_status='不开票';
+  t.mock.method(M.ExpenseAccountingPeriod,'findOne',async()=>null);
+  const ctx=context(),input=C.validate({adjustmentType:C.INVOICE_TYPE,invoiceAmount:6000,invoiceStatus:'普通发票',periodMode:'original'});
+  const selected=await C.select(ctx,'O',input);
+  assert.equal(selected.result.targetMonth,new Date(Date.now()+28800000).toISOString().slice(0,7));
+  const adjustment=row({adjustment_id:'ORIGINAL',adjustment_type:C.INVOICE_TYPE,order_id:'O',signed_amount:0,
+    correction_data:{input,previewHash:selected.previewHash,result:{...selected.result,targetMonth:'2000-01'}}});
+  await C.apply(ctx,adjustment,tx);
+  assert.equal(adjustment.signed_amount,-65);
+  assert.equal(f.snapshot.gross_profit_amount,500);
+  f.approved.push(adjustment);
+  t.mock.method(M.ExpenseAccountingPeriod,'findOne',async()=>({status:'closed'}));
+  await assert.rejects(()=>C.select(ctx,'O',{...input,invoiceAmount:5900}),/锁定/);
+});
+
+test('补开跨月记录写入失败时开票类型与原快照一起回滚，采购依据未知禁止预览', async t => {
+  const f=invoiceFixture(t);f.order.invoice_status='不开票';
+  t.mock.method(M.ExpenseAccountingPeriod,'findOne',async()=>null);
+  const ctx=context(),input=C.validate({adjustmentType:C.INVOICE_TYPE,invoiceAmount:6000,invoiceStatus:'普通发票'});
+  assert.equal(input.periodMode,'current');
+  const selected=await C.select(ctx,'O',input);
+  if(selected.result.targetMonth!==selected.result.originalMonth){
+    const adjustment=row({adjustment_id:'ROLLBACK',adjustment_no:'PPA-R',adjustment_type:C.INVOICE_TYPE,order_id:'O',signed_amount:0,
+      correction_data:{input,previewHash:selected.previewHash,result:selected.result}});
+    t.mock.method(adjustment,'update',async()=>{throw Error('period insert failed');});
+    await assert.rejects(()=>M.sequelize.transaction(tx=>C.apply(ctx,adjustment,tx)),/period insert failed/);
+    assert.equal(f.order.invoice_status,'不开票');
+    assert.equal(f.snapshot.gross_profit_amount,500);
+  }
+  f.snapshot.product_pricing_details[0].purchaseTaxBasis={version:require('../src/modules/sales/purchaseVat').VERSION,status:'pending'};
+  await assert.rejects(()=>C.select(ctx,'O',input),/采购票税依据/);
+});
+async function invoiceAdjustment(ctx, amount = 6000) {
+  const input = C.validate({ adjustmentType: C.INVOICE_TYPE, invoiceAmount: amount, confirmZero: amount === 0 });
+  const selected = await C.select(ctx, 'O', input);
+  return row({ adjustment_id: 'IA', adjustment_no: 'PPA-INV', adjustment_type: C.INVOICE_TYPE, order_id: 'O', store_id: 'S',
+    status: 'pending_finance', signed_amount: 0, reason: '原开票金额录入错误', correction_data: { input, evidence: '发票001', previewHash: selected.previewHash, result: selected.result } });
+}
+
+test('原单开普票兼容金额纠错，预览及审批保留票种和归档快照，不允许改为不开票或其他票种', async t => {
+  const f=invoiceFixture(t),ctx=context();
+  f.order.invoice_status='开普票';
+  t.mock.method(M.Store,'findByPk',async()=>({distributor_id:'D'}));
+  t.mock.method(M.ExpenseAccountingPeriod,'findOne',async()=>null);
+  const input=C.validate({adjustmentType:C.INVOICE_TYPE,invoiceAmount:6000,invoiceStatus:'开普票'});
+  assert.equal(input.invoiceStatus,'开普票');
+  const selected=await C.select(ctx,'O',input);
+  assert.equal(selected.result.beforeInvoiceStatus,'开普票');
+  assert.equal(selected.result.afterInvoiceStatus,'开普票');
+  assert.equal(f.order.invoice_amount,0);
+  for (const invoiceStatus of ['不开票','未知类型','']) {
+    assert.throws(()=>C.validate({adjustmentType:C.INVOICE_TYPE,invoiceAmount:6000,invoiceStatus}),/有效开票类型/);
+  }
+  for (const invoiceStatus of ['普通发票','开专票','增值税发票','专票13%']) {
+    await assert.rejects(C.select(ctx,'O',{...input,invoiceStatus}),/开票类型保持不变/);
+  }
+  const adjustment=row({adjustment_id:'IA-PU',adjustment_no:'PPA-PU',adjustment_type:C.INVOICE_TYPE,order_id:'O',store_id:'S',status:'pending_finance',signed_amount:0,
+    correction_data:{input,evidence:'普票凭证',previewHash:selected.previewHash,result:selected.result}});
+  const snapshotBefore=JSON.stringify(f.snapshot.toJSON());
+  await C.apply(ctx,adjustment,tx);
+  assert.equal(f.order.invoice_status,'开普票');
+  assert.equal(f.order.invoice_amount,6000);
+  assert.equal(JSON.stringify(f.snapshot.toJSON()),snapshotBefore);
+});
+
+test('开票金额格式、零元确认及存储长度明确校验', () => {
+  assert.ok(C.INVOICE_TYPE.length <= 16);
+  for (const invoiceAmount of [-1, true, '', null, '1.234', '1e3', Infinity, [6000], {}]) assert.throws(() => C.validate({adjustmentType:C.INVOICE_TYPE,invoiceAmount}), /开票金额/);
+  assert.throws(() => C.validate({ adjustmentType:C.INVOICE_TYPE, invoiceAmount:0 }), /须明确确认/);
+  assert.deepEqual(C.validate({ adjustmentType:C.INVOICE_TYPE, invoiceAmount:'0.00', confirmZero:'true' }), {type:C.INVOICE_TYPE,invoiceAmount:0});
+});
+
+test('开票预览按冻结金额重算税费及销售毛利，产品端、收款与定价保持', async t => {
+  const f=invoiceFixture(t), ctx=context();
+  const selected=await C.select(ctx,'O',{type:C.INVOICE_TYPE,invoiceAmount:6000});
+  assert.equal(selected.result.vatAfter,65);
+  assert.equal(selected.result.salesAfter,435);
+  assert.equal(selected.result.salesDelta,-65);
+  assert.equal(selected.result.productDelta,0);
+  assert.equal(f.order.invoice_amount,0); assert.equal(f.snapshot.gross_profit_amount,500); assert.equal(f.logs.length,0);
+  f.snapshot.product_pricing_details[0].isCompanyPriced=false;
+  assert.equal((await C.select(ctx,'O',{type:C.INVOICE_TYPE,invoiceAmount:6000})).result.salesAfter,435);
+});
+
+test('开票纠错不因产品端待核算而补算采购成本，未知毛利不冒充零', async t => {
+  const f=invoiceFixture(t),ctx=context();
+  f.settlement.status='cost_pending';f.item.cost_status='pending';f.item.purchase_unit_cost=null;
+  const selected=await C.select(ctx,'O',{type:C.INVOICE_TYPE,invoiceAmount:6000});
+  assert.equal(selected.result.salesAfter,435);assert.equal(selected.result.productBefore,null);assert.equal(selected.result.productAfter,null);
+  assert.equal(selected.result.productDelta,0);
+  const a=await invoiceAdjustment(ctx);await C.apply(ctx,a,tx);
+  f.approved.push(a);
+  assert.equal(f.item.purchase_unit_cost,null);assert.equal(f.settlement.status,'cost_pending');
+  t.mock.method(M.ProductSettlementOrder,'findOne',async()=>null);
+  const back=await C.select(ctx,'O',{type:C.INVOICE_TYPE,invoiceAmount:0});
+  assert.equal(back.result.productBefore,null);assert.equal(back.result.salesAfter,500);
+});
+
+test('开票最终审批更新实际开票信息，原快照不变，差额单独入账', async t => {
+  const f=invoiceFixture(t),ctx=context(),a=await invoiceAdjustment(ctx);
+  const productBefore=JSON.stringify(f.settlement.toJSON()),itemBefore=JSON.stringify(f.item.toJSON()),orderItemBefore=JSON.stringify(f.original.toJSON());
+  t.mock.method(M.PerformanceProfitAdjustment,'findByPk',async()=>a);
+  t.mock.method(runtime,'advance',async()=>true);
+  ctx.params.adjustmentId='IA';await controller.approveProfitAdjustment(ctx);
+  assert.equal(f.order.invoice_amount,6000);assert.equal(f.snapshot.invoice_amount,0);
+  assert.equal(f.snapshot.vat_amount,0);assert.equal(f.snapshot.gross_profit_amount,500);
+  assert.equal(a.status,'approved');assert.equal(a.signed_amount,-65);
+  assert.equal(f.order.actual_payment,6000);assert.equal(f.order.invoice_status,'专票13%');
+  assert.equal(JSON.stringify(f.settlement.toJSON()),productBefore);assert.equal(JSON.stringify(f.item.toJSON()),itemBefore);assert.equal(JSON.stringify(f.original.toJSON()),orderItemBefore);
+  assert.equal(f.logs.length,1);assert.equal(a.correction_data.result.before.order.invoice_amount,0);
+  const view=C.display(a.toJSON(),ctx.state.user);
+  assert.equal(view.correction_type_name,'补开票／开票金额调整');assert.equal(view.correction_after_invoice_amount,6000);
+  assert.equal(view.correction_before_price,undefined);assert.equal(view.correction_data,undefined);
+});
+
+test('开票提交与中间审批不改业务，同订单两类待审批纠错相互排斥', async t => {
+  const f=invoiceFixture(t),ctx=context(),a=await invoiceAdjustment(ctx),saved=[];
+  t.mock.method(M.PerformanceProfitAdjustment,'findOne',async options=>{ assert.equal(options.where.adjustment_type, undefined);return null; });
+  t.mock.method(M.PerformanceProfitAdjustment,'create',async value=>{saved.push(value);return row(value);});
+  ctx.request.body={orderId:'O',adjustmentType:C.INVOICE_TYPE,invoiceAmount:6000,reason:'金额错误',evidence:'发票001',previewHash:a.correction_data.previewHash};
+  await controller.createProfitAdjustment(ctx);
+  assert.equal(saved[0].product_id,null);assert.equal(saved[0].signed_amount,0);assert.equal(saved[0].amount,65);
+  assert.equal(f.order.invoice_amount,0);assert.equal(f.snapshot.gross_profit_amount,500);
+  t.mock.method(M.PerformanceProfitAdjustment,'findOne',async()=>({adjustment_type:C.TYPE,adjustment_no:'PPA-PRICE'}));
+  await assert.rejects(controller.createProfitAdjustment(ctx),/PPA-PRICE/);
+  t.mock.method(M.PerformanceProfitAdjustment,'findByPk',async()=>a);t.mock.method(runtime,'advance',async()=>false);
+  ctx.params.adjustmentId='IA';await controller.approveProfitAdjustment(ctx);
+  assert.equal(f.order.invoice_amount,0);assert.equal(a.status,'pending_finance');
+});
+
+test('开票纠错拒绝关账、退货、缺失原金额、不开票、未变化及过期依据', async t => {
+  for(const extra of [{closed:true},{returns:[{return_id:'R'}]}])await t.test(JSON.stringify(extra),async sub=>{
+    invoiceFixture(sub,extra);await assert.rejects(C.select(context(),'O',{type:C.INVOICE_TYPE,invoiceAmount:6000}));
+  });
+  const f=invoiceFixture(t),ctx=context();
+  await assert.rejects(C.select(ctx,'O',{type:C.INVOICE_TYPE,invoiceAmount:0}),/相同/);
+  f.order.invoice_amount=null;await assert.rejects(C.select(ctx,'O',{type:C.INVOICE_TYPE,invoiceAmount:6000}),/不一致/);
+  f.order.invoice_amount=0;f.order.invoice_status='不开票';await assert.rejects(C.select(ctx,'O',{type:C.INVOICE_TYPE,invoiceAmount:6000}),/不开票/);
+  f.order.invoice_status='专票13%';const a=await invoiceAdjustment(ctx);f.order.actual_payment=5999;
+  await assert.rejects(C.apply(ctx,a,tx),/已变化/);assert.equal(f.order.invoice_amount,0);
+});
+
+test('开票纠错写快照失败时订单金额一并回滚，反向纠错可恢复零元', async t => {
+  await t.test('rollback',async sub=>{
+    const f=invoiceFixture(sub),ctx=context(),a=await invoiceAdjustment(ctx);
+    sub.mock.method(M.PerformanceProfitAdjustment,'findByPk',async()=>a);sub.mock.method(runtime,'advance',async()=>true);
+    sub.mock.method(a,'update',async()=>{throw Error('snapshot failed');});
+    ctx.params.adjustmentId='IA';await assert.rejects(controller.approveProfitAdjustment(ctx),/snapshot failed/);
+    assert.equal(f.order.invoice_amount,0);assert.equal(f.snapshot.invoice_amount,0);assert.equal(a.status,'pending_finance');
+  });
+  await t.test('reversal',async sub=>{
+    const f=invoiceFixture(sub),ctx=context(),a=await invoiceAdjustment(ctx);
+    await C.apply(ctx,a,tx);f.approved.push(a);const reverse=await invoiceAdjustment(ctx,0);await C.apply(ctx,reverse,tx);
+    assert.equal(f.order.invoice_amount,0);assert.equal(f.snapshot.gross_profit_amount,500);assert.equal(f.settlement.gross_profit_amount,500);
+  });
+});
+
+test('Web切换纠错类型或开票金额使旧预览失效，延迟响应不得覆盖新输入', async () => {
+  const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
+  const view=fs.readFileSync(path.join(__dirname,'../../frontend/web/src/views/Reports.vue'),'utf8');
+  const start=view.indexOf('watch(() => [adjustmentForm.adjustmentType');
+  const watcher=view.slice(start,view.indexOf('const adjustmentParams',start));
+  const requests=[];let observed,changed;
+  const ctx={adjustmentForm:{adjustmentType:'price_correction',invoiceAmount:6000},correctionRequestVersion:0,
+    correctionPreview:{value:{previewHash:'OLD'}},correctionPreviewing:{value:false},adjustmentApplyVisible:{value:true},
+    adjustmentOrder:{value:{orderId:'O'}},watch:(source,callback)=>{observed=source;changed=callback;},
+    api:{previewProfitCorrection:()=>new Promise(resolve=>requests.push(resolve))},ElMessage:{error(){throw Error('unexpected error');}}};
+  vm.runInNewContext(watcher,ctx);
+  const fnStart=view.indexOf('const previewCorrection = async () =>');
+  const fn=view.slice(fnStart,view.indexOf('const resetAdjustmentForm',fnStart));
+  vm.runInNewContext(fn+'\nglobalThis.runPreview=previewCorrection;',ctx);
+  const pending=ctx.runPreview();
+  ctx.adjustmentForm.adjustmentType='invoice_amount';ctx.adjustmentForm.invoiceAmount=6100;
+  assert.ok(observed().includes('invoice_amount'));assert.ok(observed().includes(6100));
+  changed();assert.equal(ctx.correctionPreview.value,null);
+  requests[0]({data:{previewHash:'STALE'}});await pending;
+  assert.equal(ctx.correctionPreview.value,null);
+});
+
+test('同一订单待财务或管理员审批时返回申请编号，其他订单和终态申请不阻塞', async t => {
+  const { assertNoPendingOrderAdjustment } = require('../src/modules/report/pendingOrderAdjustment');
+  const applications = [
+    { order_id: 'O1', status: 'pending_finance', adjustment_no: 'PPA1' },
+    { order_id: 'O2', status: 'pending_admin', adjustment_no: 'PPA2' },
+    { order_id: 'O3', status: 'approved' },
+    { order_id: 'O3', status: 'rejected' },
+    { order_id: 'O3', status: 'withdrawn' }
+  ];
+  t.mock.method(M.PerformanceProfitAdjustment, 'findOne', options => {
+    assert.equal(options.transaction, tx);
+    assert.equal(options.lock, undefined);
+    const { order_id, status } = options.where;
+    return applications.find(application => application.order_id === order_id && status[Op.in].includes(application.status));
+  });
+  const ctx = { throw(status, message) { throw Object.assign(new Error(message), { status }); } };
+  await assert.rejects(assertNoPendingOrderAdjustment(ctx, 'O1', tx), { status: 409, message: /PPA1/ });
+  await assert.rejects(assertNoPendingOrderAdjustment(ctx, 'O2', tx), { status: 409, message: /PPA2/ });
+  await assert.doesNotReject(assertNoPendingOrderAdjustment(ctx, 'O3', tx));
+});
+
+test('有待审批申请时，费用补录接口锁定订单后阻止清空补录', async t => {
+  const sales = require('../src/modules/sales/controller');
+  const order = { order_id: 'O', store_id: 'S', Store: { distributor_id: 'D' } };
+  const events = [];
+  t.mock.method(M.Order, 'findByPk', async (id, options) => {
+    assert.equal(id, 'O');
+    if (options) {
+      assert.equal(options.transaction, tx);
+      assert.equal(options.lock, tx.LOCK.UPDATE);
+      events.push('locked');
+    }
+    return order;
+  });
+  t.mock.method(M.sequelize, 'transaction', async (options, callback) => {
+    assert.equal(options.isolationLevel, 'READ COMMITTED');
+    return callback(tx);
+  });
+  t.mock.method(M.PerformanceProfitAdjustment, 'findOne', async options => {
+    assert.equal(options.where.order_id, 'O');
+    assert.equal(options.transaction, tx);
+    events.push('checked');
+    return { adjustment_no: 'PPA-PENDING' };
+  });
+  const write = t.mock.method(M.OrderSupplement, 'update', async () => {});
+  const ctx = context();
+  ctx.state.user = { ...ctx.state.user, roles: ['admin'], accessibleStoreIds: ['S'], accessibleDistributorIds: ['D'] };
+  ctx.params.orderId = 'O';
+  ctx.request.body = { supplements: [] };
+  await assert.rejects(sales.updateSupplements(ctx), { status: 409, message: /PPA-PENDING/ });
+  assert.deepEqual(events, ['locked', 'checked']);
+  assert.equal(write.mock.callCount(), 0);
+});

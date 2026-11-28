@@ -2,13 +2,129 @@
  * 库房管理路由
  */
 const Router = require('koa-router');
-const { getSnList, inbound, outbound, transfer } = require('./controller');
+const multer = require('@koa/multer');
+const {
+  getList, exportList, exportSummaryList, createSummaryExportTicket, getSnInventoryList, exportSnInventoryList, setSnSpecialPrice, cancelSnSpecialPrice,
+  getSnSpecialPriceHistory, getSnList, getInboundList, getInboundDetail, getSnTraceInboundDetail,
+  executeInbound, getReturnList, requestReturn, approveReturn, executeReturn,
+  inbound, outbound, adjustProductLocation, transfer, getTransferList, confirmTransferOut, getTransferShippingPhoto,
+  confirmTransferIn, returnTransfer, revokeTransfer, rejectTransfer, getTransferDetail, getConversionList, getConversionDetail, createConversion,
+  voidConversion, previewConversion, getLocationsByStore, updateSn, adjustSnLocation, snTrace, importSupplierInventory
+} = require('./controller');
+const { submitSnChangeApplication } = require('./snChangeApplication');
+const { enforceStoreOwnership, requireRole } = require('../../middleware/permission');
+const resourceRights = require('./resourceRights');
+const nonPurchase = require('./nonPurchaseReceipt');
+const rewardConfig = require('./rewardConfig');
+const batchMaintenance = require('./batchMaintenance');
+const { listProductFlow } = require('./productFlow');
+const thresholdConfig = require('./thresholdConfig');
 
 const router = new Router();
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
-router.get('/sn', getSnList);
-router.post('/inbound', inbound);
-router.post('/outbound', outbound);
+router.get('/list', getList);
+router.get('/threshold-config', thresholdConfig.list);
+router.post('/threshold-config', requireRole('admin', 'boss'), thresholdConfig.save);
+router.get('/list/export', exportList);
+router.get('/summary-export-ticket', createSummaryExportTicket);
+router.get('/summary-export', exportSummaryList);
+router.post('/supplier-inventory/import', requireRole('manager', 'admin'), upload.single('file'), importSupplierInventory);
+router.get('/sn-inventory-list', getSnInventoryList);
+router.get('/sn-inventory-list/export', exportSnInventoryList);
+router.put('/sn/:snId/special-price', requireRole('admin'), setSnSpecialPrice);
+router.delete('/sn/:snId/special-price', requireRole('admin'), cancelSnSpecialPrice);
+router.get('/sn/:snId/special-price-history', requireRole('admin'), getSnSpecialPriceHistory);
+router.get('/sn-list', getSnList);
+router.get('/product-flow', listProductFlow);
+router.post('/sn-change-applications', submitSnChangeApplication);
+router.put('/sn/:snId', updateSn);
+router.post('/sn/:snId/location-adjust', adjustSnLocation);
+router.post('/product/:productId/location-adjust', adjustProductLocation);
+router.get('/sn-trace/:snCode', snTrace);
+router.get('/sn-trace-inbound/:inboundId', getSnTraceInboundDetail);
+router.get('/resource-rights/export', resourceRights.exportRights);
+router.get('/resource-rights', resourceRights.listRights);
+router.get('/resource-rights/changes', resourceRights.listChanges);
+router.get('/sale-resource-tasks', resourceRights.listSaleResourceTasks);
+router.post('/sale-resource-tasks/:changeId/submit', resourceRights.submitSaleResourceTask);
+router.post('/sale-resource-tasks/:changeId/review', resourceRights.reviewSaleResourceTask);
+router.get('/resource-rights/cost-configs', resourceRights.listCostConfigs);
+router.get('/resource-rights/reward-rules', rewardConfig.listRewardRules);
+router.post('/resource-rights/reward-rules', rewardConfig.saveRewardRules);
+router.get('/resource-rights/nb-policy', resourceRights.listNbPolicies);
+router.post('/resource-rights/nb-policy/import', resourceRights.importNbPolicy);
+router.get('/resource-rights/cost-adjustments', resourceRights.listCostAdjustments);
+router.post('/resource-rights/cost-configs', resourceRights.saveCostConfig);
+router.post('/resource-rights/batch-adjust', resourceRights.batchAdjustRights);
+router.post('/resource-rights/batch-import', upload.single('file'), resourceRights.importBatchRights);
+router.post('/resource-rights/education-policy/import', upload.single('file'), resourceRights.importEducationPolicies);
+router.get('/sales-cash-rebates/policies', resourceRights.listSalesCashRebatePolicies);
+router.get('/sales-cash-rebates/policies/template', resourceRights.downloadSalesCashRebateTemplate);
+router.post('/sales-cash-rebates/policies/import', upload.single('file'), resourceRights.importSalesCashRebatePolicies);
+router.get('/sales-cash-rebates/eligible', resourceRights.listEligibleSalesCashRebateItems);
+router.post('/sales-cash-rebates/claims', resourceRights.createSalesCashRebateClaim);
+router.get('/sales-cash-rebates/claims', resourceRights.listSalesCashRebateClaims);
+router.post('/sales-cash-rebates/claims/:claimId/review', resourceRights.reviewSalesCashRebateClaim);
+router.post('/resource-rights/education-supplement', resourceRights.supplementEducationResource);
+router.post('/resource-rights/batch-refresh', resourceRights.batchRefreshRights);
+router.post('/resource-rights/reverse-sale-use', resourceRights.reverseSaleUseResource);
+router.get('/resource-categories', resourceRights.listResourceCategories);
+router.post('/resource-categories', resourceRights.saveResourceCategory);
+router.delete('/resource-categories/:categoryId', resourceRights.deleteResourceCategory);
+router.get('/goods-types', resourceRights.listGoodsTypes);
+router.post('/goods-types', resourceRights.saveGoodsType);
+router.delete('/goods-types/:goodsTypeId', resourceRights.deleteGoodsType);
+const rebatePolicyDetail = require('./rebatePolicyDetail');
+router.get('/resource-settlements/:settlementId/policy-detail', rebatePolicyDetail.detail);
+router.get('/resource-settlements/:settlementId/credit-usage', rebatePolicyDetail.credit);
+router.post('/resource-settlements/:settlementId/tax-evidence', rebatePolicyDetail.saveTax);
+router.get('/resource-settlements', resourceRights.listResourceSettlements);
+router.get('/resource-settlements/export', resourceRights.exportResourceSettlements);
+router.post('/resource-settlements/manual-rebate', resourceRights.createManualRebateSettlement);
+router.post('/resource-settlements/batch-settle', resourceRights.batchSettleRebateResources);
+router.post('/resource-settlements/:settlementId/link', resourceRights.linkRebateSettlement);
+router.post('/resource-settlements/:settlementId/settle', resourceRights.settleResource);
+router.post('/resource-settlements/:settlementId/cancel', resourceRights.cancelResourceSettlement);
+router.post('/resource-settlements/:settlementId/reverse', resourceRights.reverseResourceSettlement);
+router.post('/resource-rights/claim', resourceRights.submitClaim);
+router.post('/resource-rights/claim/:changeId/review', resourceRights.reviewClaim);
+router.get('/sn/:snId/resource-rights', resourceRights.snRights);
+router.put('/sn/:snId/resource-rights', resourceRights.saveSnRights);
+router.post('/sn/:snId/other-policy/complete', resourceRights.completeOtherPolicyResource);
+router.get('/batch-maintenance', batchMaintenance.listBatchApplications);
+router.post('/batch-maintenance/import', requireRole('manager', 'admin'), upload.single('file'), batchMaintenance.createBatchApplication);
+router.get('/batch-maintenance/:applicationId', batchMaintenance.getBatchApplicationDetail);
+router.post('/batch-maintenance/:applicationId/review', batchMaintenance.reviewBatchApplication);
+router.get('/non-purchase/context', nonPurchase.context);
+router.get('/non-purchase', nonPurchase.list);
+router.post('/non-purchase', nonPurchase.create);
+router.post('/non-purchase/:receiptId/receive', nonPurchase.receive);
+router.post('/non-purchase/:receiptId/cancel', nonPurchase.cancel);
+router.get('/inbound-list', getInboundList);
+router.get('/inbound-detail/:inboundId', getInboundDetail);
+router.post('/execute-inbound', enforceStoreOwnership, executeInbound);
+router.get('/return-list', getReturnList);
+router.post('/request-return', enforceStoreOwnership, requestReturn);
+router.post('/approve-return', approveReturn);
+router.post('/execute-return', enforceStoreOwnership, executeReturn);
+router.post('/inbound', enforceStoreOwnership, inbound);
+router.post('/outbound', enforceStoreOwnership, outbound);
+// 调拨申请由控制器校验同经销商/同区域范围，申请人不要求拥有调出门店的普通库存操作权限。
 router.post('/transfer', transfer);
+router.get('/transfer-list', getTransferList);
+router.get('/transfer/:transferId', getTransferDetail);
+router.get('/transfer/shipping-photos/:transferId/:photoId', getTransferShippingPhoto);
+router.post('/transfer/confirm-out', upload.array('shippingPhotos', 9), enforceStoreOwnership, confirmTransferOut);
+router.post('/transfer/confirm-in', enforceStoreOwnership, confirmTransferIn);
+router.post('/transfer/return', enforceStoreOwnership, returnTransfer);
+router.post('/transfer/revoke', enforceStoreOwnership, revokeTransfer);
+router.post('/transfer/reject', enforceStoreOwnership, rejectTransfer);
+router.get('/conversion-list', getConversionList);
+router.get('/conversion/:conversionId', getConversionDetail);
+router.post('/conversion', enforceStoreOwnership, createConversion);
+router.post('/conversion/preview', enforceStoreOwnership, previewConversion);
+router.post('/conversion/:conversionId/void', enforceStoreOwnership, voidConversion);
+router.get('/locations/:storeId', getLocationsByStore);
 
 module.exports = router;

@@ -2,11 +2,83 @@
  * 报表管理路由
  */
 const Router = require('koa-router');
-const { getSalesReport, getInventoryReport } = require('./controller');
+const multer = require('@koa/multer');
+const {
+  getSalesReport,
+  getCustomerSourceAnalysis,
+  getInventoryReport,
+  getEmployeePerformanceReport,
+  getDashboardFilters,
+  getDashboardOverview
+} = require('./controller');
+const {
+  createProfitAdjustment,
+  getCorrectionOptions,
+  previewCorrection,
+  listProfitAdjustments,
+  approveProfitAdjustment,
+  rejectProfitAdjustment,
+  downloadProfitAdjustmentAttachment
+} = require('./profitAdjustmentController');
+const {
+  getFinanceOverview,
+  getProductSettlementOrders,
+  exportProductSettlementOrders
+} = require('./financeOverviewController');
+const { getMonthlyTaskAchievement } = require('./monthlyTaskAchievement');
+const {
+  getFinancialProfitOrders,
+  exportFinancialProfitOrders
+} = require('./financialProfitController');
+const { getSalesStatement } = require('./salesStatementController');
+const { requireDistributorAccount } = require('../../middleware/permission');
 
 const router = new Router();
+const productCostSupplement = require('./productCostSupplement');
+const financialProfitControl = require('./financialProfitControl');
+const upload = multer({
+  limits: { files: 5, fileSize: 10 * 1024 * 1024 }
+});
 
 router.get('/sales', getSalesReport);
+router.get('/sales-statement', getSalesStatement);
+router.get('/customer-source-analysis', getCustomerSourceAnalysis);
+router.get('/customer-source-analysis/detail', require('./controller').getCustomerSourceDetail);
+router.get('/product-analysis/detail', require('./controller').getProductAnalysisDetail);
 router.get('/inventory', getInventoryReport);
+router.get('/inventory/export', require('./inventoryReport').exportReport);
+router.get('/employee-performance', ctx => getEmployeePerformanceReport(ctx, false));
+router.get('/employee-performance/export', ctx => getEmployeePerformanceReport(ctx, true));
+router.get('/employee-profit-summary', require('./employeeProfitSummary').report);
+router.get('/employee-profit-summary/export', require('./employeeProfitSummary').exportReport);
+router.get('/employee-profit-summary/config', require('./employeeProfitSummary').config);
+router.put('/employee-profit-summary/config', require('./commissionConfig').save);
+router.post('/employee-profit-summary/review-preview', upload.single('file'), require('./employeeProfitImport').preview);
+router.post('/employee-profit-summary/review-apply', upload.single('file'), require('./employeeProfitImport').apply);
+router.get('/dashboard/filters', getDashboardFilters);
+router.get('/dashboard/overview', getDashboardOverview);
+router.get('/operating-profit', require('./operatingProfit').getOperatingProfit);
+router.get('/finance-overview', requireDistributorAccount(), getFinanceOverview);
+router.get('/product-settlement-orders/export', requireDistributorAccount(), exportProductSettlementOrders);
+router.get('/product-settlement-orders', requireDistributorAccount(), getProductSettlementOrders);
+router.post('/product-settlement-orders/:settlementId/cost-preview', requireDistributorAccount(), productCostSupplement.preview);
+router.post('/product-settlement-orders/:settlementId/cost-supplement', requireDistributorAccount(), productCostSupplement.apply);
+router.get('/product-settlement-orders/:settlementId/cost-history', requireDistributorAccount(), productCostSupplement.history);
+router.get('/financial-profit-orders/export', requireDistributorAccount(), exportFinancialProfitOrders);
+router.get('/financial-profit-orders', requireDistributorAccount(), getFinancialProfitOrders);
+router.get('/financial-profit-history', requireDistributorAccount(), financialProfitControl.history);
+router.post('/financial-profit-review', requireDistributorAccount(), financialProfitControl.review);
+router.post('/financial-profit-close-preview', requireDistributorAccount(), financialProfitControl.previewClose);
+router.post('/financial-profit-close', requireDistributorAccount(), financialProfitControl.close);
+router.post('/financial-profit-adjustments', requireDistributorAccount(), financialProfitControl.adjust);
+router.get('/monthly-task-achievement', getMonthlyTaskAchievement);
+router.get('/monthly-indicator-achievement', require('../sales/monthlyIndicators').report);
+router.get('/profit-adjustments', listProfitAdjustments);
+router.get('/profit-adjustments/correction-options', getCorrectionOptions);
+router.post('/profit-adjustments/price-preview', previewCorrection);
+router.post('/profit-adjustments', upload.array('files', 5), createProfitAdjustment);
+router.post('/profit-adjustments/:adjustmentId/approve', approveProfitAdjustment);
+router.post('/profit-adjustments/:adjustmentId/reject', rejectProfitAdjustment);
+router.get('/profit-adjustment-attachments/:attachmentId/download', downloadProfitAdjustmentAttachment);
 
 module.exports = router;

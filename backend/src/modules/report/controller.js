@@ -1,21 +1,271 @@
 /**
  * 报表管理控制器
  */
-const { Order, OrderItem, ProductSn, Product, Store } = require('../../models');
-const { Op, sequelize } = require('sequelize');
+const {
+  Order,
+  OrderItem,
+  OrderGrossProfit,
+  SalesReturnGrossProfitLedger,
+  SalesReturnSettlement,
+  ProductSn,
+  Product,
+  ProductPrice,
+  ProductCategory,
+  ProductSettlementItem,
+  Store,
+  Distributor,
+  Staff,
+  SalesReturnRequest,
+  Region,
+  PerformanceProfitAdjustment,
+  ExpensePerformanceAllocation,
+  sequelize
+} = require('../../models');
+const { Op, QueryTypes } = require('sequelize');
+const { loadLegacyCostMaps, calculateItemBaseProfit } = require('./profitCalculation');
+const { DashboardService, canViewProfit } = require('./dashboardService');
+const { normalizeParticipants } = require('./dashboardDataSource');
+const { allocateProfit, allocateAdjustment, isInstantRetail, splitInstantRetail, instantRetailStaffShares } = require('./performanceAllocation');
+const { PERFORMANCE_SALE_STATUSES: POSITIVE_SALES_ORDER_STATUSES, returnEvents, savedItemProfit, profitExportItems } = require('./performanceEvents');
+const { buildDecisionInsights, buildAiAdvisor } = require('./decisionEngine');
+const { resolveReportStoreIds, isSelfOnlyReportUser } = require('../../utils/storePermissions');
+const { appendOperatingSourceCondition, INTERNAL_TRANSFER_SOURCE } = require('./operatingScope');
+const {
+  snapshotToResponse
+} = require('../sales/grossProfit');
+const { careCostDetails } = require('../sales/staffCareCredit');
+const { sendExcel } = require('../../utils/excelExport');
+const commissionDates = require('./commissionDates');
+const { display: displayCorrection } = require('./settlementPriceCorrection');
+
+const dashboardService = new DashboardService();
+const EMPLOYEE_PROFIT_EXPORT_HEADERS = [
+  "\u4e1a\u52a1\u7c7b\u578b", "\u539f\u9500\u552e\u5355\u53f7",
+  '订单号', '销售时间', '员工', '门店', '客户', '商品名称', 'PN', 'SN', '数量', '销售单价', '商品销售额',
+  '商品定价单价', '商品定价金额', '商品分摊收入', '商品分摊基础毛利', '毛利计算口径', '订单组成-用户应收',
+  '订单组成-商品定价', '订单组成-支付手续费', '订单组成-增值税', '订单组成-补录净额', '订单组成-运费',
+  '订单组成-开票金额', '订单组成-外调费', '支付方式明细', '补录明细', '运费明细', '订单基础毛利',
+  'Care可用金抵扣', '其他审批调整', '员工业绩毛利', '毛利率百分比', '毛利来源'
+];
+
+function toNumber(value) {
+  const num = Number(value || 0);
+  return Number.isFinite(num) ? num : 0;
+}
+
+function roundMoney(value) {
+  return Number(toNumber(value).toFixed(2));
+}
+
+function parseJsonArray(value) {
+  if (Array.isArray(value)) return value;
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function calcRate(value, base) {
+  const denominator = toNumber(base);
+  if (denominator === 0) return 0;
+  return Number(((toNumber(value) / denominator) * 100).toFixed(2));
+}
+
+function hasRole(user, role) {
+  if (Array.isArray(user?.roles) && user.roles.length > 0) return user.roles.includes(role);
+  return String(user?.roleCode || '').split(',').map(item => item.trim()).includes(role);
+}
+
+function taxRate(value, fallback = 0.13) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 && parsed <= 1 ? parsed : fallback;
+}
+
+function buildCategoryPath(categoryId, categoryMap, fallback = '') {
+  const names = [];
+  const visited = new Set();
+  let currentId = String(categoryId || '');
+  while (currentId && !visited.has(currentId)) {
+    visited.add(currentId);
+    const current = categoryMap.get(currentId);
+    if (!current) break;
+    if (current.name) names.unshift(current.name);
+    currentId = String(current.parent_id || '');
+  }
+  return names.join(' / ') || fallback || '未分类';
+}
+
+function aggregateProductSalesMetrics(rows = []) {
+  const groups = new Map();
+  rows.forEach(row => {
+    const dimensions = {
+      category: row.category || '未分类',
+      categoryPath: row.categoryPath || row.category || '未分类',
+      brand: row.brand || '-',
+      series: row.series || '-',
+      model: row.model || '-'
+    };
+    const key = JSON.stringify(dimensions);
+    const current = groups.get(key) || {
+      ...dimensions,
+      itemCount: 0,
+      totalQuantity: 0,
+      totalAmount: 0,
+      salesGrossProfit: 0,
+      productGrossProfit: 0,
+      financialGrossProfit: 0,
+      productGrossProfitPendingCount: 0,
+      financialGrossProfitPendingCount: 0
+    };
+    current.itemCount += 1;
+    current.totalQuantity += toNumber(row.quantity);
+    current.totalAmount += toNumber(row.salesAmount);
+    current.salesGrossProfit += toNumber(row.salesGrossProfit);
+    if (row.productGrossProfit === null || row.productGrossProfit === undefined) current.productGrossProfitPendingCount += 1;
+    else current.productGrossProfit += toNumber(row.productGrossProfit);
+    if (row.financialGrossProfit === null || row.financialGrossProfit === undefined) current.financialGrossProfitPendingCount += 1;
+    else current.financialGrossProfit += toNumber(row.financialGrossProfit);
+    groups.set(key, current);
+  });
+  return [...groups.values()].map(row => ({
+    ...row,
+    totalQuantity: Number(row.totalQuantity.toFixed(2)),
+    totalAmount: roundMoney(row.totalAmount),
+    salesGrossProfit: roundMoney(row.salesGrossProfit),
+    productGrossProfit: row.productGrossProfitPendingCount ? null : roundMoney(row.productGrossProfit),
+    financialGrossProfit: row.financialGrossProfitPendingCount ? null : roundMoney(row.financialGrossProfit)
+  })).sort((a, b) => b.totalAmount - a.totalAmount || a.categoryPath.localeCompare(b.categoryPath, 'zh-CN'));
+}
+
+async function queryProductSalesStats(where) {
+  const items = await OrderItem.findAll({
+    include: [{
+      model: Order,
+      where,
+      required: true,
+      attributes: ['order_id', 'total_amount', 'discount_amount']
+    }, {
+      model: Product,
+      as: 'Product',
+      required: false,
+      attributes: ['product_id', 'category_id', 'category', 'brand', 'series', 'model']
+    }]
+  });
+  if (!items.length) return [];
+
+  const itemIds = items.map(item => item.item_id).filter(Boolean);
+  const productIds = [...new Set(items.map(item => item.product_id).filter(Boolean).map(String))];
+  const [legacyMaps, settlementItems, prices, categories] = await Promise.all([
+    loadLegacyCostMaps(items),
+    ProductSettlementItem.findAll({ where: { source_order_item_id: { [Op.in]: itemIds } }, raw: true }),
+    productIds.length ? ProductPrice.findAll({ where: { product_id: { [Op.in]: productIds } }, raw: true }) : [],
+    ProductCategory.findAll({ attributes: ['category_id', 'parent_id', 'name'], raw: true })
+  ]);
+  const settlementMap = new Map(settlementItems.map(item => [String(item.source_order_item_id), item]));
+  const priceMap = new Map(prices.map(price => [String(price.product_id), price]));
+  const categoryMap = new Map(categories.map(category => [String(category.category_id), category]));
+  const education = await require('../inventory/educationReward').educationIncome({ orderIds: [...new Set(items.map(item => String(item.order_id)))] });
+  const educationByItem = new Map();
+  for (const entry of education) {
+    const current = educationByItem.get(String(entry.itemId)) || { amount: 0, employeeAmount: 0, productAmount: 0 };
+    for (const key of ['amount', 'employeeAmount', 'productAmount']) current[key] = roundMoney(current[key] + entry[key]);
+    educationByItem.set(String(entry.itemId), current);
+  }
+  const orderSubtotalMap = new Map();
+  items.forEach(item => {
+    const orderId = String(item.order_id || '');
+    orderSubtotalMap.set(orderId, toNumber(orderSubtotalMap.get(orderId)) + Math.max(0, toNumber(item.subtotal)));
+  });
+
+  const rows = items.map(item => {
+    const product = item.Product || {};
+    const order = item.Order || {};
+    const price = priceMap.get(String(item.product_id || '')) || {};
+    const settlement = settlementMap.get(String(item.item_id || ''));
+    const quantity = Math.max(0, toNumber(item.quantity));
+    const salesAmount = roundMoney(item.subtotal);
+    const baseProfit = calculateItemBaseProfit(item, legacyMaps);
+    const orderSubtotal = orderSubtotalMap.get(String(item.order_id || '')) || 0;
+    const orderRevenue = Math.max(0, toNumber(order.total_amount) - toNumber(order.discount_amount));
+    const allocatedGrossRevenue = orderSubtotal > 0 ? roundMoney(orderRevenue * salesAmount / orderSubtotal) : salesAmount;
+    const netRevenue = roundMoney(allocatedGrossRevenue / (1 + taxRate(price.output_tax_rate)));
+    const unitCost = toNumber(settlement?.purchase_unit_cost) || toNumber(item.original_inventory_cost) || toNumber(price.cost_price);
+    const deductible = Number(price.input_tax_deductible ?? 1) === 1;
+    const grossCost = roundMoney(unitCost * quantity);
+    const bookCost = deductible ? roundMoney(grossCost / (1 + taxRate(price.input_tax_rate))) : grossCost;
+    const educationIncome = educationByItem.get(String(item.item_id)) || { amount: 0, employeeAmount: 0, productAmount: 0 };
+    return {
+      category: product.category || '未分类',
+      categoryPath: buildCategoryPath(product.category_id, categoryMap, product.category),
+      brand: product.brand,
+      series: product.series,
+      model: product.model,
+      quantity,
+      salesAmount,
+      salesGrossProfit: roundMoney(baseProfit.grossProfit + educationIncome.employeeAmount),
+      productGrossProfit: settlement && settlement.cost_status === 'ready' ? roundMoney(Number(settlement.gross_profit_amount) + educationIncome.productAmount) : null,
+      financialGrossProfit: quantity > 0 && unitCost <= 0 ? null : roundMoney(netRevenue - bookCost + educationIncome.amount)
+    };
+  });
+  return aggregateProductSalesMetrics(rows);
+}
+
+function buildEmployeeParticipationCondition(staffId) {
+  const normalizedStaffId = String(staffId || '');
+  const numericStaffId = Number(normalizedStaffId);
+  const staffIdValue = Number.isFinite(numericStaffId) ? numericStaffId : normalizedStaffId;
+  return {
+    [Op.or]: [
+      { create_staff_id: normalizedStaffId },
+      sequelize.where(sequelize.fn('JSON_SEARCH', sequelize.col('auxiliary_sales_list'), 'one', normalizedStaffId, null, '$[*].staffId'), { [Op.ne]: null }),
+      sequelize.where(sequelize.fn('JSON_SEARCH', sequelize.col('auxiliary_sales_list'), 'one', normalizedStaffId, null, '$[*].staff_id'), { [Op.ne]: null }),
+      sequelize.where(sequelize.fn('JSON_CONTAINS', sequelize.col('auxiliary_sales_list'), JSON.stringify({ staffId: staffIdValue })), 1),
+      sequelize.where(sequelize.fn('JSON_CONTAINS', sequelize.col('auxiliary_sales_list'), JSON.stringify({ staff_id: staffIdValue })), 1)
+    ]
+  };
+}
+
+async function getEmployeeReportStoreIds(user, requestedStoreId) {
+  return getReportStoreIds(user, requestedStoreId);
+}
+
+async function getReportStoreIds(user, requestedStoreId) {
+  const readableStoreIds = await resolveReportStoreIds(user);
+  const where = { is_deleted: 0, status: 1 };
+  if (!readableStoreIds.includes('*')) {
+    where.store_id = readableStoreIds.length ? { [Op.in]: readableStoreIds } : '__NO_STORE__';
+  }
+  if (requestedStoreId) {
+    if (!readableStoreIds.includes('*') && !readableStoreIds.map(String).includes(String(requestedStoreId))) return [];
+    where.store_id = requestedStoreId;
+  }
+  const stores = await Store.findAll({ where, attributes: ['store_id'], raw: true });
+  return stores.map(store => store.store_id);
+}
 
 /**
  * 销售报表
  */
 async function getSalesReport(ctx) {
-  const { storeId, startDate, endDate } = ctx.query;
+  const { storeId, regionId, regionCode, startDate, endDate, archiveScope = 'archived' } = ctx.query;
   const user = ctx.state.user;
+  const selfOnly = isSelfOnlyReportUser(user);
 
   const whereStore = {};
-  if (!user.regionCodes.includes('*')) {
-    whereStore.region_id = user.regionCodes;
+  const reportStoreIds = await resolveReportStoreIds(user);
+  if (!reportStoreIds.includes('*')) whereStore.store_id = reportStoreIds;
+  if (storeId && !reportStoreIds.includes('*') && !reportStoreIds.map(String).includes(String(storeId))) {
+    ctx.throw(403, '无权访问该门店销售报表');
   }
   if (storeId) whereStore.store_id = storeId;
+  if (regionId) whereStore.region_id = regionId;
+  else if (regionCode) {
+    const region = await Region.findOne({ where: { region_code: regionCode, status: 1 }, attributes: ['region_id'], raw: true });
+    whereStore.region_id = region?.region_id || '__NO_REGION__';
+  }
 
   const stores = await Store.findAll({ where: whereStore });
   const storeIds = stores.map(s => s.store_id);
@@ -24,6 +274,25 @@ async function getSalesReport(ctx) {
     is_deleted: 0,
     store_id: storeIds
   };
+  appendOperatingSourceCondition(where);
+  if (archiveScope === 'all') {
+    where[Op.or] = [
+      { order_status: null },
+      { order_status: { [Op.notIn]: ['已作废', 'voided', 'cancelled', 'canceled'] } }
+    ];
+  } else {
+    where.order_status = { [Op.in]: POSITIVE_SALES_ORDER_STATUSES };
+  }
+  if (selfOnly) {
+    const participation = buildEmployeeParticipationCondition(user.staffId);
+    if (where[Op.or]) {
+      const statusScope = { [Op.or]: where[Op.or] };
+      delete where[Op.or];
+      where[Op.and] = [statusScope, participation];
+    } else {
+      where[Op.and] = [participation];
+    }
+  }
 
   if (startDate && endDate) {
     where.create_time = {
@@ -48,28 +317,56 @@ async function getSalesReport(ctx) {
     raw: true
   });
 
-  // 按商品类别统计
-  const statsByCategory = await OrderItem.findAll({
-    where: { '$Order.store_id$': storeIds },
-    include: [{
-      model: Order,
-      where,
-      attributes: []
-    }],
+  const returnSettlementWhere = {
+    store_id: storeIds,
+    [Op.and]: [sequelize.literal(`NOT EXISTS (
+      SELECT 1 FROM T_ORDER operating_order
+       WHERE operating_order.ORDER_ID = SalesReturnSettlement.ORDER_ID
+         AND COALESCE(TRIM(operating_order.CUSTOMER_SOURCE), '') LIKE '${INTERNAL_TRANSFER_SOURCE}%'
+    )`)]
+  };
+  if (startDate && endDate) {
+    returnSettlementWhere.create_time = {
+      [Op.gte]: new Date(startDate),
+      [Op.lte]: new Date(endDate + ' 23:59:59')
+    };
+  }
+  const returnSettlementByStore = await SalesReturnSettlement.findAll({
+    where: returnSettlementWhere,
     attributes: [
-      [sequelize.col('Product.category'), 'category'],
-      [sequelize.fn('COUNT', sequelize.col('order_item.item_id')), 'itemCount'],
-      [sequelize.fn('SUM', sequelize.col('order_item.quantity')), 'totalQuantity'],
-      [sequelize.fn('SUM', sequelize.col('order_item.subtotal')), 'totalAmount']
+      'store_id',
+      [sequelize.fn('SUM', sequelize.col('user_receivable_amount')), 'userReceivableAmount'],
+      [sequelize.fn('SUM', sequelize.col('customer_received_amount')), 'customerReceivedAmount'],
+      [sequelize.fn('SUM', sequelize.col('policy_subsidy_receivable_amount')), 'policySubsidyReceivableAmount'],
+      [sequelize.fn('SUM', sequelize.col('education_subsidy_amount')), 'educationSubsidyAmount']
     ],
-    include: [{
-      model: Product,
-      as: 'Product',
-      attributes: []
-    }],
-    group: [sequelize.col('Product.category')],
+    group: ['store_id'],
     raw: true
   });
+  const returnSettlementMap = new Map(returnSettlementByStore.map(row => [String(row.store_id), row]));
+  const adjustedStatsByStore = statsByStore.map(row => {
+    const adjustment = returnSettlementMap.get(String(row.store_id)) || {};
+    return {
+      ...row,
+      negativeSettlementUserReceivable: Number(adjustment.userReceivableAmount || 0),
+      negativeSettlementCustomerReceived: Number(adjustment.customerReceivedAmount || 0),
+      negativeSettlementPolicySubsidy: Number(adjustment.policySubsidyReceivableAmount || 0),
+      negativeSettlementEducationSubsidy: Number(adjustment.educationSubsidyAmount || 0),
+      totalAmount: Number(row.totalAmount || 0) + Number(adjustment.userReceivableAmount || 0),
+      actualPayment: Number(row.actualPayment || 0) + Number(adjustment.customerReceivedAmount || 0),
+      nationalSubsidy: Number(row.nationalSubsidy || 0) + Number(adjustment.policySubsidyReceivableAmount || 0),
+      educationSubsidy: Number(row.educationSubsidy || 0) + Number(adjustment.educationSubsidyAmount || 0)
+    };
+  });
+
+  const statsByCategory = await queryProductSalesStats(where);
+  const profitVisible = canViewProfit(user);
+  const visibleStatsByCategory = profitVisible ? statsByCategory : statsByCategory.map(row => ({
+    ...row,
+    salesGrossProfit: null,
+    productGrossProfit: null,
+    financialGrossProfit: null
+  }));
 
   // 按日期统计
   const statsByDate = await Order.findAll({
@@ -83,6 +380,27 @@ async function getSalesReport(ctx) {
     order: [[sequelize.fn('DATE', sequelize.col('create_time')), 'DESC']],
     raw: true
   });
+  const returnSettlementByDate = await SalesReturnSettlement.findAll({
+    where: returnSettlementWhere,
+    attributes: [
+      [sequelize.fn('DATE', sequelize.col('create_time')), 'date'],
+      [sequelize.fn('SUM', sequelize.col('user_receivable_amount')), 'userReceivableAmount'],
+      [sequelize.fn('SUM', sequelize.col('customer_received_amount')), 'customerReceivedAmount']
+    ],
+    group: [sequelize.fn('DATE', sequelize.col('create_time'))],
+    raw: true
+  });
+  const returnSettlementDateMap = new Map(returnSettlementByDate.map(row => [String(row.date), row]));
+  const adjustedStatsByDate = statsByDate.map(row => {
+    const adjustment = returnSettlementDateMap.get(String(row.date)) || {};
+    return {
+      ...row,
+      negativeSettlementUserReceivable: Number(adjustment.userReceivableAmount || 0),
+      negativeSettlementCustomerReceived: Number(adjustment.customerReceivedAmount || 0),
+      totalAmount: Number(row.totalAmount || 0) + Number(adjustment.userReceivableAmount || 0),
+      actualPayment: Number(row.actualPayment || 0) + Number(adjustment.customerReceivedAmount || 0)
+    };
+  });
 
   // 汇总
   const summary = await Order.findAll({
@@ -95,64 +413,884 @@ async function getSalesReport(ctx) {
     raw: true
   });
 
+  const returnSettlementSummary = returnSettlementByStore.reduce((result, row) => {
+    result.userReceivableAmount += Number(row.userReceivableAmount || 0);
+    result.customerReceivedAmount += Number(row.customerReceivedAmount || 0);
+    result.policySubsidyReceivableAmount += Number(row.policySubsidyReceivableAmount || 0);
+    result.educationSubsidyAmount += Number(row.educationSubsidyAmount || 0);
+    return result;
+  }, {
+    userReceivableAmount: 0,
+    customerReceivedAmount: 0,
+    policySubsidyReceivableAmount: 0,
+    educationSubsidyAmount: 0
+  });
+  const baseSummary = summary[0] || {};
   ctx.body = {
-    summary: summary[0] || {},
-    statsByStore,
-    statsByCategory,
-    statsByDate
+    summary: {
+      ...baseSummary,
+      totalSales: Number(baseSummary.totalSales || 0) + returnSettlementSummary.userReceivableAmount,
+      totalPayment: Number(baseSummary.totalPayment || 0) + returnSettlementSummary.customerReceivedAmount,
+      totalNationalSubsidy: Number(baseSummary.totalNationalSubsidy || baseSummary.nationalSubsidy || 0) + returnSettlementSummary.policySubsidyReceivableAmount,
+      totalEducationSubsidy: Number(baseSummary.totalEducationSubsidy || baseSummary.educationSubsidy || 0) + returnSettlementSummary.educationSubsidyAmount
+    },
+    negativeSettlementSummary: returnSettlementSummary,
+    statsByStore: adjustedStatsByStore,
+    statsByCategory: visibleStatsByCategory,
+    canViewProfit: profitVisible,
+    statsByDate: adjustedStatsByDate
   };
 }
 
 /**
  * 库存报表
  */
-async function getInventoryReport(ctx) {
-  const { storeId, category } = ctx.query;
-  const user = ctx.state.user;
-
-  const whereStore = {};
-  if (!user.regionCodes.includes('*')) {
-    whereStore.region_id = user.regionCodes;
-  }
-  if (storeId) whereStore.store_id = storeId;
-
-  const stores = await Store.findAll({ where: whereStore });
-  const storeIds = stores.map(s => s.store_id);
-
-  const whereSn = { is_deleted: 0, status: 'in_stock' };
-  if (storeId) whereSn.store_id = storeId;
-
-  // 在库统计
-  const inStockStats = await ProductSn.findAll({
-    where: whereSn,
-    attributes: [
-      'product_id',
-      [sequelize.fn('COUNT', sequelize.col('sn_id')), 'inStockCount']
-    ],
-    include: [{
-      model: Product,
-      attributes: ['name', 'category']
-    }],
-    group: ['product_id'],
-    raw: true
+function buildInventoryReportMetrics(categoryStats = []) {
+  const rows = categoryStats.map(row => {
+    const totalCount = Number(row.totalCount || 0);
+    const staleCount = Number(row.staleCount || 0);
+    return {
+      ...row,
+      totalCount,
+      totalCost: roundMoney(row.totalCost),
+      staleCount,
+      staleRate: totalCount > 0 ? Number((staleCount / totalCount * 100).toFixed(2)) : 0
+    };
   });
-
-  // 按类别汇总
-  const categoryStats = await ProductSn.findAll({
-    where: whereSn,
-    attributes: [
-      [sequelize.col('Product.category'), 'category'],
-      [sequelize.fn('COUNT', sequelize.col('sn_id')), 'totalCount']
-    ],
-    include: [{
-      model: Product,
-      attributes: []
-    }],
-    group: [sequelize.col('Product.category')],
-    raw: true
-  });
-
-  ctx.body = { inStockStats, categoryStats };
+  const summary = rows.reduce((result, row) => ({
+    totalCount: result.totalCount + row.totalCount,
+    totalCost: roundMoney(result.totalCost + row.totalCost),
+    staleCount: result.staleCount + row.staleCount,
+    staleRate: 0
+  }), { totalCount: 0, totalCost: 0, staleCount: 0, staleRate: 0 });
+  summary.staleRate = summary.totalCount > 0
+    ? Number((summary.staleCount / summary.totalCount * 100).toFixed(2))
+    : 0;
+  return { rows, summary };
 }
 
-module.exports = { getSalesReport, getInventoryReport };
+async function loadCustomerSourceEvents(ctx) {
+  const { buildRanges } = require('./dashboardService');
+  const { loadOperatingEvents } = require('./operatingProfit');
+  const filters = await dashboardService.resolveOperatingFilters(ctx.state.user, ctx.query);
+  const range = buildRanges(ctx.query).current;
+  const { orders, adjustments } = await loadOperatingEvents(filters, range, dashboardService.dataSource);
+  return { filters, orders, adjustments, profitVisible: canViewProfit(ctx.state.user) };
+}
+
+async function customerSourceReport(ctx, detail = false) {
+  const { aggregateOperatingProfit } = require('./operatingProfit');
+  const { filters, orders, adjustments, profitVisible } = await loadCustomerSourceEvents(ctx);
+  const dimension = ['store', 'employee'].includes(ctx.query.dimension) ? ctx.query.dimension : 'company';
+  const orderIds = [...new Set(orders.filter(row => !row.entry_type || row.source_order_id)
+    .map(row => String(row.source_order_id || row.order_id)))];
+  const [metadata, categories, returnRows, stores] = await Promise.all([
+    orderIds.length ? Order.findAll({
+      where: { order_id: { [Op.in]: orderIds } },
+      attributes: ['order_id', 'operator_staff_id', 'operator_name', 'customer_source', 'customer_source_detail'],
+      include: detail ? [] : [{ model: OrderItem, include: [{ model: Product, as: 'Product', attributes: ['category_id', 'category'], required: false }] }]
+    }) : [],
+    detail ? [] : ProductCategory.findAll({ attributes: ['category_id', 'parent_id', 'name'], raw: true }),
+    !detail && orderIds.length ? SalesReturnRequest.findAll({
+      where: { order_id: { [Op.in]: orderIds }, status: { [Op.notIn]: ['cancelled', 'canceled', 'voided', 'rejected'] } },
+      attributes: ['order_id'], raw: true
+    }) : [],
+    orders.length && dimension === 'company' ? Store.findAll({
+      where: { store_id: { [Op.in]: [...new Set(orders.map(row => row.store_id))] } },
+      attributes: ['store_id', 'distributor_id'],
+      include: [{ model: Distributor, attributes: ['distributor_id', 'name'], required: false }]
+    }) : []
+  ]);
+  const metadataByOrder = new Map(metadata.map(row => [String(row.order_id), row]));
+  const storeById = new Map(stores.map(row => [String(row.store_id), row]));
+  const afterSalesOrderIds = new Set(returnRows.map(row => String(row.order_id)));
+  const categoryMap = new Map(categories.map(row => [String(row.category_id), row]));
+  const adjustmentsByOrder = new Map();
+  for (const row of adjustments) {
+    const key = String(row.orderId);
+    if (!adjustmentsByOrder.has(key)) adjustmentsByOrder.set(key, []);
+    adjustmentsByOrder.get(key).push(row);
+  }
+  const totals = events => {
+    const { summary } = aggregateOperatingProfit(events, events.flatMap(row => adjustmentsByOrder.get(String(row.order_id)) || []), filters);
+    return { ...summary, grossProfit: profitVisible ? summary.grossProfit : null, baseGrossProfit: profitVisible ? summary.baseGrossProfit : null };
+  };
+  const getRootCategory = product => {
+    let current = categoryMap.get(String(product?.category_id || ''));
+    let root = current;
+    const seen = new Set();
+    while (current?.parent_id && !seen.has(String(current.category_id))) {
+      seen.add(String(current.category_id));
+      const parent = categoryMap.get(String(current.parent_id));
+      if (!parent) break;
+      root = parent;
+      current = parent;
+    }
+    return String(root?.name || product?.category || '其他').trim() || '其他';
+  };
+  const categoryLabel = name => {
+    const normalized = String(name || '').replace(/\s+/g, '').toLowerCase();
+    if (/电脑|笔记本|thinkpad|thinkbook|yoga|小新/.test(normalized)) return '电脑销售';
+    if (/台机|台式|主机/.test(normalized)) return '台机销售';
+    if (/手机|iphone|motorola|moto/.test(normalized)) return '手机销售';
+    if (/平板|tablet|ipad/.test(normalized)) return '平板销售';
+    if (/配件/.test(normalized)) return '配件销售';
+    if (/选件/.test(normalized)) return '选件销售';
+    if (/二手/.test(normalized)) return '二手销售';
+    return `${name}销售`;
+  };
+
+  const groups = new Map();
+  const sourceGroups = new Map();
+  const dimensionSourceGroups = new Map();
+  const categorySourceGroups = new Map();
+  const productCategoryNames = new Set();
+  const details = [];
+  const employeeDetails = detail && filters.employeeId
+    ? require('./dashboardService').buildEmployeePerformance(orders, adjustments, filters.employeeId, true).details
+    : [];
+  const employeeDetailsByEvent = new Map(employeeDetails.map(row => [String(row.orderId), row]));
+  for (const event of orders) {
+    const order = metadataByOrder.get(String(event.source_order_id || event.order_id));
+    const store = storeById.get(String(event.store_id));
+    const customerSource = event.entry_type === 'reward_redemption'
+      ? '积分兑换' : String(order?.customer_source || '').trim() || '未填写来源';
+    const sourceDetail = String(order?.customer_source_detail || '').trim() || '-';
+    const employeeId = filters.employeeId || order?.operator_staff_id || event.create_staff_id || '';
+    const employeeName = String(employeeId) === String(event.create_staff_id)
+      ? event.create_user : order?.operator_name;
+    const [dimensionId, dimensionName] = dimension === 'store'
+      ? [event.store_id, event.store_name]
+      : dimension === 'employee'
+        ? [employeeId, employeeName || employeeId || '未指定员工']
+        : [store?.distributor_id || 'unknown-company', store?.Distributor?.name || '未配置公司'];
+    if (detail) {
+      if (ctx.query.dimensionId && String(dimensionId) !== String(ctx.query.dimensionId)) continue;
+      if (ctx.query.customerSource && customerSource !== ctx.query.customerSource) continue;
+      if (ctx.query.sourceDetail && sourceDetail !== ctx.query.sourceDetail) continue;
+      const allocation = employeeDetailsByEvent.get(String(event.order_id));
+      const { salesAmount, grossProfit } = filters.employeeId
+        ? { salesAmount: allocation?.allocatedSalesAmount ?? 0, grossProfit: profitVisible ? allocation?.allocatedGrossProfit ?? 0 : null }
+        : totals([event]);
+      details.push({
+        eventId: event.order_id, orderId: event.source_order_id || event.order_id,
+        orderNo: event.order_no, sourceOrderNo: event.source_order_no,
+        entryType: event.entry_type || 'sale', saleTime: event.create_time,
+        customerSource, sourceDetail, storeId: event.store_id, storeName: event.store_name,
+        salesAmount, grossProfit
+      });
+      continue;
+    }
+    const key = JSON.stringify([dimensionId, customerSource, sourceDetail]);
+    if (!groups.has(key)) groups.set(key, { dimensionId: String(dimensionId), dimensionName, customerSource, sourceDetail, events: [], afterSalesOrderCount: 0, categories: new Map() });
+    if (!sourceGroups.has(customerSource)) sourceGroups.set(customerSource, []);
+    sourceGroups.get(customerSource).push(event);
+    if (!dimensionSourceGroups.has(dimensionId)) dimensionSourceGroups.set(dimensionId, { id: String(dimensionId), name: dimensionName, sources: new Map() });
+    const entity = dimensionSourceGroups.get(dimensionId);
+    if (!entity.sources.has(customerSource)) entity.sources.set(customerSource, []);
+    entity.sources.get(customerSource).push(event);
+    const group = groups.get(key);
+    group.events.push(event);
+    if (event.entry_type) continue;
+    if (afterSalesOrderIds.has(String(event.order_id))) group.afterSalesOrderCount++;
+    const products = (order?.OrderItems || []).map(item => item.Product)
+      .filter(product => !filters.productLine || product?.category === filters.productLine || product?.category?.startsWith(filters.productLine + '/'));
+    const orderCategories = new Set(products.map(getRootCategory));
+    if (!orderCategories.size) orderCategories.add('其他');
+    const displayCategories = new Set();
+    for (const category of orderCategories) {
+      productCategoryNames.add(category);
+      const categoryKey = JSON.stringify([category, customerSource]);
+      if (!categorySourceGroups.has(categoryKey)) categorySourceGroups.set(categoryKey, { category, customerSource, orderCount: 0 });
+      categorySourceGroups.get(categoryKey).orderCount++;
+      displayCategories.add(categoryLabel(category));
+    }
+    for (const name of displayCategories) group.categories.set(name, (group.categories.get(name) || 0) + 1);
+  }
+  const formulaVersion = 'OPERATING_FROZEN_EVENTS_V1';
+  if (detail) {
+    const page = Math.max(1, Math.trunc(Number(ctx.query.page)) || 1);
+    const pageSize = Math.min(200, Math.max(1, Math.trunc(Number(ctx.query.pageSize)) || 20));
+    return { rows: details.slice((page - 1) * pageSize, page * pageSize), canViewProfit: profitVisible, formulaVersion,
+      pagination: { total: details.length, page, pageSize, totalPages: Math.ceil(details.length / pageSize) } };
+  }
+  const metrics = events => {
+    const { salesAmount, grossProfit, orderCount } = totals(events);
+    return { salesAmount, grossProfit, orderCount };
+  };
+  const rows = [...groups.values()].map(({ events, categories, ...group }) => ({
+    ...group, ...metrics(events),
+    categories: [...categories].map(([name, orderCount]) => ({ name, orderCount })).sort((a, b) => b.orderCount - a.orderCount || a.name.localeCompare(b.name, 'zh-CN'))
+  })).sort((a, b) => b.salesAmount - a.salesAmount || String(a.dimensionName).localeCompare(String(b.dimensionName), 'zh-CN'));
+  const summary = metrics(orders);
+  return {
+    dimension, formulaVersion, canViewProfit: profitVisible,
+    summary: { ...summary, afterSalesOrderCount: rows.reduce((sum, row) => sum + row.afterSalesOrderCount, 0),
+      storeCount: new Set(orders.map(row => String(row.store_id))).size,
+      averageOrderValue: summary.orderCount ? roundMoney(summary.salesAmount / summary.orderCount) : null,
+      grossMargin: profitVisible ? calcRate(summary.grossProfit, summary.salesAmount) : null },
+    sourceDistribution: [...sourceGroups].map(([customerSource, events]) => ({ customerSource, ...metrics(events) }))
+      .sort((a, b) => b.salesAmount - a.salesAmount || a.customerSource.localeCompare(b.customerSource, 'zh-CN')),
+    chartRows: [...dimensionSourceGroups.values()].map(({ id, name, sources }) => ({
+      id, name, ...metrics([...sources.values()].flat()),
+      sources: Object.fromEntries([...sources].map(([source, events]) => [source, metrics(events)]))
+    })),
+    productCategoryOptions: [...productCategoryNames].sort((a, b) => a.localeCompare(b, 'zh-CN')),
+    categorySourceDistribution: [...categorySourceGroups.values()].sort((a, b) => b.orderCount - a.orderCount),
+    rows
+  };
+}
+
+async function getCustomerSourceAnalysis(ctx) {
+  ctx.body = await customerSourceReport(ctx);
+}
+
+async function getCustomerSourceDetail(ctx) {
+  ctx.body = await customerSourceReport(ctx, true);
+}
+
+async function getProductAnalysisDetail(ctx) {
+  const { productId = '', keyword = '', startDate, endDate, storeId = '', page = 1, pageSize = 20 } = ctx.query;
+  const user = ctx.state.user;
+  const allowedStores = await resolveReportStoreIds(user);
+  if (!allowedStores.length) { ctx.body = { rows: [], pagination: { total: 0, page: 1, pageSize: Number(pageSize) } }; return; }
+  const conditions = ['o.IS_DELETED = 0', 'o.ORDER_STATUS IN (:statuses)', allowedStores.includes('*') ? '1=1' : 'o.STORE_ID IN (:storeIds)'];
+  const replacements = { statuses: POSITIVE_SALES_ORDER_STATUSES, storeIds: allowedStores };
+  if (productId) { conditions.push('oi.PRODUCT_ID = :productId'); replacements.productId = String(productId); }
+  if (keyword) { conditions.push('(oi.PRODUCT_NAME LIKE :keyword OR oi.PN_CODE LIKE :keyword OR oi.SN_CODE LIKE :keyword)'); replacements.keyword = `%${String(keyword).trim()}%`; }
+  if (storeId) { if (!allowedStores.includes('*') && !allowedStores.includes(String(storeId))) { ctx.throw(403, '无权访问该门店'); } conditions.push('o.STORE_ID = :storeId'); replacements.storeId = String(storeId); }
+  if (startDate && endDate) { conditions.push('o.CREATE_TIME >= :startAt AND o.CREATE_TIME <= :endAt'); replacements.startAt = `${startDate} 00:00:00`; replacements.endAt = `${endDate} 23:59:59`; }
+  if (isSelfOnlyReportUser(user)) { conditions.push(`(o.CREATE_STAFF_ID = :staffId OR JSON_SEARCH(o.AUXILIARY_SALES_LIST, 'one', :staffId, NULL, '$[*].staffId') IS NOT NULL OR JSON_SEARCH(o.AUXILIARY_SALES_LIST, 'one', :staffId, NULL, '$[*].staff_id') IS NOT NULL)`); replacements.staffId = String(user.staffId); }
+  const rows = await sequelize.query(`
+    SELECT o.ORDER_ID AS orderId, o.ORDER_NO AS orderNo, o.CREATE_TIME AS saleTime, o.STORE_ID AS storeId,
+           s.NAME AS storeName, oi.ITEM_ID AS itemId, oi.PRODUCT_ID AS productId, oi.PRODUCT_NAME AS productName,
+           oi.PN_CODE AS pn, oi.SN_CODE AS sn, oi.QUANTITY AS quantity, oi.PRODUCT_UNIT_PRICE AS unitPrice,
+           oi.SUBTOTAL AS salesAmount,
+           CASE WHEN gp.ORDER_ID IS NULL THEN NULL ELSE gp.GROSS_PROFIT_AMOUNT *
+             CASE WHEN COALESCE(ot.ITEM_SUBTOTAL, 0) <> 0 THEN COALESCE(oi.SUBTOTAL, 0) / ot.ITEM_SUBTOTAL ELSE 1 / GREATEST(ot.ITEM_COUNT, 1) END END AS grossProfit,
+           o.CUSTOMER_SOURCE AS customerSource
+      FROM T_ORDER o INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
+      LEFT JOIN T_STORE s ON s.STORE_ID = o.STORE_ID
+      LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID AND gp.SNAPSHOT_STATUS = 'final'
+      LEFT JOIN (SELECT ORDER_ID, SUM(COALESCE(SUBTOTAL,0)) ITEM_SUBTOTAL, COUNT(*) ITEM_COUNT FROM T_ORDER_ITEM GROUP BY ORDER_ID) ot ON ot.ORDER_ID = o.ORDER_ID
+     WHERE ${conditions.join(' AND ')} ORDER BY o.CREATE_TIME DESC, oi.ITEM_ID DESC`, { replacements, type: QueryTypes.SELECT });
+  const canProfit = canViewProfit(user);
+  const mapped = rows.map(row => ({ ...row, salesAmount: roundMoney(row.salesAmount), grossProfit: canProfit && row.grossProfit != null ? roundMoney(row.grossProfit) : null }));
+  const size = Math.min(200, Math.max(1, Number(pageSize) || 20)); const currentPage = Math.max(1, Number(page) || 1); const offset = (currentPage - 1) * size;
+  ctx.body = { rows: mapped.slice(offset, offset + size), canViewProfit: canProfit, pagination: { total: mapped.length, page: currentPage, pageSize: size, totalPages: Math.ceil(mapped.length / size) } };
+}
+
+function buildInventoryCategoryOrderMap(categories = []) {
+  const childrenByParent = new Map();
+  const rows = categories
+    .filter(row => Number(row.status ?? 1) === 1)
+    .map(row => ({ ...row, category_id: String(row.category_id || ''), parent_id: String(row.parent_id || '') }))
+    .filter(row => row.category_id);
+  rows.forEach(row => {
+    if (!childrenByParent.has(row.parent_id)) childrenByParent.set(row.parent_id, []);
+    childrenByParent.get(row.parent_id).push(row);
+  });
+  childrenByParent.forEach(children => children.sort((a, b) =>
+    Number(a.sort_order || 0) - Number(b.sort_order || 0)
+    || String(a.category_id).localeCompare(String(b.category_id))
+  ));
+  const orderMap = new Map();
+  const visited = new Set();
+  let order = 0;
+  const visit = (parentId, parentPath = []) => {
+    for (const row of childrenByParent.get(String(parentId || '')) || []) {
+      if (visited.has(row.category_id)) continue;
+      visited.add(row.category_id);
+      const path = [...parentPath, String(row.name || '').trim()].filter(Boolean);
+      orderMap.set(path.join('/'), order++);
+      visit(row.category_id, path);
+    }
+  };
+  visit('');
+  rows.filter(row => !visited.has(row.category_id))
+    .sort((a, b) => Number(a.level || 0) - Number(b.level || 0)
+      || Number(a.sort_order || 0) - Number(b.sort_order || 0)
+      || String(a.category_id).localeCompare(String(b.category_id)))
+    .forEach(row => visit(row.parent_id));
+  return orderMap;
+}
+
+function sortInventoryCategoryStats(rows = [], categories = []) {
+  const orderMap = buildInventoryCategoryOrderMap(categories);
+  const rank = row => {
+    const parts = [row.category, row.brand, row.series, row.model]
+      .map(value => String(value || '').trim())
+      .filter(Boolean);
+    for (let length = parts.length; length > 0; length -= 1) {
+      const path = parts.slice(0, length).join('/');
+      if (orderMap.has(path)) return orderMap.get(path);
+    }
+    return Number.MAX_SAFE_INTEGER;
+  };
+  return [...rows].sort((a, b) => rank(a) - rank(b)
+    || String(a.category || '').localeCompare(String(b.category || ''), 'zh-Hans-CN')
+    || String(a.brand || '').localeCompare(String(b.brand || ''), 'zh-Hans-CN')
+    || String(a.series || '').localeCompare(String(b.series || ''), 'zh-Hans-CN')
+    || String(a.model || '').localeCompare(String(b.model || ''), 'zh-Hans-CN'));
+}
+
+async function getInventoryReport(ctx) {
+  const result = await require('./inventoryReport').load(ctx.query, ctx.state.user);
+  const size = Math.min(200, Math.max(1, Number(ctx.query.pageSize) || 50));
+  const page = Math.max(1, Number(ctx.query.page) || 1);
+  const { details, ...response } = result;
+  if (ctx.query.detailKey) {
+    const dims = result.meta.dimensions;
+    const selected = details.filter(d => JSON.stringify(dims.map(k => k === 'product' ? d.productId : k === 'store' ? d.storeId : d.category)) === ctx.query.detailKey);
+    ctx.body = { details: selected.slice((page-1)*size,page*size), pagination: {total:selected.length,page,pageSize:size}, meta: result.meta };
+    return;
+  }
+  ctx.body = {...response, rows:result.rows.slice((page-1)*size,page*size), pagination:{total:result.rows.length,page,pageSize:size}};
+}
+
+async function getEmployeePerformanceReport(ctx, exportMode = false) {
+  const { storeId, staffName, orderNo, startDate, endDate, page = 1, pageSize = 20 } = ctx.query;
+  const user = ctx.state.user;
+
+  const storeIds = await getEmployeeReportStoreIds(user, storeId);
+  if (storeIds.length === 0) {
+    if (exportMode) {
+      sendExcel(ctx, [], EMPLOYEE_PROFIT_EXPORT_HEADERS, `个人毛利明细_${startDate || '全部'}_${endDate || '全部'}.xlsx`, '销售商品毛利', { textHeaders: ['订单号', 'PN', 'SN'] });
+      return;
+    }
+    ctx.body = { list: [], summary: {}, employees: [], pagination: { total: 0, page, pageSize, totalPages: 0 } };
+    return;
+  }
+
+  const where = {
+    is_deleted: 0,
+    store_id: { [Op.in]: storeIds },
+    order_status: { [Op.in]: POSITIVE_SALES_ORDER_STATUSES }
+  };
+  appendOperatingSourceCondition(where);
+  if (staffName) where.create_user = staffName;
+  if (orderNo) where.order_no = { [Op.like]: `%${String(orderNo).trim()}%` };
+  let commissionDateCondition,dateRange;
+  if (startDate && endDate) {
+    dateRange = {
+      [Op.gte]: new Date(`${startDate}T00:00:00+08:00`),
+      [Op.lte]: new Date(`${endDate}T23:59:59.999+08:00`)
+    };
+    commissionDateCondition=sequelize.where(sequelize.literal(commissionDates.saleSql('Order')),dateRange);
+    where[Op.and]=[...(where[Op.and]||[]),commissionDateCondition];
+  }
+
+  const employees = await Order.findAll({
+    where: {
+      is_deleted: 0,
+      store_id: { [Op.in]: storeIds },
+      create_user: { [Op.ne]: null },
+      [Op.and]: [{
+        [Op.or]: [
+          { customer_source: null },
+          { customer_source: { [Op.notLike]: `${INTERNAL_TRANSFER_SOURCE}%` } }
+        ]
+      }]
+    },
+    attributes: [[sequelize.fn('DISTINCT', sequelize.col('create_user')), 'name']],
+    raw: true
+  });
+
+  const returnOrderWhere = { ...where };
+  if(commissionDateCondition)returnOrderWhere[Op.and]=(returnOrderWhere[Op.and]||[]).filter(condition=>condition!==commissionDateCondition);
+  delete returnOrderWhere.create_time;
+  delete returnOrderWhere.order_status;
+  delete returnOrderWhere.order_no;
+  const returnWhere = {};
+  if (dateRange) returnWhere.create_time = dateRange;
+  if (orderNo) returnWhere[Op.or] = [
+    { return_no: { [Op.like]: '%' + String(orderNo).trim() + '%' } },
+    { order_no: { [Op.like]: '%' + String(orderNo).trim() + '%' } }
+  ];
+  const returnRows = await SalesReturnGrossProfitLedger.findAll({
+    where: returnWhere,
+    include: [{ model: Order, as: 'order', where: returnOrderWhere, required: true,
+      include: [{ model: Store, attributes: ['name'] }] }]
+  });
+  const reversals = returnEvents(returnRows.map(row => row.toJSON()));
+  const reversalAdjustments = await PerformanceProfitAdjustment.findAll({
+    where: { status: 'approved',...(dateRange ? { [Op.and]:[sequelize.where(sequelize.literal(commissionDates.adjustmentSql('PerformanceProfitAdjustment')),dateRange)] } : {}) },
+    include: [{ model: Order, where: returnOrderWhere, required: true, include: [{ model: Store },{model:OrderGrossProfit,as:'grossProfitSnapshot'}] }]
+  });
+  for (const model of reversalAdjustments) {
+    const row = model.toJSON();
+    if (orderNo && !String(row.reason || '').includes(String(orderNo).trim()) &&
+        !String(row.order_no || '').includes(String(orderNo).trim())) continue;
+    const order = row.Order || {};
+    const participants = normalizeParticipants(order);
+    const shares = allocateAdjustment(participants,order.grossProfitSnapshot?.gross_profit_amount,row.signed_amount);
+    const correction = displayCorrection(row, user);
+    const approvalDetail = {
+      adjustmentNo: row.adjustment_no, type: row.adjustment_type,
+      typeName: correction.correction_type_name || (row.adjustment_no.startsWith('AUTO-CARE-') ? 'Care可用金抵扣' : '审批调整'),
+      reason: row.reason, status: row.status, approvedAt: row.admin_review_time || correction.correction_applied_at || null,
+      postingTime: commissionDates.adjustmentTime(row), amount: roundMoney(row.signed_amount),
+      product: correction.correction_product,
+      beforeValue: correction.correction_before_price ?? correction.correction_before_invoice_amount,
+      afterValue: correction.correction_after_price ?? correction.correction_after_invoice_amount,
+      salesBefore: correction.correction_sales_before, salesAfter: correction.correction_sales_after,
+      productBefore: correction.correction_product_before, productAfter: correction.correction_product_after,
+      productDelta: correction.correction_product_delta
+    };
+    reversals.push({ approvalDetail, orderId: 'return-adjustment:' + row.adjustment_id, entryType: 'performance_adjustment',
+      isReturnAdjustment: true, orderNo: row.adjustment_no, sourceOrderNo: row.order_no,
+      sourceOrderId: row.order_id, orderTime: commissionDates.adjustmentTime(row), storeName: order.Store?.name || '',
+      employeeName: row.employee_name, totalAmount: 0, actualPayment: 0, totalCost: 0,
+      baseGrossProfit: 0, grossProfit: roundMoney(row.signed_amount),
+      approvedAdjustment: roundMoney(row.signed_amount),
+      careCreditAdjustment: row.adjustment_no.startsWith('AUTO-CARE-') ? roundMoney(row.signed_amount) : 0,
+      otherApprovedAdjustment: row.adjustment_no.startsWith('AUTO-CARE-') ? 0 : roundMoney(row.signed_amount),
+      participantAllocations: participants.map((p, index) => ({ staffId: p.staffId, employeeName: p.name,
+        role: p.role, baseGrossProfit: 0, approvedAdjustment: shares[index], grossProfit: shares[index] })),
+      grossProfitSource: 'return_adjustment',
+      calculation: { orderFormula: row.reason, revenueNote: row.reason, items: [] } });
+  }
+
+  const positiveKeys = await Order.findAll({ where, attributes: ['order_id', 'create_time','archive_time'], raw: true });
+  const orderGroups = new Map(positiveKeys.map(row => [String(row.order_id), {
+    id: String(row.order_id), time: commissionDates.saleTime(row), sale: true, adjustments: []
+  }]));
+  const returnKeys = [];
+  for (const row of reversals) {
+    if (row.entryType !== 'performance_adjustment') {
+      returnKeys.push({ id: row.orderId, time: row.orderTime, returnRow: row });
+      continue;
+    }
+    const id = String(row.sourceOrderId);
+    if (!orderGroups.has(id)) orderGroups.set(id, { id, time: row.orderTime, adjustments: [] });
+    const group = orderGroups.get(id);
+    group.adjustments.push(row);
+    if (!group.sale && new Date(row.orderTime) > new Date(group.time)) group.time = row.orderTime;
+  }
+  const eventKeys = [...orderGroups.values(), ...returnKeys]
+    .sort((a, b) => new Date(b.time) - new Date(a.time) || String(a.id).localeCompare(String(b.id)));
+  const count = eventKeys.length;
+  const selectedKeys = exportMode ? eventKeys : eventKeys.slice(
+    (Math.max(Number(page) || 1, 1) - 1) * Math.max(Number(pageSize) || 20, 1),
+    Math.max(Number(page) || 1, 1) * Math.max(Number(pageSize) || 20, 1));
+  const selectedIds = selectedKeys.filter(row => row.sale).map(row => row.id);
+  const orders = await Order.findAll({
+
+    where: { ...where, order_id: { [Op.in]: selectedIds } },
+    include: [
+      { model: Store, attributes: ['store_id', 'name'] },
+      { model: OrderItem },
+      {
+        model: OrderGrossProfit,
+        as: 'grossProfitSnapshot',
+        required: false
+      }
+    ],
+    order: [['create_time', 'DESC']],
+    distinct: true
+  });
+
+  const pageOrderIds = orders.map(order => order.order_id);
+  // Approved differences are independent events above; never fold them into a sale.
+  const approvedPageAdjustments = [];
+  const adjustmentMap = new Map();
+  const careCreditAdjustmentMap = new Map();
+  const directAdjustmentMap = new Map();
+  approvedPageAdjustments.forEach(row => {
+    adjustmentMap.set(
+      row.order_id,
+      roundMoney((adjustmentMap.get(row.order_id) || 0) + toNumber(row.signed_amount))
+    );
+    if (String(row.adjustment_no || '').startsWith('AUTO-CARE-')) {
+      careCreditAdjustmentMap.set(row.order_id,
+        roundMoney((careCreditAdjustmentMap.get(row.order_id) || 0) + toNumber(row.signed_amount)));
+    }
+  });
+  const pageItems = orders.flatMap(order => order.OrderItems || []);
+
+  const careCostMap = new Map(await Promise.all(orders
+    .filter(order => careCreditAdjustmentMap.has(order.order_id) && order.grossProfitSnapshot)
+    .map(async order => {
+      const lines = await careCostDetails(order.grossProfitSnapshot);
+      return [order.order_id, roundMoney(lines.reduce((sum, line) => sum + toNumber(line.pricingAmount), 0))];
+    })));
+
+  const saleList = orders.map(order => {
+    const orderJson = order.toJSON();
+    const items = orderJson.OrderItems || [];
+    const totalAmount = roundMoney(orderJson.total_amount);
+    const actualPayment = roundMoney(orderJson.actual_payment);
+    const grossProfitSnapshot = orderJson.grossProfitSnapshot;
+    const snapshotDetail = grossProfitSnapshot
+      ? snapshotToResponse(grossProfitSnapshot, orderJson)
+      : null;
+    const pricingDetails = parseJsonArray(grossProfitSnapshot?.product_pricing_details);
+    const pricingDetailByItem = new Map(
+      pricingDetails.map(detail => [String(detail.itemId || ''), detail])
+    );
+    let totalCost = 0;
+    let baseGrossProfit = 0;
+    const itemCalculations = items.map(item => {
+      const quantity = Number(item.quantity || 1);
+      const saleSubtotal = roundMoney(toNumber(item.subtotal) || (toNumber(item.sale_price) * quantity));
+      const allocatedRevenue = saleSubtotal;
+      const baseCalculation = savedItemProfit(item);
+      const pricingDetail = pricingDetailByItem.get(String(item.item_id || ''));
+      const unitCost = grossProfitSnapshot && pricingDetail
+        ? roundMoney(pricingDetail.unitPricing)
+        : baseCalculation.unitCost;
+      const costAmount = grossProfitSnapshot && pricingDetail
+        ? roundMoney(pricingDetail.pricingAmount)
+        : baseCalculation.costAmount;
+      const grossProfit = grossProfitSnapshot
+        ? roundMoney(toNumber(grossProfitSnapshot.gross_profit_amount) * (
+            totalAmount ? saleSubtotal / totalAmount : 0
+          ))
+        : baseCalculation.grossProfit;
+      totalCost += costAmount;
+      baseGrossProfit += grossProfit;
+      return {
+        productName: item.product_name,
+        pnCode: item.pn_code || '',
+        snCode: item.sn_code || '',
+        quantity,
+        salePrice: roundMoney(item.sale_price),
+        saleSubtotal,
+        allocatedReduction: 0,
+        allocatedRevenue,
+        unitCost,
+        costAmount,
+        grossProfit,
+        source: grossProfitSnapshot ? 'order_gross_profit_snapshot' : baseCalculation.source,
+        formula: grossProfitSnapshot
+          ? `订单毛利 ${roundMoney(grossProfitSnapshot.gross_profit_amount).toFixed(2)} × 商品销售占比 = ${grossProfit.toFixed(2)}`
+          : `${allocatedRevenue.toFixed(2)} - (${unitCost.toFixed(2)} × ${quantity}) = ${grossProfit.toFixed(2)}`
+      };
+    });
+
+    totalCost = grossProfitSnapshot
+      ? roundMoney(grossProfitSnapshot.product_pricing_amount)
+      : roundMoney(totalCost);
+    baseGrossProfit = grossProfitSnapshot
+      ? roundMoney(grossProfitSnapshot.gross_profit_amount)
+      : roundMoney(baseGrossProfit);
+    const approvedAdjustment = adjustmentMap.get(orderJson.order_id) || 0;
+    const careCreditAdjustment = careCreditAdjustmentMap.get(orderJson.order_id) || 0;
+    const otherApprovedAdjustment = roundMoney(approvedAdjustment - careCreditAdjustment);
+    const careCostAmount = careCostMap.get(orderJson.order_id) || 0;
+    const grossProfit = roundMoney(baseGrossProfit + approvedAdjustment);
+    const participants = normalizeParticipants(orderJson);
+    const instantRetail = isInstantRetail(orderJson);
+    const customAllocation = !instantRetail && participants.some(item => Number(item.profitAmount) > 0 || Number(item.ratio) > 0);
+    const originalShares = allocateProfit(participants, baseGrossProfit);
+    const split = instantRetail ? splitInstantRetail(baseGrossProfit) : null;
+    const allocatedBase = instantRetail ? instantRetailStaffShares(baseGrossProfit, participants) : originalShares;
+    const sharedAdjustment = roundMoney(approvedPageAdjustments
+      .filter(item => item.order_id === orderJson.order_id)
+      .reduce((sum, item) => sum + toNumber(item.signed_amount), 0));
+    const allocatedAdjustment = toNumber(baseGrossProfit)
+      ? originalShares.map((share, index) => index === participants.length - 1
+        ? roundMoney(sharedAdjustment - originalShares.slice(0, -1).reduce((sum, value) =>
+          sum + roundMoney(sharedAdjustment * value / baseGrossProfit), 0))
+        : roundMoney(sharedAdjustment * share / baseGrossProfit))
+      : allocateProfit(participants.map(item => ({ ...item, profitAmount: '', ratio: '' })), sharedAdjustment);
+    const participantAllocations = participants.map((participant, index) => ({
+      staffId: participant.staffId,
+      employeeName: participant.name,
+      role: participant.role,
+      ratio: participant.ratio,
+      fixedAmount: participant.profitAmount,
+      baseGrossProfit: allocatedBase[index],
+      approvedAdjustment: roundMoney(allocatedAdjustment[index]),
+      grossProfit: roundMoney(allocatedBase[index] + allocatedAdjustment[index])
+    }));
+    const usesNewSnapshot = !!grossProfitSnapshot;
+    const usesLegacyFallback = !usesNewSnapshot && itemCalculations.some(item => item.source === 'legacy_fallback');
+    return {
+      entryType: 'sale',
+      sourceOrderNo: orderJson.order_no,
+      orderId: orderJson.order_id,
+      orderNo: orderJson.order_no,
+      orderTime: commissionDates.saleTime(orderJson),
+      employeeName: orderJson.create_user || '-',
+      storeName: orderJson.Store?.name || '',
+      customerName: orderJson.customer_name || '',
+      totalAmount,
+      discountAmount: roundMoney(orderJson.discount_amount),
+      nationalSubsidy: roundMoney(orderJson.national_subsidy),
+      educationSubsidy: roundMoney(orderJson.education_subsidy),
+      actualPayment,
+      totalCost,
+      baseGrossProfit: split?.sales ?? baseGrossProfit,
+      careCostAmount,
+      careCreditAdjustment,
+      otherApprovedAdjustment,
+      approvedAdjustment,
+      grossProfit: roundMoney(grossProfit - (split?.operations ?? 0)),
+      customAllocation,
+      operationsGrossProfit: split?.operations ?? 0,
+      participantAllocations,
+      grossProfitSource: usesNewSnapshot
+        ? 'order_gross_profit_snapshot'
+        : (usesLegacyFallback ? 'legacy_fallback' : 'archived'),
+      grossRate: calcRate(grossProfit - (split?.operations ?? 0), totalAmount),
+      calculation: {
+        orderFormula: `${baseGrossProfit.toFixed(2)} + Care可用金抵扣 ${careCreditAdjustment.toFixed(2)} + 其他调整 ${otherApprovedAdjustment.toFixed(2)} = ${grossProfit.toFixed(2)}`,
+        revenueNote: usesNewSnapshot
+          ? `基础毛利使用订单毛利快照：${snapshotDetail.formula}`
+          : (usesLegacyFallback
+            ? '该历史订单未生成新毛利快照，当前按原成本口径兼容计算'
+            : '该订单尚未生成新毛利快照，暂按原归档销售毛利兼容展示'),
+        snapshot: snapshotDetail,
+        items: itemCalculations
+      }
+    };
+  });
+
+  const salesById = new Map(saleList.map(row => [String(row.orderId), row]));
+  const list = selectedKeys.flatMap(group => {
+    if (group.returnRow) return [group.returnRow];
+    const sale = salesById.get(group.id);
+    const adjustments = [...group.adjustments].sort((a, b) =>
+      new Date(a.orderTime) - new Date(b.orderTime) || a.orderNo.localeCompare(b.orderNo));
+    if (!adjustments.length) return sale ? [sale] : [];
+    const first = adjustments[0];
+    const base = sale || {
+      ...first, orderId: group.id, orderNo: first.sourceOrderNo, orderTime: group.time,
+      participantAllocations: [], calculation: { items: [] }
+    };
+    const sumAdjustments = key => roundMoney(adjustments.reduce((sum, row) => sum + row[key], 0));
+    const approvedAdjustment = sumAdjustments('approvedAdjustment');
+    const careCreditAdjustment = sumAdjustments('careCreditAdjustment');
+    const otherApprovedAdjustment = sumAdjustments('otherApprovedAdjustment');
+    const grossProfit = roundMoney(base.baseGrossProfit + approvedAdjustment);
+    const allocations = new Map();
+    for (const event of [...(sale ? [sale] : []), ...adjustments]) {
+      for (const allocation of event.participantAllocations) {
+        const key = [allocation.staffId || allocation.employeeName, allocation.role].join(':');
+        const previous = allocations.get(key);
+        allocations.set(key, { ...allocation, ...previous,
+          baseGrossProfit: roundMoney((previous?.baseGrossProfit || 0) + allocation.baseGrossProfit),
+          approvedAdjustment: roundMoney((previous?.approvedAdjustment || 0) + allocation.approvedAdjustment),
+          grossProfit: roundMoney((previous?.grossProfit || 0) + allocation.grossProfit)
+        });
+      }
+    }
+    const { approvalDetail, ...grouped } = base;
+    return [{ ...grouped, approvedAdjustment, careCreditAdjustment, otherApprovedAdjustment, grossProfit,
+      grossRate: sale ? calcRate(grossProfit, base.totalAmount) : null,
+      participantAllocations: [...allocations.values()],
+      approvalAdjustments: adjustments.map(row => row.approvalDetail),
+      calculation: { ...base.calculation,
+        orderFormula: `${base.baseGrossProfit.toFixed(2)} + 审批调整 ${approvedAdjustment.toFixed(2)} = ${grossProfit.toFixed(2)}`,
+        revenueNote: sale ? base.calculation.revenueNote : '筛选期间仅有审批调整差额入账'
+      }
+    }];
+  });
+  const returnProfit = roundMoney(reversals.reduce((sum, row) => sum + row.baseGrossProfit, 0));
+  const returnSales = roundMoney(reversals.reduce((sum, row) => sum + row.totalAmount, 0));
+
+  const summaryRows = await Order.findAll({
+    where,
+    attributes: [
+      'create_user',
+      [sequelize.fn('COUNT', sequelize.col('order_id')), 'orderCount'],
+      [sequelize.fn('SUM', sequelize.col('total_amount')), 'totalAmount'],
+      [sequelize.fn('SUM', sequelize.col('actual_payment')), 'actualPayment']
+    ],
+    group: ['create_user'],
+    raw: true
+  });
+
+  const snapshotRows = await OrderGrossProfit.findAll({
+    attributes: ['order_id', 'gross_profit_amount'],
+    include: [{ model: Order, where, attributes: ['customer_source', 'create_time'], required: true }],
+    raw: true
+  });
+  const snapshotOrderIds = snapshotRows.map(row => row.order_id);
+  const fallbackOrderWhere = {
+    ...where,
+    ...(snapshotOrderIds.length ? { order_id: { [Op.notIn]: snapshotOrderIds } } : {})
+  };
+  const [approvedAdjustmentRows, fallbackItems, careCreditRows] = await Promise.all([
+    [],
+    OrderItem.findAll({
+      include: [{ model: Order, where: fallbackOrderWhere, attributes: ['customer_source', 'create_time'], required: true }],
+      raw: true
+    }),
+    []
+  ]);
+  const approvedAdjustmentRow = approvedAdjustmentRows[0] || { amount: 0 };
+
+
+  const fallbackByOrder = new Map();
+  for (const item of fallbackItems) {
+    const order = fallbackByOrder.get(item.order_id) || { amount: 0, instantRetail: isInstantRetail({
+      customer_source: item['Order.customer_source'], create_time: item['Order.create_time']
+    }) };
+    order.amount += savedItemProfit(item).grossProfit;
+    fallbackByOrder.set(item.order_id, order);
+  }
+  const fallbackGrossProfit = roundMoney([...fallbackByOrder.values()].reduce((sum, order) =>
+    sum + (order.instantRetail ? splitInstantRetail(order.amount).sales : order.amount), 0));
+  const snapshotGrossProfit = roundMoney(snapshotRows.reduce(
+    (sum, row) => sum + (isInstantRetail({ customer_source: row['Order.customer_source'], create_time: row['Order.create_time'] })
+      ? splitInstantRetail(row.gross_profit_amount).sales : toNumber(row.gross_profit_amount)),
+    0
+  ));
+  const totalBaseGrossProfit = roundMoney(snapshotGrossProfit + fallbackGrossProfit + returnProfit);
+  const totalApprovedAdjustment = roundMoney(
+    toNumber(approvedAdjustmentRow?.amount) + reversals.reduce((sum, row) => sum + row.approvedAdjustment, 0)
+  );
+  const totalCareCreditAdjustment = roundMoney(toNumber(careCreditRows[0]?.amount) + reversals.reduce((sum, row) => sum + row.careCreditAdjustment, 0));
+
+  const deductionService=require('../finance/expenseProfitDeduction');
+  const expenseAllocationRows=(await deductionService.loadMonthly({storeIds,user,startDate,endDate,staffName,orderNo})).map(row=>({staff_id:row.staffId,staff_name:row.staffName,amount:row.amount}));
+  const profitVisible = canViewProfit(user);
+  const visibleExpenseAllocationRows = profitVisible ? expenseAllocationRows : [];
+  const totalExpensePerformanceDeduction = roundMoney(
+    visibleExpenseAllocationRows.reduce((sum, row) => sum + toNumber(row.amount), 0)
+  );
+
+  const summary = {
+    returnCount: reversals.filter(row => !row.isReturnAdjustment).length,
+    orderCount: summaryRows.reduce((sum, row) => sum + Number(row.orderCount || 0), 0),
+    totalAmount: roundMoney(summaryRows.reduce((sum, row) => sum + toNumber(row.totalAmount), 0) + returnSales),
+    actualPayment: roundMoney(summaryRows.reduce((sum, row) => sum + toNumber(row.actualPayment), 0) + returnSales),
+    baseGrossProfit: totalBaseGrossProfit,
+    careCreditAdjustment: totalCareCreditAdjustment,
+    otherApprovedAdjustment: roundMoney(totalApprovedAdjustment - totalCareCreditAdjustment),
+    approvedAdjustment: totalApprovedAdjustment,
+    grossProfit: roundMoney(totalBaseGrossProfit + totalApprovedAdjustment),
+    expensePerformanceDeduction: profitVisible ? totalExpensePerformanceDeduction : null,
+    netGrossProfit: profitVisible ? deductionService.netProfit(totalBaseGrossProfit + totalApprovedAdjustment, totalExpensePerformanceDeduction) : null,
+    expenseDeductions: visibleExpenseAllocationRows.map(row => ({
+      staffId: row.staff_id,
+      staffName: row.staff_name || '-',
+      amount: roundMoney(row.amount)
+    })),
+    pageGrossProfit: roundMoney(list.reduce((sum, row) => sum + toNumber(row.grossProfit), 0)),
+    legacyOrderCount: new Set(fallbackItems.map(item => item.order_id)).size
+  };
+
+  if (startDate && endDate && !staffName && !orderNo) {
+    const range = require('./dashboardService').buildRanges({ startDate, endDate }).current;
+    const operating = await require('./operatingProfit').queryOperatingProfit({ storeIds, archiveScope: 'archived' }, range);
+    summary.baseGrossProfit = roundMoney(operating.summary.baseGrossProfit - operating.summary.retailOperationsGrossProfit);
+    summary.approvedAdjustment = operating.summary.approvedAdjustment;
+    summary.otherApprovedAdjustment = roundMoney(summary.approvedAdjustment - summary.careCreditAdjustment);
+    summary.grossProfit = roundMoney(summary.baseGrossProfit + summary.approvedAdjustment);
+    summary.netGrossProfit = profitVisible ? deductionService.netProfit(summary.grossProfit, totalExpensePerformanceDeduction) : null;
+    summary.grossProfitSource = operating.source;
+  }
+
+  if (exportMode) {
+    const exportRows = list.flatMap(order => {
+      const snapshot = order.calculation?.snapshot || {};
+      const items = order.calculation?.items || [];
+      const paymentDetails = (snapshot.paymentDetails || []).map(item =>
+        `${item.method || item.paymentMethod || '支付方式'} ${toNumber(item.amount).toFixed(2)}（手续费 ${toNumber(item.fee).toFixed(2)}）`
+      ).join('；');
+      const supplementDetails = (snapshot.supplementDetails || []).map(item =>
+        `${item.itemName || item.content || '补录'} ${toNumber(item.amount).toFixed(2)}`
+      ).join('；');
+      const freightDetails = (snapshot.freightCostDetails || []).map(item =>
+        `${item.sourceNo || item.platformName || item.sourceType || '运费'} ${item.snCode || item.sn || ''} ${toNumber(item.amount).toFixed(2)}`.trim()
+      ).join('；');
+      return profitExportItems(order).map(item => ({
+        "\u4e1a\u52a1\u7c7b\u578b": order.entryType === "return" ? "\u9000\u5355\u51b2\u56de" : order.entryType === 'performance_adjustment' ? '审批调整' : "\u9500\u552e",
+        "\u539f\u9500\u552e\u5355\u53f7": order.sourceOrderNo || order.orderNo,
+        订单号: order.orderNo,
+        销售时间: order.orderTime,
+        员工: order.employeeName,
+        门店: order.storeName,
+        客户: order.customerName,
+        商品名称: item.productName || '',
+        PN: item.pnCode || '',
+        SN: item.snCode || '',
+        数量: item.quantity ?? '',
+        销售单价: item.salePrice ?? '',
+        商品销售额: item.saleSubtotal ?? '',
+        商品定价单价: item.unitCost ?? '',
+        商品定价金额: item.costAmount ?? '',
+        商品分摊收入: item.allocatedRevenue ?? '',
+        商品分摊基础毛利: item.grossProfit ?? '',
+        毛利计算口径: item.formula || '',
+        '订单组成-用户应收': snapshot.receivableAmount ?? '',
+        '订单组成-商品定价': snapshot.productPricingAmount ?? '',
+        '订单组成-支付手续费': snapshot.paymentFeeAmount ?? '',
+        '订单组成-增值税': snapshot.vatAmount ?? '',
+        '订单组成-补录净额': snapshot.supplementAmount ?? '',
+        '订单组成-运费': snapshot.freightCostAmount ?? '',
+        '订单组成-开票金额': snapshot.invoiceAmount ?? '',
+        '订单组成-外调费': snapshot.externalAdjustmentFee ?? '',
+        支付方式明细: paymentDetails,
+        补录明细: supplementDetails,
+        运费明细: freightDetails,
+        订单基础毛利: order.baseGrossProfit,
+        Care可用金抵扣: order.careCreditAdjustment,
+        其他审批调整: order.otherApprovedAdjustment,
+        员工业绩毛利: order.grossProfit,
+        毛利率百分比: order.grossRate,
+        毛利来源: order.grossProfitSource
+      }));
+    });
+    sendExcel(ctx, exportRows, EMPLOYEE_PROFIT_EXPORT_HEADERS, `个人毛利明细_${startDate || '全部'}_${endDate || '全部'}.xlsx`, '销售商品毛利', { textHeaders: ['订单号', 'PN', 'SN'], sheets: [
+      {name:'审批调整明细',rows:list.flatMap(order => (order.approvalAdjustments || []).map(detail => ({
+        原销售单号: order.sourceOrderNo, 审批单号: detail.adjustmentNo, 调整类型: detail.typeName,
+        商品及SN: detail.product, 原因: detail.reason, 审批通过时间: detail.approvedAt,
+        业绩入账时间: detail.postingTime, 调整前: detail.beforeValue, 调整后: detail.afterValue,
+        销售毛利调整前: detail.salesBefore, 销售毛利调整后: detail.salesAfter, 销售业绩差额: detail.amount,
+        产品毛利调整前: detail.productBefore, 产品毛利调整后: detail.productAfter, 产品毛利差额: detail.productDelta
+      })))},
+      {name:'费用绩效扣减',rows:visibleExpenseAllocationRows.map(row=>({员工:row.staff_name,费用扣减:Number(row.amount),口径:'指定月份已审批费用分摊，不改销售订单毛利'}))},
+      {name:'个人毛利汇总',rows:[{业绩毛利:summary.grossProfit,费用扣减:summary.expensePerformanceDeduction,扣减后毛利:summary.netGrossProfit}]}
+    ] });
+    return;
+  }
+
+  ctx.body = {
+    list,
+    summary,
+    employees: employees.map(item => item.name).filter(Boolean).sort(),
+    pagination: {
+      total: count,
+      page: Number(page),
+      pageSize: Number(pageSize),
+      totalPages: Math.ceil(count / Number(pageSize || 20))
+    }
+  };
+}
+
+async function getDashboardFilters(ctx) {
+  ctx.body = await dashboardService.buildFilters(ctx.state.user, ctx.query);
+}
+
+async function getDashboardOverview(ctx) {
+  const overview = await dashboardService.buildOverview(ctx.state.user, ctx.query);
+  if (Array.isArray(overview.leaderboard) || ctx.query.homeSummary === '1') {
+    ctx.body = overview;
+    return;
+  }
+  overview.decisionInsights = buildDecisionInsights(overview);
+  overview.aiAdvisor = buildAiAdvisor(overview);
+  ctx.body = overview;
+}
+
+module.exports = {
+  getSalesReport,
+  getCustomerSourceAnalysis,
+  getCustomerSourceDetail,
+  getProductAnalysisDetail,
+  getInventoryReport,
+  getEmployeePerformanceReport,
+  getDashboardFilters,
+  getDashboardOverview,
+  _test: {
+    aggregateProductSalesMetrics,
+    buildCategoryPath,
+    buildInventoryReportMetrics,
+    buildInventoryCategoryOrderMap,
+    sortInventoryCategoryStats
+  }
+};

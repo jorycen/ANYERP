@@ -4,389 +4,2339 @@
       <template #header>
         <div class="card-header">
           <span>商品管理</span>
-          <el-button type="primary" @click="handleCreate">新增商品</el-button>
         </div>
       </template>
 
-      <div class="filter-bar">
-        <el-input v-model="queryParams.keyword" placeholder="商品名称/编码" clearable style="width: 200px" />
-        <el-select v-model="queryParams.category" placeholder="商品分类" clearable style="width: 150px">
-          <el-option v-for="cat in categories" :key="cat" :label="cat" :value="cat" />
-        </el-select>
-        <el-button type="primary" @click="loadData">搜索</el-button>
-      </div>
+      <el-tabs v-model="activeTab" class="module-tabs" @tab-change="onTabChange">
+        <!-- ========== Tab 1: 商品管理 ========== -->
+        <el-tab-pane v-if="!productApprovalOnly" label="商品管理" name="product">
+          <div class="filter-bar">
+            <div>
+              <el-input v-model="queryParams.keyword" placeholder="商品名称/编码/详细配置" clearable style="width: 240px" @keyup.enter="loadData" />
+              <el-tree-select
+                v-model="queryParams.categoryId"
+                :data="categoryTree"
+                :props="{ label: 'name', value: 'category_id', children: 'children' }"
+                placeholder="商品分类"
+                clearable
+                check-strictly
+                style="width: 200px; margin-left: 8px;"
+                @change="loadData"
+              />
+              <el-button type="primary" style="margin-left: 8px;" @click="loadData">搜索</el-button>
+            </div>
+            <div>
+              <el-button type="success" @click="handleImport">批量导入</el-button>
+              <el-button type="warning" @click="handleExport">批量导出</el-button>
+              <el-button
+                v-if="canBatchDeleteProducts"
+                type="danger"
+                :disabled="selectedProductRows.length === 0"
+                :loading="batchDeleteLoading"
+                @click="handleBatchDelete"
+              >
+                批量删除 ({{ selectedProductRows.length }})
+              </el-button>
+              <el-button type="primary" @click="handleCreate">新增商品</el-button>
+            </div>
+          </div>
 
-      <el-table :data="tableData" stripe border>
-        <el-table-column prop="product_code" label="商品编码" width="120" />
-        <el-table-column prop="name" label="商品名称" min-width="150" />
-        <el-table-column prop="category" label="分类" width="100" />
-        <el-table-column prop="unit" label="单位" width="60" />
-        <el-table-column prop="standard_price" label="标准售价" width="100">
-          <template #default="{ row }">¥{{ row.standard_price }}</template>
-        </el-table-column>
-        <el-table-column prop="cost_price" label="成本价" width="100">
-          <template #default="{ row }">¥{{ row.cost_price }}</template>
-        </el-table-column>
-        <el-table-column prop="need_sn" label="需要SN" width="80">
-          <template #default="{ row }">
-            <el-tag :type="row.need_sn ? 'warning' : 'success'" size="small">
-              {{ row.need_sn ? '是' : '否' }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="status" label="状态" width="80">
-          <template #default="{ row }">
-            <el-tag :type="row.status === 1 ? 'success' : 'danger'">{{ row.status === 1 ? '启用' : '停用' }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="150">
-          <template #default="{ row }">
-            <el-button link type="primary" @click="handleEdit(row)">编辑</el-button>
-            <el-button link type="primary" @click="handlePnManage(row)">PN管理</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
+          <el-table
+            ref="productTableRef"
+            :data="tableData"
+            stripe
+            border
+            v-loading="loading"
+            @selection-change="onProductSelectionChange"
+          >
+            <el-table-column v-if="canBatchDeleteProducts" type="selection" width="50" />
+            <el-table-column prop="product_code" label="编码" width="110" show-overflow-tooltip />
+            <el-table-column label="当前PN" width="140">
+              <template #default="{ row }">
+                <template v-if="row.manufacturer_codes && row.manufacturer_codes.length > 0">
+                  <el-tag v-for="c in row.manufacturer_codes" :key="c" size="small" style="margin: 1px 2px;">{{ c }}</el-tag>
+                </template>
+                <span v-else class="text-muted">-</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="name" label="产品名称" min-width="240" show-overflow-tooltip />
+            <el-table-column label="毛利成本口径" width="140">
+              <template #default="{ row }">
+                <el-tag :type="row.gross_profit_cost_mode === 'COMPANY_PRICE' ? 'success' : 'warning'" size="small">
+                  {{ row.gross_profit_cost_mode === 'COMPANY_PRICE' ? '按公司定价' : '按采购价' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="config" label="厂商商品名称" min-width="140" show-overflow-tooltip>
+              <template #default="{ row }">
+                <span :class="{ 'text-muted': !row.config }">{{ row.config || '-' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="category" label="分类" width="120" show-overflow-tooltip>
+              <template #default="{ row }">
+                <span :class="{ 'text-muted': !row.category }">{{ row.category || '-' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="brand" label="品牌" width="80" show-overflow-tooltip />
+            <el-table-column prop="series" label="系列" width="90" show-overflow-tooltip />
+            <el-table-column prop="model" label="型号" width="100" show-overflow-tooltip />
+            <el-table-column prop="processor" label="处理器" min-width="100" show-overflow-tooltip />
+            <el-table-column prop="memory" label="内存" width="80" show-overflow-tooltip />
+            <el-table-column prop="storage" label="存储" width="90" show-overflow-tooltip />
+            <el-table-column prop="color" label="颜色" width="70" show-overflow-tooltip />
+            <el-table-column prop="gpu" label="显卡" min-width="90" show-overflow-tooltip />
+            <el-table-column prop="accessory_type" label="配件类别" width="90" show-overflow-tooltip />
+            <el-table-column label="创建时间" width="170">
+              <template #default="{ row }">
+                {{ formatTime(row.create_time) }}
+              </template>
+            </el-table-column>
+            <el-table-column label="重点产品" width="90" align="center">
+              <template #default="{ row }">
+                <el-switch
+                  :model-value="Boolean(row.is_focus_product)"
+                  :loading="focusLoadingId === row.product_id"
+                  @change="value => updateFocusProduct(row, value)"
+                />
+              </template>
+            </el-table-column>
+            <el-table-column label="状态" width="75">
+              <template #default="{ row }">
+                <el-tag :type="row.status === 1 ? 'success' : 'warning'" size="small">
+                  {{ row.status === 1 ? '启用' : '暂停' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="180" fixed="right">
+              <template #default="{ row }">
+                <el-button link type="primary" @click="handleEdit(row)">编辑</el-button>
+                <el-button link :type="row.status === 1 ? 'warning' : 'success'" @click="handleTogglePause(row)">
+                  {{ row.status === 1 ? '暂停' : '启用' }}
+                </el-button>
+                <el-button link type="danger" @click="handleDelete(row)">删除</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
 
-      <el-pagination
-        v-model:current-page="queryParams.page"
-        v-model:page-size="queryParams.pageSize"
-        :total="total"
-        :page-sizes="[10, 20, 50]"
-        layout="total, sizes, prev, pager, next"
-        @size-change="loadData"
-        @current-change="loadData"
-      />
+          <el-pagination
+            v-model:current-page="queryParams.page"
+            v-model:page-size="queryParams.pageSize"
+            :total="total"
+            :page-sizes="[10, 20, 50]"
+            layout="total, sizes, prev, pager, next"
+            @size-change="loadData"
+            @current-change="loadData"
+          />
+        </el-tab-pane>
+
+        <!-- ========== Tab 2: 分类管理 ========== -->
+        <el-tab-pane v-if="!productApprovalOnly" label="分类管理" name="category">
+          <div class="category-toolbar">
+            <div>
+              <div class="category-toolbar-title">分类层级</div>
+              <div class="category-toolbar-subtitle">按分类、品牌、系列、型号逐级维护，最多支持四级分类</div>
+            </div>
+            <div class="category-toolbar-actions">
+              <span class="category-count">共 {{ categoryCount }} 个分类</span>
+              <el-button size="small" plain @click="expandAllCategories">全部展开</el-button>
+              <el-button size="small" plain @click="collapseAllCategories">全部折叠</el-button>
+              <el-button type="primary" :icon="Plus" @click="handleAddCategory(null)">新增一级分类</el-button>
+            </div>
+          </div>
+
+          <div v-loading="categoryLoading">
+            <el-empty v-if="categoryTree.length === 0" description="暂无分类，点击上方按钮添加" />
+            <div v-else class="category-tree">
+              <div v-for="(level1, level1Index) in categoryTree" :key="level1.category_id" class="category-node level1">
+                <div class="category-row" :class="'level-' + level1.level">
+                  <el-button
+                    v-if="level1.children && level1.children.length"
+                    link
+                    class="category-expand-button"
+                    :aria-label="isCategoryExpanded(level1) ? '折叠分类' : '展开分类'"
+                    @click.stop="toggleCategoryExpanded(level1)"
+                  >
+                    <el-icon><ArrowDown v-if="isCategoryExpanded(level1)" /><ArrowRight v-else /></el-icon>
+                  </el-button>
+                  <span v-else class="category-expand-placeholder" />
+                  <el-icon><Folder /></el-icon>
+                  <span class="cat-name">{{ level1.name }}</span>
+                  <el-tag v-if="Number(level1.is_focus_category) === 1" size="small" type="warning">重点分类</el-tag>
+                  <span class="cat-level">一级</span>
+                  <div class="cat-actions">
+                    <el-button link type="primary" size="small" :disabled="level1Index === 0" @click="handleMoveCategory(level1, categoryTree, level1Index, -1)">上移</el-button>
+                    <el-button link type="primary" size="small" :disabled="level1Index === categoryTree.length - 1" @click="handleMoveCategory(level1, categoryTree, level1Index, 1)">下移</el-button>
+                    <el-button link type="primary" size="small" @click="handleAddCategory(level1)">添加子分类</el-button>
+                    <el-button link type="primary" size="small" @click="handleEditCategory(level1)">编辑</el-button>
+                    <span class="finance-category-toggle">
+                      <span>财务展示</span>
+                      <el-switch
+                        :model-value="Number(level1.show_in_finance) === 1"
+                        :loading="categoryFinanceLoadingId === level1.category_id"
+                        @change="value => toggleCategoryFinance(level1, value)"
+                      />
+                    </span>
+                    <span class="finance-category-toggle">
+                      <span>重点分类</span>
+                      <el-switch :model-value="Number(level1.is_focus_category) === 1"
+                        :loading="Boolean(categoryFocusLoading[level1.category_id])"
+                        @change="value => toggleCategoryFocus(level1, value)" />
+                    </span>
+                    <el-button link type="danger" size="small" @click="handleDeleteCategory(level1)">删除</el-button>
+                  </div>
+                </div>
+
+                <div v-if="level1.children && level1.children.length && isCategoryExpanded(level1)" class="sub-categories">
+                  <div v-for="(level2, level2Index) in level1.children" :key="level2.category_id" class="category-node level2">
+                    <div class="category-row" :class="'level-' + level2.level">
+                      <el-button
+                        v-if="level2.children && level2.children.length"
+                        link
+                        class="category-expand-button"
+                        :aria-label="isCategoryExpanded(level2) ? '折叠分类' : '展开分类'"
+                        @click.stop="toggleCategoryExpanded(level2)"
+                      >
+                        <el-icon><ArrowDown v-if="isCategoryExpanded(level2)" /><ArrowRight v-else /></el-icon>
+                      </el-button>
+                      <span v-else class="category-expand-placeholder" />
+                      <el-icon><Folder /></el-icon>
+                      <span class="cat-name">{{ level2.name }}</span>
+                  <el-tag v-if="Number(level2.is_focus_category) === 1" size="small" type="warning">重点分类</el-tag>
+                      <span class="cat-level">二级</span>
+                      <div class="cat-actions">
+                        <el-button link type="primary" size="small" :disabled="level2Index === 0" @click="handleMoveCategory(level2, level1.children, level2Index, -1)">上移</el-button>
+                        <el-button link type="primary" size="small" :disabled="level2Index === level1.children.length - 1" @click="handleMoveCategory(level2, level1.children, level2Index, 1)">下移</el-button>
+                        <el-button v-if="level2.level < 3" link type="primary" size="small" @click="handleAddCategory(level2)">添加子分类</el-button>
+                        <el-button link type="primary" size="small" @click="handleEditCategory(level2)">编辑</el-button>
+                        <span class="finance-category-toggle">
+                          <span>财务展示</span>
+                          <el-switch
+                            :model-value="Number(level2.show_in_finance) === 1"
+                            :loading="categoryFinanceLoadingId === level2.category_id"
+                            @change="value => toggleCategoryFinance(level2, value)"
+                          />
+                        </span>
+                    <span class="finance-category-toggle">
+                      <span>重点分类</span>
+                      <el-switch :model-value="Number(level2.is_focus_category) === 1"
+                        :loading="Boolean(categoryFocusLoading[level2.category_id])"
+                        @change="value => toggleCategoryFocus(level2, value)" />
+                    </span>
+                        <el-button link type="danger" size="small" @click="handleDeleteCategory(level2)">删除</el-button>
+                      </div>
+                    </div>
+
+                    <div v-if="level2.children && level2.children.length && isCategoryExpanded(level2)" class="sub-categories">
+                      <div v-for="(level3, level3Index) in level2.children" :key="level3.category_id" class="category-row level-3">
+                        <el-button
+                          v-if="level3.children && level3.children.length"
+                          link
+                          class="category-expand-button"
+                          :aria-label="isCategoryExpanded(level3) ? '折叠分类' : '展开分类'"
+                          @click.stop="toggleCategoryExpanded(level3)"
+                        >
+                          <el-icon><ArrowDown v-if="isCategoryExpanded(level3)" /><ArrowRight v-else /></el-icon>
+                        </el-button>
+                        <span v-else class="category-expand-placeholder" />
+                        <el-icon><Folder /></el-icon>
+                        <span class="cat-name">{{ level3.name }}</span>
+                  <el-tag v-if="Number(level3.is_focus_category) === 1" size="small" type="warning">重点分类</el-tag>
+                        <span class="cat-level">三级</span>
+                        <div class="cat-actions">
+                          <el-button link type="primary" size="small" :disabled="level3Index === 0" @click="handleMoveCategory(level3, level2.children, level3Index, -1)">上移</el-button>
+                          <el-button link type="primary" size="small" :disabled="level3Index === level2.children.length - 1" @click="handleMoveCategory(level3, level2.children, level3Index, 1)">下移</el-button>
+                        <el-button link type="primary" size="small" @click="handleAddCategory(level3)">添加子分类</el-button>
+                        <el-button link type="primary" size="small" @click="handleEditCategory(level3)">编辑</el-button>
+                          <span class="finance-category-toggle">
+                            <span>财务展示</span>
+                            <el-switch
+                              :model-value="Number(level3.show_in_finance) === 1"
+                              :loading="categoryFinanceLoadingId === level3.category_id"
+                              @change="value => toggleCategoryFinance(level3, value)"
+                            />
+                          </span>
+                    <span class="finance-category-toggle">
+                      <span>重点分类</span>
+                      <el-switch :model-value="Number(level3.is_focus_category) === 1"
+                        :loading="Boolean(categoryFocusLoading[level3.category_id])"
+                        @change="value => toggleCategoryFocus(level3, value)" />
+                    </span>
+                          <el-button link type="danger" size="small" @click="handleDeleteCategory(level3)">删除</el-button>
+                        </div>
+                        <div v-if="level3.children && level3.children.length && isCategoryExpanded(level3)" class="sub-categories">
+                          <div v-for="(level4, level4Index) in level3.children" :key="level4.category_id" class="category-row level-4">
+                            <span class="category-expand-placeholder" />
+                            <el-icon><Folder /></el-icon>
+                            <span class="cat-name">{{ level4.name }}</span>
+                  <el-tag v-if="Number(level4.is_focus_category) === 1" size="small" type="warning">重点分类</el-tag>
+                            <span class="cat-level">四级</span>
+                            <div class="cat-actions">
+                              <el-button link type="primary" size="small" :disabled="level4Index === 0" @click="handleMoveCategory(level4, level3.children, level4Index, -1)">上移</el-button>
+                              <el-button link type="primary" size="small" :disabled="level4Index === level3.children.length - 1" @click="handleMoveCategory(level4, level3.children, level4Index, 1)">下移</el-button>
+                              <el-button link type="primary" size="small" @click="handleEditCategory(level4)">编辑</el-button>
+                              <span class="finance-category-toggle">
+                                <span>财务展示</span>
+                                <el-switch
+                                  :model-value="Number(level4.show_in_finance) === 1"
+                                  :loading="categoryFinanceLoadingId === level4.category_id"
+                                  @change="value => toggleCategoryFinance(level4, value)"
+                                />
+                              </span>
+                    <span class="finance-category-toggle">
+                      <span>重点分类</span>
+                      <el-switch :model-value="Number(level4.is_focus_category) === 1"
+                        :loading="Boolean(categoryFocusLoading[level4.category_id])"
+                        @change="value => toggleCategoryFocus(level4, value)" />
+                    </span>
+                              <el-button link type="danger" size="small" @click="handleDeleteCategory(level4)">删除</el-button>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </el-tab-pane>
+
+        <!-- ========== Tab 3: 价格管理 ========== -->
+        <el-tab-pane v-if="!productApprovalOnly" label="价格管理" name="price">
+          <el-alert
+            title="产品定价用于订单毛利的商品成本；零售价作为销售开单默认价格；最低销售价仅作为经营参考。"
+            type="info"
+            :closable="false"
+            show-icon
+            style="margin-bottom: 12px"
+          />
+          <div class="filter-bar">
+            <el-input v-model="priceParams.manufacturerCode" placeholder="厂商编码" aria-label="厂商编码" clearable style="width: 170px" @keyup.enter="searchPriceData" />
+            <el-input v-model="priceParams.productName" placeholder="商品名称" aria-label="商品名称" clearable style="width: 200px" @keyup.enter="searchPriceData" />
+            <el-input v-model="priceParams.manufacturerConfig" placeholder="厂商配置信息" aria-label="厂商配置信息" clearable style="width: 200px" @keyup.enter="searchPriceData" />
+            <el-button type="primary" @click="searchPriceData">搜索</el-button>
+            <el-button type="success" @click="handleBatchRefreshCost" :loading="batchRefreshLoading" :disabled="selectedPriceRows.length === 0">
+              批量刷新成本 ({{ selectedPriceRows.length }})
+            </el-button>
+            <el-button type="success" plain @click="handleCostImport">批量导入商品成本</el-button>
+            <el-button type="success" plain @click="handleCostExport" :loading="costExportLoading">成本导出</el-button>
+            <el-button type="warning" @click="handlePriceImport">批量导入定价</el-button>
+            <el-button type="primary" @click="inventoryFoundationVisible = true">库存基础资料（含已售）</el-button>
+            <span class="muted">库存成本进入价格管理、搜索或翻页时自动同步</span>
+          </div>
+
+          <el-table :data="priceTableData" stripe border v-loading="priceLoading" @selection-change="onPriceSelectionChange" ref="priceTableRef">
+            <el-table-column type="selection" width="50" />
+            <el-table-column prop="product_code" label="商品编码" width="130" />
+            <el-table-column label="厂商编码" width="150" show-overflow-tooltip>
+              <template #default="{ row }">{{ row.manufacturer_code || '-' }}</template>
+            </el-table-column>
+            <el-table-column prop="name" label="商品名称" min-width="150" />
+            <el-table-column prop="category_name" label="分类" width="150" show-overflow-tooltip />
+            <el-table-column prop="unit" label="单位" width="60" />
+            <el-table-column label="产品定价" width="140">
+              <template #default="{ row }">
+                <span v-if="!row._editing">¥{{ formatNum(row.standard_price) }}</span>
+                <el-input v-else v-model="row._stdPrice" size="small" style="width: 110px" />
+              </template>
+            </el-table-column>
+            <el-table-column label="库存成本" width="130">
+              <template #default="{ row }">
+                <span class="cost-price">¥{{ formatNum(row.cost_price) }}</span>
+                <el-tooltip content="基于入库先进先出加权平均计算，不可修改" placement="top">
+                  <el-icon style="margin-left: 4px; color: #909399;"><InfoFilled /></el-icon>
+                </el-tooltip>
+              </template>
+            </el-table-column>
+            <el-table-column label="产品结算价" min-width="160">
+              <template #default="{ row }">
+                <span v-if="!row.policy_settlement_prices?.length">—</span>
+                <div v-for="policy in row.policy_settlement_prices || []" :key="policy.pn">
+                  <span v-if="row.policy_settlement_prices.length > 1">{{ policy.pn }}：</span>
+                  {{ policy.settlement_price == null ? '—' : `¥${formatNum(policy.settlement_price)}` }}
+                </div>
+              </template>
+            </el-table-column>
+            <el-table-column label="锁定成本" width="105" align="center">
+              <template #default="{ row }">
+                <el-switch v-model="row._costPriceLocked" @change="toggleCostPriceLock(row)" />
+              </template>
+            </el-table-column>
+            <el-table-column label="销项税率" width="125">
+              <template #default="{ row }">
+                <span v-if="!row._editing">{{ row._outputTaxRate }}%</span>
+                <el-input-number v-else v-model="row._outputTaxRate" :min="0" :max="100" :precision="2" :step="1" size="small" controls-position="right" />
+              </template>
+            </el-table-column>
+            <el-table-column label="进项税率" width="125">
+              <template #default="{ row }">
+                <span v-if="!row._editing">{{ row._inputTaxRate }}%</span>
+                <el-input-number v-else v-model="row._inputTaxRate" :min="0" :max="100" :precision="2" :step="1" size="small" controls-position="right" />
+              </template>
+            </el-table-column>
+            <el-table-column label="进项可抵扣" width="120" align="center">
+              <template #default="{ row }">
+                <el-tag v-if="!row._editing" :type="row._inputTaxDeductible ? 'success' : 'info'">{{ row._inputTaxDeductible ? '是' : '否' }}</el-tag>
+                <el-switch v-else v-model="row._inputTaxDeductible" />
+              </template>
+            </el-table-column>
+            <el-table-column label="不含税库存成本" width="155">
+              <template #default="{ row }">
+                <span class="cost-price">¥{{ formatNum(row._inputTaxDeductible ? Number(row.cost_price || 0) / (1 + Number(row._inputTaxRate || 0) / 100) : row.cost_price) }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="零售价" width="140">
+              <template #default="{ row }">
+                <span v-if="!row._editing">¥{{ formatNum(row.retail_price) }}</span>
+                <el-input v-else v-model="row._retailPrice" size="small" style="width: 110px" />
+              </template>
+            </el-table-column>
+            <el-table-column label="最低销售价" width="140">
+              <template #default="{ row }">
+                <span v-if="!row._editing">¥{{ formatNum(row.min_sale_price) }}</span>
+                <el-input v-else v-model="row._minPrice" size="small" style="width: 110px" />
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="220" fixed="right">
+              <template #default="{ row }">
+                <template v-if="!row._editing">
+                  <el-button link type="primary" @click="startEditPrice(row)">修改定价</el-button>
+                  <el-button link type="primary" @click="handleRefreshCost(row)">刷新成本</el-button>
+                  <el-button link type="primary" @click="showPriceHistory(row)">价格历史</el-button>
+                </template>
+                <template v-else>
+                  <el-button link type="primary" @click="savePrice(row)">保存</el-button>
+                  <el-button link type="default" @click="cancelEditPrice(row)">取消</el-button>
+                </template>
+              </template>
+            </el-table-column>
+          </el-table>
+
+          <el-pagination
+            v-model:current-page="priceParams.page"
+            v-model:page-size="priceParams.pageSize"
+            :total="priceTotal"
+            :page-sizes="[10, 20, 50]"
+            layout="total, sizes, prev, pager, next"
+            @size-change="loadPriceData"
+            @current-change="loadPriceData"
+          />
+        </el-tab-pane>
+
+        <el-tab-pane label="新建商品审批" name="approval">
+          <div class="filter-bar">
+            <el-select v-model="applicationParams.status" placeholder="审批状态" clearable style="width: 160px" @change="loadProductApplications">
+              <el-option label="全部" value="" />
+              <el-option label="待审批" value="pending" />
+              <el-option label="已通过" value="approved" />
+              <el-option label="已拒绝" value="rejected" />
+            </el-select>
+            <el-button type="primary" @click="loadProductApplications">刷新</el-button>
+          </div>
+          <el-table :data="productApplications" stripe border v-loading="applicationLoading">
+            <el-table-column prop="application_no" label="申请单号" width="190" />
+            <el-table-column prop="product_name" label="商品名称" min-width="240" show-overflow-tooltip />
+            <el-table-column prop="category_name" label="商品分类" width="180" show-overflow-tooltip />
+            <el-table-column prop="applicant_name" label="申请人" width="100" />
+            <el-table-column label="申请时间" width="165">
+              <template #default="{ row }">{{ formatTime(row.create_time) }}</template>
+            </el-table-column>
+            <el-table-column label="状态" width="100">
+              <template #default="{ row }">
+                <el-tag :type="productApplicationStatusType(row.status)">{{ productApplicationStatusText(row.status) }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="review_user_name" label="审批人" width="100" />
+            <el-table-column prop="review_comment" label="审批意见" min-width="160" show-overflow-tooltip />
+            <el-table-column label="操作" width="150" fixed="right">
+              <template #default="{ row }">
+                <template v-if="row.status === 'pending' && canReviewProductApplications">
+                  <el-button link type="success" @click="reviewProductApplication(row, 'approved')">通过</el-button>
+                  <el-button link type="danger" @click="reviewProductApplication(row, 'rejected')">拒绝</el-button>
+                </template>
+                <span v-else class="text-muted">-</span>
+              </template>
+            </el-table-column>
+          </el-table>
+          <el-pagination
+            v-model:current-page="applicationParams.page"
+            v-model:page-size="applicationParams.pageSize"
+            :total="applicationTotal"
+            :page-sizes="[10, 20, 50]"
+            layout="total, sizes, prev, pager, next"
+            @size-change="loadProductApplications"
+            @current-change="loadProductApplications"
+          />
+        </el-tab-pane>
+      </el-tabs>
     </el-card>
 
-    <!-- 新建/编辑商品对话框 -->
-    <el-dialog v-model="dialogVisible" :title="dialogTitle" width="600px" @close="handleDialogClose">
+    <!-- 新建/编辑商品对话框（内嵌条码管理） -->
+    <el-dialog v-model="dialogVisible" :title="dialogTitle" width="750px" @close="handleDialogClose">
       <el-form :model="productForm" label-width="100px">
-        <el-form-item label="商品名称" required>
-          <el-input v-model="productForm.name" placeholder="请输入商品名称" />
-        </el-form-item>
         <el-row :gutter="20">
           <el-col :span="12">
             <el-form-item label="商品编码">
-              <el-input v-model="productForm.productCode" placeholder="商品编码" />
+              <el-input :model-value="productForm.productCode || '(系统自动生成)'" disabled />
             </el-form-item>
           </el-col>
           <el-col :span="12">
             <el-form-item label="商品分类">
-              <el-select v-model="productForm.category" placeholder="请选择" style="width: 100%">
-                <el-option v-for="cat in categories" :key="cat" :label="cat" :value="cat" />
-                <el-option label="其他" value="其他" />
-              </el-select>
+              <el-cascader
+                v-model="productForm.categoryPath"
+                :options="productCategoryTree"
+                :props="{ label: 'name', value: 'category_id', children: 'children', disabled: 'disabled', checkStrictly: true }"
+                placeholder="请按层级选择分类（可选任意级）"
+                clearable
+                filterable
+                :show-all-levels="true"
+                style="width: 100%"
+                @change="onCategoryChange"
+              />
+              <div class="text-muted" style="margin-top: 4px;">可选择1～4级；不选择时可直接手工填写下面字段。</div>
             </el-form-item>
           </el-col>
         </el-row>
-        <el-row :gutter="20">
-          <el-col :span="12">
-            <el-form-item label="单位">
-              <el-input v-model="productForm.unit" placeholder="如: 台, 件, 个" />
+
+        <el-divider content-position="left">商品分类维度</el-divider>
+        <el-row :gutter="16">
+          <el-col :span="6">
+            <el-form-item label="商品分类" label-width="75px">
+              <el-input v-model="productForm.category" placeholder="如：笔记本" size="small" />
             </el-form-item>
           </el-col>
-          <el-col :span="12">
+          <el-col :span="6">
+            <el-form-item label="品牌" label-width="55px">
+              <el-input v-model="productForm.brand" placeholder="如：联想" size="small" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="6">
+            <el-form-item label="系列" label-width="55px">
+              <el-input v-model="productForm.series" placeholder="如：拯救者" size="small" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="6">
+            <el-form-item label="型号" label-width="55px">
+              <el-input v-model="productForm.model" placeholder="如：R9000P" size="small" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+
+        <!-- 选择分类后展示分类配置的商品字段 -->
+        <div v-if="productForm.categoryId && categoryFields.length > 0" style="margin-bottom: 12px; padding: 10px; background: #f5f7fa; border-radius: 4px;">
+          <el-divider content-position="left" style="margin: 0 0 10px 0;">{{ categoryFieldCatName }} 商品字段</el-divider>
+          <el-row :gutter="16">
+            <el-col :span="8" v-for="field in categoryFields" :key="field.field_key">
+              <el-form-item :label="field.field_label" :required="Number(field.required) === 1" label-width="75px">
+                <el-select v-if="field.field_type === 'select' && getStandardFieldKey(field.field_key)" v-model="productForm[getStandardFieldKey(field.field_key)]"
+                  :placeholder="field.placeholder || ('请选择' + field.field_label)" size="small" clearable style="width: 100%">
+                  <el-option v-for="opt in field.options" :key="opt" :label="opt" :value="opt" />
+                </el-select>
+                <el-input v-else-if="getStandardFieldKey(field.field_key)" v-model="productForm[getStandardFieldKey(field.field_key)]"
+                  :placeholder="field.placeholder || field.field_label" size="small" />
+                <el-select v-else-if="field.field_type === 'select'" v-model="productForm.attributes[field.field_key]"
+                  :placeholder="field.placeholder || ('请选择' + field.field_label)" size="small" clearable style="width: 100%">
+                  <el-option v-for="opt in field.options" :key="opt" :label="opt" :value="opt" />
+                </el-select>
+                <el-input v-else v-model="productForm.attributes[field.field_key]"
+                  :placeholder="field.placeholder || field.field_label" size="small" />
+              </el-form-item>
+            </el-col>
+          </el-row>
+        </div>
+
+        <el-form-item label="商品名称">
+          <el-input v-model="productForm.name" placeholder="按二级、三级、四级分类及商品字段自动生成，可手工修改" @input="onProductNameInput" />
+          <div class="text-muted" style="margin-top: 4px;">{{ productNameManual ? '已手工编辑商品名称' : `自动名称：${autoProductName || '（填写分类或商品字段后生成）'}` }}</div>
+        </el-form-item>
+        <el-form-item v-if="productForm.productId" label="毛利计价方式">
+          <div>
+            <el-select v-model="productCostMode" style="width: 220px">
+              <el-option label="按采购价" value="PURCHASE_PRICE" :disabled="forceCompanyCostMode" />
+              <el-option label="按公司定价" value="COMPANY_PRICE" />
+            </el-select>
+            <div class="text-muted" style="margin-top: 6px;">这是商品默认的毛利成本口径；具体库存SN已单独设置时优先使用库存设置，已归档订单保持冻结。</div>
+            <div v-if="forceCompanyCostMode" class="text-muted" style="margin-top: 4px;">选件及Care服务的商品默认口径按现有规则使用公司定价；具体库存可在价格管理中单独调整。</div>
+            <div v-else class="text-muted" style="margin-top: 4px;">按公司定价时需有有效定价，0元定价有效；缺少必要价格时订单会提示成本待补。</div>
+          </div>
+        </el-form-item>
+        <el-form-item label="厂商编码 / PN" required>
+          <div class="text-muted" style="margin-bottom: 6px;">厂商编码就是PN，商品只在这里维护。69码属于独立条码；历史厂商编码仅用于清理，不再新增。</div>
+          <el-alert
+            v-if="pnLoadFailed"
+            type="error"
+            :closable="false"
+            title="PN主数据加载失败，已禁止保存，避免用旧厂商编码覆盖PN。请刷新后重试。"
+            style="margin-bottom: 8px;"
+          />
+          <div v-else style="width: 100%;">
+            <div v-for="(pn, index) in productForm.pns" :key="pn._key" style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px;">
+              <el-input v-model="pn.pnCode" placeholder="请输入厂商编码 / PN" style="flex: 1" clearable />
+              <el-tag v-if="productForm.needSn" type="success" size="small">SN唯一PN</el-tag>
+              <el-tag v-else-if="pn.isPrimary" type="success" size="small">主PN</el-tag>
+              <el-button v-else link type="primary" size="small" @click="setPrimaryPn(index)">设为主PN</el-button>
+              <el-button link type="danger" size="small" :disabled="productForm.pns.length <= 1" @click="removePnFromForm(index)">删除</el-button>
+            </div>
+            <el-alert
+              v-if="productForm.pns.length === 0"
+              type="warning"
+              :closable="false"
+              title="当前商品没有有效厂商编码 / PN，请先添加。"
+              style="margin-bottom: 8px;"
+            />
+            <el-alert
+              v-else-if="productForm.needSn && productForm.pns.length > 1"
+              type="warning"
+              :closable="false"
+              title="SN商品只能保留一个有效厂商编码 / PN；请删除多余编码后再保存。"
+              style="margin-bottom: 8px;"
+            />
+            <el-button v-if="!productForm.needSn" type="primary" link size="small" @click="addPnToForm">+ 添加厂商编码 / PN</el-button>
+          </div>
+        </el-form-item>
+        <el-form-item label="厂商商品名称">
+          <el-input v-model="productForm.config" placeholder="厂商商品名称" />
+        </el-form-item>
+        <el-row :gutter="20">
+          <el-col :span="6">
             <el-form-item label="需要SN码">
               <el-switch v-model="productForm.needSn" />
             </el-form-item>
           </el-col>
-        </el-row>
-        <el-row :gutter="20">
-          <el-col :span="12">
-            <el-form-item label="标准售价">
-              <el-input-number v-model="productForm.standardPrice" :min="0" :precision="2" style="width: 100%" />
+          <el-col :span="6">
+            <el-form-item label="需要管理IMEI">
+              <el-switch v-model="productForm.needImei" />
             </el-form-item>
           </el-col>
-          <el-col :span="12">
-            <el-form-item label="成本价">
-              <el-input-number v-model="productForm.costPrice" :min="0" :precision="2" style="width: 100%" />
+          <el-col :span="6">
+            <el-form-item label="状态">
+              <el-switch v-model="productForm.status" :active-value="1" :inactive-value="0" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="6">
+            <el-form-item label="单位">
+              <el-input v-model="productForm.unit" placeholder="台" size="small" />
             </el-form-item>
           </el-col>
         </el-row>
-        <el-form-item label="商品描述">
-          <el-input v-model="productForm.description" type="textarea" rows="3" placeholder="商品描述" />
+        <el-form-item label="重点产品">
+          <el-switch v-model="productForm.isFocusProduct" />
+          <span class="text-muted" style="margin-left: 10px;">旧版重点产品标记；报表重点分类请在分类管理中设置</span>
         </el-form-item>
-        <el-form-item label="状态">
-          <el-switch v-model="productForm.status" :active-value="1" :inactive-value="0" />
+        <el-form-item label="详细配置">
+          <el-input v-model="productForm.remark" type="textarea" rows="2" placeholder="详细配置信息" />
         </el-form-item>
+
+        <!-- 69码及历史厂商编码清理 -->
+        <el-divider content-position="left">69码 / 历史厂商编码</el-divider>
+        <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+          <el-input v-model="formNewBarcode" placeholder="请输入69码" style="width: 310px" @keyup.enter="addFormBarcode" />
+          <el-button type="primary" @click="addFormBarcode">添加69码</el-button>
+        </div>
+        <div class="text-muted" style="margin-bottom: 8px;">厂商编码已经在上方PN区域维护。这里保留历史厂商编码，仅供删除旧数据使用。</div>
+        <el-table :data="productForm.barcodes" stripe border size="small" max-height="200" v-if="productForm.barcodes.length > 0">
+          <el-table-column label="类型" width="100">
+            <template #default="{ row }">
+              <el-tag :type="row.type === 'manufacturer' ? 'warning' : 'success'" size="small">
+                {{ row.type === 'manufacturer' ? '历史厂商编码' : '69码' }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="code" label="条码内容" />
+          <el-table-column label="操作" width="60">
+            <template #default="{ $index }">
+              <el-button link type="danger" size="small" @click="removeFormBarcode($index)">删除</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+        <el-empty v-else description="暂未添加条码" :image-size="40" />
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="handleSubmit" :loading="submitLoading">确定</el-button>
+        <el-button type="info" @click="saveProductDraft">保存草稿</el-button>
+        <el-button type="primary" @click="handleSubmit(false)" :loading="submitLoading">
+          {{ productForm.productId ? '普通修改' : '确定' }}
+        </el-button>
+        <el-button
+          v-if="productForm.productId"
+          type="danger"
+          @click="handleForceSubmit"
+          :loading="submitLoading"
+        >强制修改</el-button>
       </template>
     </el-dialog>
 
-    <!-- PN管理对话框 -->
-    <el-dialog v-model="pnDialogVisible" :title="`PN管理 - ${currentProduct?.name}`" width="700px">
-      <div class="filter-bar">
-        <el-input v-model="pnQueryParams.keyword" placeholder="PN码/SN码" clearable style="width: 200px" />
-        <el-select v-model="pnQueryParams.status" placeholder="状态" clearable style="width: 120px">
-          <el-option label="可用" value="available" />
-          <el-option label="已使用" value="used" />
-          <el-option label="报废" value="scrapped" />
-        </el-select>
-        <el-button type="primary" @click="loadPnData">搜索</el-button>
+    <!-- 分类编辑对话框 -->
+    <el-dialog v-model="categoryDialogVisible" :title="categoryDialogTitle" width="450px" @close="resetCategoryForm">
+      <el-form :model="categoryForm" label-width="80px">
+        <el-form-item label="父级分类">
+          <el-input :model-value="categoryParentName" disabled />
+        </el-form-item>
+        <el-form-item label="分类名称" required>
+          <el-input v-model="categoryForm.name" placeholder="请输入分类名称" />
+        </el-form-item>
+        <el-form-item label="排序">
+          <el-input v-model="categoryForm.sortOrder" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="categoryDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="handleSaveCategory" :loading="categorySaveLoading">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 批量导入对话框 -->
+    <el-dialog v-model="importDialogVisible" title="批量导入商品" width="700px">
+      <div class="import-tips">
+        <p>下载模板，按模板格式填写后上传。“商品分类”可填写单个分类名称，也兼容旧的一级/二级/三级/四级路径；品牌、系列、型号分别填写独立字段。分类字段列名需与“商品字段管理”中配置的<strong>字段名</strong>一致，系统会自动匹配并拼装商品名称。</p>
+        <p style="color: #e6a23c;">也可以直接填写"商品名称"列，系统优先使用该值。</p>
+        <p style="color: #409eff;">提交后先校验文件格式和数据；大文件会进入后台处理，请根据任务状态查看结果。</p>
+        <el-button type="primary" size="small" @click="downloadTemplate">下载导入模板</el-button>
       </div>
-
-      <el-table :data="pnTableData" stripe border size="small">
-        <el-table-column prop="pn_code" label="PN码" width="150" />
-        <el-table-column prop="sn_code" label="SN码" width="180" />
-        <el-table-column prop="status" label="状态" width="80">
-          <template #default="{ row }">
-            <el-tag :type="getPnStatusType(row.status)" size="small">{{ getPnStatusText(row.status) }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="store_name" label="所在门店" width="120" />
-        <el-table-column prop="order_no" label="关联订单" width="150" />
-        <el-table-column prop="updated_at" label="更新时间" width="160" />
-      </el-table>
-
-      <div class="add-pn-bar">
-        <el-button type="primary" size="small" @click="showAddPnForm = !showAddPnForm">添加PN</el-button>
-        <div v-if="showAddPnForm" class="add-pn-form">
-          <el-input v-model="newPnCode" placeholder="PN码" style="width: 150px; margin-right: 10px" />
-          <el-input v-model="newSnCode" placeholder="SN码" style="width: 150px; margin-right: 10px" />
-          <el-button type="primary" size="small" @click="handleAddPn">确认添加</el-button>
+      <div class="upload-area">
+        <el-upload ref="uploadRef" :auto-upload="false" :show-file-list="false" :on-change="handleFileChange" accept=".xlsx,.xls" drag>
+          <el-icon class="el-icon--upload"><Upload /></el-icon>
+          <div class="el-upload__text">将文件拖到此处，或<em>点击上传</em></div>
+        </el-upload>
+        <div v-if="importFile" class="selected-file">
+          <el-tag closable @close="clearFile">{{ importFile.name }}</el-tag>
         </div>
       </div>
+      <template #footer>
+        <el-button @click="importDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="handleImportSubmit" :loading="importLoading" :disabled="!importFile">开始导入</el-button>
+      </template>
     </el-dialog>
+
+    <el-dialog v-model="priceImportDialogVisible" title="批量导入定价" width="700px">
+      <div class="import-tips">
+        <p>填写商品编码或厂商编码，二者任填一个即可。厂商编码对应多个商品时会同步更新全部商品。</p>
+        <p>可更新定价、零售价和最低售价；空价格按0导入并立即生效。成本不在定价模板中维护，请使用刷新成本。</p>
+        <p style="color: #409eff;">提交后先校验文件格式，定价导入将在后台异步处理；完成后可下载失败清单。</p>
+        <el-button type="primary" size="small" @click="downloadPriceTemplate">下载定价模板</el-button>
+      </div>
+      <div class="upload-area">
+        <el-upload :auto-upload="false" :show-file-list="false" :on-change="handlePriceFileChange" accept=".xlsx,.xls" drag>
+          <el-icon class="el-icon--upload"><Upload /></el-icon>
+          <div class="el-upload__text">将文件拖到此处，或<em>点击上传</em></div>
+        </el-upload>
+        <div v-if="priceImportFile" class="selected-file">
+          <el-tag closable @close="clearPriceFile">{{ priceImportFile.name }}</el-tag>
+        </div>
+      </div>
+      <el-alert
+        v-if="priceImportValidated"
+        :type="priceImportValidation.failed > 0 ? 'warning' : 'success'"
+        :closable="false"
+        style="margin-top: 16px;"
+      >
+        导入完成：成功 <strong>{{ priceImportValidation.success }}</strong> 行，
+        异常 <strong>{{ priceImportValidation.failed }}</strong> 行，
+        影响 <strong>{{ priceImportValidation.affectedProducts }}</strong> 个商品，
+        价格变更 <strong>{{ priceImportValidation.priceChanges }}</strong> 条
+      </el-alert>
+      <el-table
+        v-if="priceImportValidation.errors.length > 0"
+        :data="priceImportValidation.errors"
+        stripe
+        size="small"
+        max-height="240"
+        style="margin-top: 12px;"
+      >
+        <el-table-column prop="row" label="行号" width="90" />
+        <el-table-column label="商品标识" min-width="150">
+          <template #default="{ row }">
+            {{ row.product?.['商品编码'] || row.product?.['厂商编码'] || '-' }}
+          </template>
+        </el-table-column>
+        <el-table-column prop="message" label="异常原因" min-width="220" />
+      </el-table>
+      <template #footer>
+        <el-button @click="priceImportDialogVisible = false">取消</el-button>
+        <el-button v-if="priceImportValidation.errors.length > 0" @click="downloadPriceImportErrors">下载异常记录</el-button>
+        <el-button type="primary" @click="handlePriceImportSubmit" :loading="priceImportLoading" :disabled="!priceImportFile">立即导入</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="costImportDialogVisible" title="批量导入商品成本" width="700px">
+      <el-alert title="请填写商品编码或商品名称，并在成本价列填写新的成本；成本价为空时仍按库存入库价自动刷新。" type="info" :closable="false" show-icon style="margin-bottom: 12px;" />
+      <div class="import-tips">
+        <p>下载模板后填写要刷新的商品编码或商品名称；无需填写成本价，系统会按当前库存对应的采购/入库价加权平均后刷新库存成本。</p>
+        <el-button type="primary" size="small" @click="downloadCostTemplate">下载成本刷新模板</el-button>
+      </div>
+      <div class="upload-area">
+        <el-upload :auto-upload="false" :show-file-list="false" :on-change="handleCostFileChange" accept=".xlsx,.xls" drag>
+          <el-icon class="el-icon--upload"><Upload /></el-icon>
+          <div class="el-upload__text">将文件拖到此处，或 <em>点击上传</em></div>
+        </el-upload>
+        <div v-if="costImportFile" class="selected-file">
+          <el-tag closable @close="clearCostFile">{{ costImportFile.name }}</el-tag>
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="costImportDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="handleCostImportSubmit" :loading="costImportLoading" :disabled="!costImportFile">开始导入</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 导入结果 -->
+    <el-dialog v-model="importResultVisible" title="导入结果" width="800px">
+      <el-alert :type="importResultAlertType" style="margin-bottom: 16px;">
+        <template v-if="!isImportTaskFinished">
+          文件格式校验通过，已提交后台处理。当前状态：<strong>{{ importTaskStatusText }}</strong>
+          <span v-if="importResult.taskNo">，任务号：{{ importResult.taskNo }}</span>
+        </template>
+        <template v-else>
+          {{ importResult.status === 'failed' ? '导入失败' : '导入处理完成' }}：成功 <strong>{{ importResult.success }}</strong> 行，失败 <strong>{{ importResult.failed }}</strong> 行
+          <span v-if="importResult.affectedProducts">，影响 <strong>{{ importResult.affectedProducts }}</strong> 个商品</span>
+          <span v-if="importResult.effective">，已生效 <strong>{{ importResult.effective }}</strong> 条价格变更</span>
+          <span v-if="importResult.pending">，待生效 <strong>{{ importResult.pending }}</strong> 条价格变更</span>
+          <span v-if="importResult.batchNo">，批次号：{{ importResult.batchNo }}</span>
+          <span v-if="importResult.errorMessage">。{{ importResult.errorMessage }}</span>
+        </template>
+      </el-alert>
+      <el-table v-if="importResult.errors.length > 0" :data="importResult.errors" stripe size="small" max-height="300">
+        <el-table-column type="index" width="60" />
+        <el-table-column prop="row" label="行号" width="90" />
+        <el-table-column label="商品标识">
+          <template #default="{ row }">
+            {{ row.product?.['商品编码'] || row.product?.['厂商编码'] || row.product?.['商品名称'] || row.product?.['name'] || '-' }}
+          </template>
+        </el-table-column>
+        <el-table-column prop="message" label="失败原因" />
+      </el-table>
+      <template #footer>
+        <el-button v-if="isImportTaskFinished && importResult.errors.length > 0" :loading="importErrorsDownloading" @click="downloadImportErrors">下载失败清单</el-button>
+        <el-button @click="importResultVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="priceHistoryVisible" :title="`价格历史 - ${priceHistoryProduct?.product_code || ''}`" width="960px">
+      <el-table :data="priceHistoryData" stripe border v-loading="priceHistoryLoading" max-height="420">
+        <el-table-column prop="price_field_label" label="字段" width="100" />
+        <el-table-column label="调整前" width="110">
+          <template #default="{ row }">{{ formatPriceHistoryValue(row, row.old_price) }}</template>
+        </el-table-column>
+        <el-table-column label="调整后" width="110">
+          <template #default="{ row }">{{ formatPriceHistoryValue(row, row.new_price) }}</template>
+        </el-table-column>
+        <el-table-column prop="status_label" label="状态" width="90" />
+        <el-table-column prop="source_label" label="来源" width="100" />
+        <el-table-column label="生效时间" width="160">
+          <template #default="{ row }">{{ formatTime(row.effective_time) }}</template>
+        </el-table-column>
+        <el-table-column prop="batch_no" label="批次号" width="150" show-overflow-tooltip />
+        <el-table-column prop="create_user" label="操作人" width="100" />
+        <el-table-column prop="change_reason" label="调价原因" min-width="120" show-overflow-tooltip />
+        <el-table-column prop="remark" label="备注" min-width="120" show-overflow-tooltip />
+      </el-table>
+      <el-pagination
+        v-model:current-page="priceHistoryParams.page"
+        v-model:page-size="priceHistoryParams.pageSize"
+        :total="priceHistoryTotal"
+        :page-sizes="[10, 20, 50]"
+        layout="total, sizes, prev, pager, next"
+        @size-change="loadPriceHistory"
+        @current-change="loadPriceHistory"
+      />
+      <template #footer>
+        <el-button @click="priceHistoryVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
+
   </div>
+  <InventoryPricingManager v-model="inventoryPricingVisible" />
+  <InventoryFoundationManager v-model="inventoryFoundationVisible" />
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ref, reactive, onMounted, onUnmounted, computed, nextTick, watch } from 'vue'
+import { useRoute } from 'vue-router'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { ArrowDown, ArrowRight, Folder, Plus, Upload } from '@element-plus/icons-vue'
+import * as XLSX from 'xlsx'
 import api from '../api'
+import InventoryPricingManager from '../components/InventoryPricingManager.vue'
+import InventoryFoundationManager from '../components/InventoryFoundationManager.vue'
+import { saveDraft, loadDraft, clearDraft, cloneDraft } from '../utils/draft'
 
-const categories = ref([])
+const currentUserInfo = JSON.parse(localStorage.getItem('userInfo') || '{}')
+const inventoryPricingVisible = ref(false)
+const inventoryFoundationVisible = ref(false)
+const route = useRoute()
+const currentRoleCode = currentUserInfo.roleCode || ''
+const currentRoleCodes = Array.isArray(currentUserInfo.roles) && currentUserInfo.roles.length
+  ? currentUserInfo.roles
+  : String(currentRoleCode).split(',').map(item => item.trim()).filter(Boolean)
+const productApprovalOnly = currentRoleCodes.length > 0 && currentRoleCodes.every(role => ['finance', 'purchaser'].includes(role))
+const activeTab = ref(productApprovalOnly ? 'approval' : 'product')
+const syncTabFromRoute = () => {
+  const routeTab = String(route.meta.tab || (productApprovalOnly ? 'approval' : 'product'))
+  activeTab.value = productApprovalOnly ? 'approval' : routeTab
+  onTabChange(activeTab.value)
+}
+const productDraftKey = () => productForm.productId ? `product-edit:${productForm.productId}` : 'product-create'
+
+// ========== 商品管理 ==========
+const loading = ref(false)
+const focusLoadingId = ref('')
 const tableData = ref([])
+const productTableRef = ref(null)
+const selectedProductRows = ref([])
+const batchDeleteLoading = ref(false)
 const total = ref(0)
+const queryParams = reactive({ page: 1, pageSize: 20, keyword: '', categoryId: '' })
+const categoryTree = ref([])
+const originalCategoryId = ref('')
+const canBatchDeleteProducts = currentRoleCodes.includes('admin') || currentRoleCodes.includes('boss')
+const canReviewProductApplications = ['finance', 'purchaser', 'admin', 'boss'].some(role => currentRoleCodes.includes(role))
+const productApplications = ref([])
+const applicationLoading = ref(false)
+const applicationTotal = ref(0)
+const applicationParams = reactive({ page: 1, pageSize: 20, status: '' })
 
 const dialogVisible = ref(false)
 const dialogTitle = ref('新建商品')
 const submitLoading = ref(false)
 const currentProduct = ref(null)
+const pnLoadFailed = ref(false)
+const formNewBarcode = ref('')
+const categoryFields = ref([])
+const categoryFieldCatName = ref('')
+const categoryNameParts = ref([])
+const productNameManual = ref(false)
 
 const productForm = reactive({
   productId: null,
+  grossProfitCostMode: 'PURCHASE_PRICE',
   name: '',
   productCode: '',
+  pnCode: '',
+  pns: [],
+  categoryId: '',
+  categoryPath: [],
   category: '',
-  unit: '',
+  config: '',
+  brand: '',
+  series: '',
+  model: '',
+  processor: '',
+  memory: '',
+  storage: '',
+  color: '',
+  gpu: '',
+  accessory_type: '',
+  extras: {},
+  unit: '台',
   needSn: false,
-  standardPrice: 0,
-  costPrice: 0,
-  description: '',
-  status: 1
+  needImei: false,
+  remark: '',
+  isFocusProduct: false,
+  status: 1,
+  barcodes: [],
+  attributes: {}
 })
 
-// PN管理相关
-const pnDialogVisible = ref(false)
-const pnTableData = ref([])
-const showAddPnForm = ref(false)
-const newPnCode = ref('')
-const newSnCode = ref('')
-
-const pnQueryParams = reactive({
-  keyword: '',
-  status: '',
-  productId: ''
+const forceCompanyCostMode = computed(() => productForm.category === '选件' ||
+  (productForm.category === '售后' && productForm.brand === 'Care服务'))
+const productCostMode = computed({
+  get: () => forceCompanyCostMode.value ? 'COMPANY_PRICE' : productForm.grossProfitCostMode,
+  set: value => { productForm.grossProfitCostMode = value }
 })
 
-const queryParams = reactive({
-  page: 1,
-  pageSize: 20,
-  keyword: '',
-  category: ''
+function findCategoryNode(tree, categoryId) {
+  for (const node of tree || []) {
+    if (!node) continue
+    if (String(node.category_id) === String(categoryId)) return node
+    const found = findCategoryNode(node.children, categoryId)
+    if (found) return found
+  }
+  return null
+}
+
+function isLeafCategory(node) {
+  return Number(node?.level) === 4 && !(node?.children || []).filter(Boolean).some(child => Number(child.status ?? 1) === 1)
+}
+
+function normalizeCategoryTree(nodes) {
+  return (Array.isArray(nodes) ? nodes : []).filter(Boolean).map(node => ({
+    ...node,
+    children: normalizeCategoryTree(node.children)
+  }))
+}
+
+const productCategoryTree = computed(() => {
+  const decorate = (nodes) => (nodes || []).filter(Boolean).map(node => ({
+      ...node,
+      disabled: Number(node.status ?? 1) !== 1 || !isLeafCategory(node),
+      children: decorate(node.children)
+    }))
+  return decorate(categoryTree.value)
 })
 
-onMounted(() => {
-  loadData()
-  loadCategories()
+let pnFormKeySeed = 0
+const createFormPn = (pn = {}) => ({
+  _key: pn._key || `pn-${Date.now()}-${pnFormKeySeed++}`,
+  pnId: pn.pnId || pn.pn_id || '',
+  pnCode: String(pn.pnCode ?? pn.pn_code ?? '').trim(),
+  isPrimary: pn.isPrimary === true || Number(pn.isPrimary ?? pn.is_primary) === 1
 })
+
+const addPnToForm = () => {
+  productForm.pns.push(createFormPn({ isPrimary: productForm.pns.length === 0 }))
+}
+
+const ensureCreatePnRow = () => {
+  if (!Array.isArray(productForm.pns)) productForm.pns = []
+  if (productForm.pns.length === 0) {
+    productForm.pns.push(createFormPn({
+      pnCode: productForm.pnCode || '',
+      isPrimary: true
+    }))
+  }
+}
+
+const removePnFromForm = (index) => {
+  if (productForm.pns.length <= 1) return
+  const removed = productForm.pns.splice(index, 1)[0]
+  if (removed?.isPrimary && productForm.pns[0]) productForm.pns[0].isPrimary = true
+}
+
+const setPrimaryPn = (index) => {
+  productForm.pns.forEach((pn, pnIndex) => { pn.isPrimary = pnIndex === index })
+}
+
+const addFormBarcode = () => {
+  const code = String(formNewBarcode.value || '').trim()
+  if (!code) { ElMessage.warning('请输入条码'); return }
+  if (productForm.barcodes.some(item => item.type === 'barcode69' && String(item.code || '').trim().toLowerCase() === code.toLowerCase())) {
+    ElMessage.warning('该69码已存在')
+    return
+  }
+  productForm.barcodes.push({ type: 'barcode69', code })
+  formNewBarcode.value = ''
+}
+const removeFormBarcode = (index) => { productForm.barcodes.splice(index, 1) }
+
+const standardFieldAliases = {
+  category: ['category', 'categoryname', '商品分类', '分类'],
+  brand: ['brand', '品牌'], series: ['series', '系列'], model: ['model', '型号'],
+  processor: ['processor', 'cpu', '处理器'], memory: ['memory', 'mem', '内存'],
+  storage: ['storage', 'harddisk', '硬盘', '存储'], color: ['color', '颜色'],
+  gpu: ['gpu', '显卡'], accessory_type: ['accessory_type', '类别', '配件类别']
+}
+const getStandardFieldKey = (fieldKey) => {
+  const normalizedKey = String(fieldKey || '').trim().toLowerCase()
+  return Object.entries(standardFieldAliases).find(([, aliases]) => aliases.includes(normalizedKey))?.[0] || ''
+}
+const categoryExtraFields = computed(() => {
+  return categoryFields.value.filter(field => !['category', 'brand', 'series', 'model'].includes(getStandardFieldKey(field.field_key)))
+})
+
+const getCategoryFieldValue = (field) => {
+  const standardKey = getStandardFieldKey(field.field_key)
+  return standardKey ? productForm[standardKey] : productForm.attributes[field.field_key]
+}
+
+const autoProductName = computed(() => {
+  const parts = [productForm.brand, productForm.series, productForm.model].filter(Boolean)
+  for (const field of categoryExtraFields.value) {
+    const value = getCategoryFieldValue(field)
+    if (value !== undefined && value !== null && String(value).trim()) parts.push(String(value).trim())
+  }
+  return parts.map(value => String(value).trim()).filter(value => value && value !== '-').join(' ')
+})
+
+const computedProductName = computed(() => String(productForm.name || '').trim() || autoProductName.value)
+
+const syncAutoProductName = () => {
+  if (!productNameManual.value) productForm.name = autoProductName.value
+}
+
+const onProductNameInput = () => {
+  if (String(productForm.name || '').trim()) {
+    productNameManual.value = true
+    return
+  }
+  productNameManual.value = false
+  syncAutoProductName()
+}
+
+// Observe the resulting automatic name, including standard fields such as
+// memory/storage/color that are stored outside attributes.
+watch(autoProductName, syncAutoProductName)
+
+function findCategoryByPath(tree, path) {
+  if (!path || !tree) return null
+  const parts = path.split('/')
+  let current = tree
+  let found = null
+  for (const part of parts) {
+    found = current.find(node => node.name === part)
+    if (!found) return null
+    current = found.children || []
+  }
+  return found ? found.category_id : null
+}
+
+function findCategoryPath(tree, categoryId, parentPath = []) {
+  for (const node of tree || []) {
+    if (!node) continue
+    const nextPath = [...parentPath, node.category_id]
+    if (String(node.category_id) === String(categoryId)) return nextPath
+    const found = findCategoryPath(node.children, categoryId, nextPath)
+    if (found) return found
+  }
+  return []
+}
+
+const onCategoryChange = async (value) => {
+  const categoryPath = Array.isArray(value) ? value.filter(Boolean) : (value ? [value] : [])
+  const categoryId = categoryPath[categoryPath.length - 1] || ''
+  productForm.categoryPath = categoryPath
+  productForm.categoryId = categoryId
+  productForm.category = ''
+  productForm.brand = ''
+  productForm.series = ''
+  productForm.model = ''
+  for (const key of ['processor', 'memory', 'storage', 'color', 'gpu', 'accessory_type']) {
+    productForm[key] = ''
+  }
+  if (!categoryId) {
+    productForm.attributes = {}
+    categoryFields.value = []
+    categoryFieldCatName.value = ''
+    categoryNameParts.value = []
+    return
+  }
+  const selectedCategory = findCategoryNode(categoryTree.value, categoryId)
+  productForm.attributes = {}
+  categoryFields.value = []
+  categoryFieldCatName.value = ''
+  categoryNameParts.value = []
+  try {
+    const res = await api.getCategoryFieldConfig(categoryId)
+    if (res.code === 0 && res.data && res.data.fields) {
+      categoryFields.value = res.data.fields
+      categoryFieldCatName.value = res.data.categoryName || ''
+      categoryNameParts.value = Array.isArray(res.data.categoryNameParts) ? res.data.categoryNameParts : []
+      const dimensions = res.data.categoryDimensions || {}
+      for (const key of ['category', 'brand', 'series', 'model']) {
+        if (dimensions[key]) productForm[key] = dimensions[key]
+      }
+      if (currentProduct.value && String(categoryId) === String(originalCategoryId.value)) {
+        productForm.brand = currentProduct.value.brand || ''
+        productForm.series = currentProduct.value.series || ''
+        productForm.model = currentProduct.value.model || ''
+        productForm.processor = currentProduct.value.processor || ''
+        productForm.memory = currentProduct.value.memory || ''
+        productForm.storage = currentProduct.value.storage || ''
+        productForm.color = currentProduct.value.color || ''
+        productForm.accessory_type = currentProduct.value.accessory_type || ''
+        const extras = currentProduct.value.extras
+          ? (typeof currentProduct.value.extras === 'string' ? JSON.parse(currentProduct.value.extras) : currentProduct.value.extras)
+          : {}
+        productForm.extras = extras
+        productForm.attributes = {}
+        for (const field of categoryFields.value) {
+          const standardKey = getStandardFieldKey(field.field_key)
+          if (standardKey && currentProduct.value[standardKey]) {
+            productForm.attributes[field.field_key] = currentProduct.value[standardKey]
+          }
+        }
+        for (const [k, v] of Object.entries(extras)) {
+          productForm.attributes[k] = v
+        }
+      }
+    }
+  } catch (err) { /* ignore */ }
+}
 
 const loadData = async () => {
+  loading.value = true
   try {
     const res = await api.getProductList(queryParams)
     if (res.code === 0) {
       tableData.value = res.data?.list || []
-      total.value = res.data?.total || 0
+      total.value = res.data?.pagination?.total || 0
+      selectedProductRows.value = []
+      nextTick(() => productTableRef.value?.clearSelection?.())
     }
   } catch (err) {
-    ElMessage.error('加载数据失败')
-  }
+    ElMessage.error(err?.response?.data?.message || '加载数据失败')
+  } finally { loading.value = false }
 }
 
-const loadCategories = async () => {
+const loadCategoryTree = async () => {
   try {
-    const res = await api.getCategory()
+    const res = await api.getCategoryTree()
     if (res.code === 0) {
-      categories.value = res.data || []
+      categoryTree.value = normalizeCategoryTree(res.data)
+      const nextState = { ...categoryExpanded.value }
+      const visit = (nodes = []) => {
+        nodes.forEach(node => {
+          if (!(node.category_id in nextState)) nextState[node.category_id] = true
+          visit(node.children || [])
+        })
+      }
+      visit(categoryTree.value)
+      categoryExpanded.value = nextState
     }
-  } catch (err) {
-    console.error('Failed to load categories')
-  }
+  } catch (err) { /* ignore */ }
 }
 
-const handleCreate = () => {
+const handleCreate = async () => {
   dialogTitle.value = '新建商品'
   resetForm()
+  restoreProductDraft()
+  ensureCreatePnRow()
+  if (productForm.categoryId || productForm.categoryPath?.length) {
+    await onCategoryChange(productForm.categoryPath?.length ? productForm.categoryPath : productForm.categoryId)
+  }
   dialogVisible.value = true
 }
 
-const handleEdit = (row) => {
+const handleEdit = async (row) => {
   dialogTitle.value = '编辑商品'
   currentProduct.value = row
+  productNameManual.value = true
   productForm.productId = row.product_id
+  productForm.grossProfitCostMode = row.gross_profit_cost_mode || 'PURCHASE_PRICE'
+  pnLoadFailed.value = false
   productForm.name = row.name
-  productForm.productCode = row.product_code || ''
+  productForm.productCode = row.product_code
+  productForm.pnCode = row.manufacturer_codes?.[0] || String(row.manufacturer_code || '').split(',')[0].trim()
+  productForm.pns = []
+  productForm.categoryId = row.category_id || ''
+  productForm.categoryPath = findCategoryPath(categoryTree.value, productForm.categoryId)
+  originalCategoryId.value = row.category_id || ''
   productForm.category = row.category || ''
-  productForm.unit = row.unit || ''
-  productForm.needSn = !!row.need_sn
-  productForm.standardPrice = row.standard_price || 0
-  productForm.costPrice = row.cost_price || 0
-  productForm.description = row.description || ''
+  productForm.config = row.config || ''
+  productForm.brand = row.brand || ''
+  productForm.series = row.series || ''
+  productForm.model = row.model || ''
+  productForm.processor = row.processor || ''
+  productForm.memory = row.memory || ''
+  productForm.storage = row.storage || ''
+  productForm.color = row.color || ''
+  productForm.gpu = row.gpu || ''
+  productForm.accessory_type = row.accessory_type || ''
+  const extras = row.extras
+    ? (typeof row.extras === 'string' ? JSON.parse(row.extras) : row.extras)
+    : {}
+  productForm.extras = extras
+  productForm.attributes = { ...extras }
+  productForm.unit = row.unit || '台'
+  productForm.needSn = Number(row.need_sn) === 1
+  productForm.needImei = Number(row.need_imei) === 1
+  productForm.remark = row.remark || ''
+  productForm.isFocusProduct = Boolean(row.is_focus_product)
   productForm.status = row.status || 1
-  dialogVisible.value = true
-}
+  productForm.barcodes = (row.barcodes || []).map(b => ({ type: b.type, code: b.code }))
 
-const handlePnManage = async (row) => {
-  currentProduct.value = row
-  pnQueryParams.productId = row.product_id
-  pnQueryParams.keyword = ''
-  pnQueryParams.status = ''
-  await loadPnData()
-  pnDialogVisible.value = true
-}
-
-const loadPnData = async () => {
   try {
-    const res = await api.getPnList(pnQueryParams)
-    if (res.code === 0) {
-      pnTableData.value = res.data?.list || []
-    }
+    const pnRes = await api.getPnList({ productId: row.product_id, status: 1, page: 1, pageSize: 100 })
+    if (pnRes.code !== 0) throw new Error(pnRes.message || 'PN主数据加载失败')
+    const pnRows = pnRes.data?.list || []
+    productForm.pns = pnRows
+      .sort((a, b) => Number(b.is_primary || 0) - Number(a.is_primary || 0))
+      .map(createFormPn)
   } catch (err) {
-    ElMessage.error('加载PN数据失败')
+    pnLoadFailed.value = true
+    productForm.pns = []
+    ElMessage.error(err?.response?.data?.message || err?.message || 'PN主数据加载失败，请刷新后重试')
+  }
+
+  categoryFields.value = []
+  categoryFieldCatName.value = ''
+
+  if (!productForm.categoryId && row.category) {
+    const catId = findCategoryByPath(categoryTree.value, row.category)
+    if (catId) {
+      productForm.categoryId = catId
+    }
+  }
+  productForm.categoryPath = findCategoryPath(categoryTree.value, productForm.categoryId)
+  originalCategoryId.value = productForm.categoryId
+
+  dialogVisible.value = true
+
+  if (productForm.categoryId || productForm.categoryPath?.length) {
+    await onCategoryChange(productForm.categoryPath?.length ? productForm.categoryPath : productForm.categoryId)
   }
 }
 
-const handleAddPn = async () => {
-  if (!newPnCode.value) {
-    ElMessage.warning('请输入PN码')
+const handleDelete = async (row) => {
+  try {
+    await ElMessageBox.confirm('确定要删除该商品吗？', '提示', { type: 'warning' })
+    const res = await api.deleteProduct(row.product_id)
+    if (res.code === 0) { ElMessage.success('删除成功'); loadData() }
+    else { ElMessage.error(res.message || '删除失败') }
+  } catch (err) {
+    if (err !== 'cancel') ElMessage.error(err?.response?.data?.message || '删除失败')
+  }
+}
+
+const onProductSelectionChange = (val) => {
+  selectedProductRows.value = val
+}
+
+const handleBatchDelete = async () => {
+  if (!canBatchDeleteProducts) {
+    ElMessage.error('仅admin/boss支持批量删除商品')
     return
   }
+  if (selectedProductRows.value.length === 0) {
+    ElMessage.warning('请先选择要删除的商品')
+    return
+  }
+
+  const count = selectedProductRows.value.length
   try {
-    const res = await api.addPn({
-      productId: currentProduct.value.product_id,
-      pnCode: newPnCode.value,
-      snCode: newSnCode.value
+    await ElMessageBox.confirm(`确定要批量删除当前已选的 ${count} 个商品吗？有库存的商品会删除失败。`, '批量删除', { type: 'warning' })
+    batchDeleteLoading.value = true
+    const res = await api.batchDeleteProducts({
+      productIds: selectedProductRows.value.map(row => row.product_id)
     })
-    if (res.code === 0) {
-      ElMessage.success('添加成功')
-      newPnCode.value = ''
-      newSnCode.value = ''
-      showAddPnForm.value = false
-      loadPnData()
-    } else {
-      ElMessage.error(res.message || '添加失败')
+    if (res.code !== 0) {
+      ElMessage.error(res.message || '批量删除失败')
+      return
     }
+
+    const result = res.data || {}
+    if (Number(result.failed || 0) > 0) {
+      const failedItems = (result.results || []).filter(item => !item.success)
+      const detail = failedItems
+        .slice(0, 8)
+        .map(item => `${item.productName || item.productCode || item.productId}：${item.message || '删除失败'}`)
+        .join('\n')
+      await ElMessageBox.alert(
+        `${res.message || '批量删除完成'}${detail ? `\n\n失败明细：\n${detail}` : ''}${failedItems.length > 8 ? '\n...' : ''}`,
+        '批量删除结果',
+        { type: 'warning' }
+      )
+    } else {
+      ElMessage.success(res.message || '批量删除成功')
+    }
+    loadData()
   } catch (err) {
-    ElMessage.error('添加失败')
+    if (err !== 'cancel') ElMessage.error(err?.response?.data?.message || '批量删除失败')
+  } finally {
+    batchDeleteLoading.value = false
   }
 }
 
-const getPnStatusType = (status) => {
-  const types = { available: 'success', used: 'warning', scrapped: 'danger' }
-  return types[status] || 'info'
+const handleTogglePause = async (row) => {
+  const action = row.status === 1 ? '暂停' : '启用'
+  try {
+    await ElMessageBox.confirm(`确定要${action}该商品吗？`, '提示', { type: 'warning' })
+    const res = await api.togglePause(row.product_id)
+    if (res.code === 0) { ElMessage.success(res.message); loadData() }
+    else { ElMessage.error(res.message || '操作失败') }
+  } catch (err) {
+    if (err !== 'cancel') ElMessage.error(err?.response?.data?.message || '操作失败')
+  }
 }
 
-const getPnStatusText = (status) => {
-  const texts = { available: '可用', used: '已使用', scrapped: '报废' }
-  return texts[status] || status
-}
-
-const handleDialogClose = () => {
-  resetForm()
+const updateFocusProduct = async (row, value) => {
+  focusLoadingId.value = row.product_id
+  try {
+    const res = await api.updateProduct(row.product_id, { isFocusProduct: Boolean(value) })
+    if (res.code === 0) {
+      row.is_focus_product = value ? 1 : 0
+      ElMessage.success(value ? '已设为重点产品' : '已取消重点产品')
+    } else {
+      ElMessage.error(res.message || '更新重点产品失败')
+    }
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.message || '更新重点产品失败')
+  } finally {
+    focusLoadingId.value = ''
+  }
 }
 
 const resetForm = () => {
+  productForm.grossProfitCostMode = 'PURCHASE_PRICE'
+  pnLoadFailed.value = false
+  productNameManual.value = false
   productForm.productId = null
   productForm.name = ''
   productForm.productCode = ''
+  productForm.pnCode = ''
+  productForm.pns = []
+  productForm.categoryId = ''
+  productForm.categoryPath = []
   productForm.category = ''
-  productForm.unit = ''
+  originalCategoryId.value = ''
+  productForm.config = ''
+  productForm.brand = ''
+  productForm.series = ''
+  productForm.model = ''
+  productForm.processor = ''
+  productForm.memory = ''
+  productForm.storage = ''
+  productForm.color = ''
+  productForm.gpu = ''
+  productForm.accessory_type = ''
+  productForm.extras = {}
+  productForm.unit = '台'
   productForm.needSn = false
-  productForm.standardPrice = 0
-  productForm.costPrice = 0
-  productForm.description = ''
+  productForm.needImei = false
+  productForm.remark = ''
+  productForm.isFocusProduct = false
   productForm.status = 1
+  productForm.barcodes = []
+  productForm.attributes = {}
+  categoryFields.value = []
+  categoryFieldCatName.value = ''
+  categoryNameParts.value = []
+  formNewBarcode.value = ''
+  currentProduct.value = null
 }
 
-const handleSubmit = async () => {
-  if (!productForm.name) {
-    ElMessage.warning('请输入商品名称')
+const handleDialogClose = () => { resetForm() }
+
+const saveProductDraft = () => {
+  saveDraft(productDraftKey(), {
+    productForm: cloneDraft(productForm),
+    productNameManual: productNameManual.value,
+    formNewBarcode: formNewBarcode.value
+  })
+  ElMessage.success('草稿已保存')
+}
+
+const restoreProductDraft = () => {
+  const draft = loadDraft(productDraftKey())
+  if (!draft?.productForm) return
+  Object.assign(productForm, draft.productForm)
+  productNameManual.value = Boolean(draft.productNameManual)
+  productForm.barcodes = Array.isArray(draft.productForm.barcodes) ? draft.productForm.barcodes : []
+  if (Array.isArray(draft.productForm.pns)) {
+    productForm.pns = draft.productForm.pns.map(createFormPn)
+  } else if (!Array.isArray(productForm.pns)) {
+    productForm.pns = []
+  }
+  productForm.pnCode = productForm.pnCode || productForm.pns.find(item => item.isPrimary)?.pnCode || ''
+  productForm.attributes = draft.productForm.attributes || {}
+  productForm.extras = draft.productForm.extras || {}
+  formNewBarcode.value = draft.formNewBarcode || ''
+  ElMessage.success('已恢复上次草稿')
+}
+
+const handleForceSubmit = async () => {
+  try {
+    await ElMessageBox.confirm(
+      '强制修改会同步更新该商品以前所有采购申请明细中的PN快照。此操作会改变历史采购申请的显示内容，是否继续？',
+      '确认强制修改',
+      {
+        confirmButtonText: '确认强制修改',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+    await handleSubmit(true)
+  } catch (err) {
+    if (err !== 'cancel' && err !== 'close') {
+      ElMessage.error(err?.response?.data?.message || err?.message || '强制修改失败')
+    }
+  }
+}
+
+const handleSubmit = async (forceUpdatePurchasePn = false) => {
+  if (!productForm.productId) {
+    const selectedCategory = findCategoryNode(categoryTree.value, productForm.categoryId)
+    if (!selectedCategory || !isLeafCategory(selectedCategory)) {
+      ElMessage.warning('新建商品必须选择完整的1-4级分类，请选择第4级分类')
+      return
+    }
+  }
+  const finalName = String(computedProductName.value || productForm.name || '').trim()
+  const missingField = categoryFields.value.find(field => {
+    if (Number(field.required) !== 1) return false
+    const key = getStandardFieldKey(field.field_key)
+    return !String(key ? productForm[key] : productForm.attributes[field.field_key] ?? '').trim()
+  })
+  if (missingField) { ElMessage.warning(`请填写${missingField.field_label}`); return }
+  if (!finalName) { ElMessage.warning('请填写补充字段'); return }
+  if (currentProduct.value && pnLoadFailed.value) {
+    ElMessage.warning('PN主数据尚未加载成功，请刷新后重试')
     return
   }
-
+  if (!Array.isArray(productForm.pns) || productForm.pns.length === 0) {
+    ElMessage.warning('请至少填写一个厂商编码 / PN'); return
+  }
+  const pnEntries = productForm.pns.map(pn => ({
+    pnId: pn.pnId,
+    pnCode: String(pn.pnCode || '').trim(),
+    isPrimary: Boolean(pn.isPrimary)
+  }))
+  if (pnEntries.some(pn => !pn.pnCode)) {
+    ElMessage.warning('厂商编码 / PN不能为空'); return
+  }
+  if (new Set(pnEntries.map(pn => pn.pnCode.toLowerCase().replace(/\s+/g, ''))).size !== pnEntries.length) {
+    ElMessage.warning('厂商编码 / PN不能重复'); return
+  }
+  if (productForm.needSn && pnEntries.length > 1) {
+    ElMessage.warning('SN商品只能维护一个厂商编码 / PN'); return
+  }
+  if (!pnEntries.some(pn => pn.isPrimary)) {
+    pnEntries[0].isPrimary = true
+  }
+  const pnCode = String(pnEntries.find(pn => pn.isPrimary)?.pnCode || '').trim()
+  if (!pnCode) { ElMessage.warning('请输入PN码'); return }
   submitLoading.value = true
   try {
+    const attributes = {}
+    for (const [k, v] of Object.entries(productForm.attributes)) {
+      if (v !== undefined && v !== null && v !== '') attributes[k] = v
+    }
+    for (const field of categoryFields.value) {
+      const standardKey = getStandardFieldKey(field.field_key)
+      if (!standardKey || !['processor', 'memory', 'storage', 'color', 'gpu', 'accessory_type'].includes(standardKey)) continue
+      const value = productForm[standardKey]
+      if (value !== undefined && value !== null && value !== '') attributes[field.field_key] = value
+    }
+    const barcodes = [...productForm.barcodes]
     const data = {
-      name: productForm.name,
-      productCode: productForm.productCode,
+      name: finalName,
+      categoryId: productForm.categoryId || null,
       category: productForm.category,
+      brand: productForm.brand,
+      series: productForm.series,
+      model: productForm.model,
+      pnCode,
+      manufacturerCode: pnCode,
+      config: productForm.config,
       unit: productForm.unit,
       needSn: productForm.needSn ? 1 : 0,
-      standardPrice: productForm.standardPrice,
-      costPrice: productForm.costPrice,
-      description: productForm.description,
-      status: productForm.status
+      needImei: productForm.needImei ? 1 : 0,
+      remark: productForm.remark,
+      isFocusProduct: productForm.isFocusProduct,
+      status: productForm.status,
+      barcodes,
+      pns: pnEntries,
+      forceUpdatePurchasePn: Boolean(forceUpdatePurchasePn && productForm.productId),
+      attributes: Object.keys(attributes).length > 0 ? attributes : null,
     }
-
     let res
     if (productForm.productId) {
+      data.grossProfitCostMode = productCostMode.value
       res = await api.updateProduct(productForm.productId, data)
     } else {
       res = await api.createProduct(data)
     }
-
     if (res.code === 0) {
-      ElMessage.success(productForm.productId ? '更新成功' : '创建成功')
+      const isApplication = !productForm.productId && res.pendingApproval
+      ElMessage.success(isApplication ? '新建商品申请已提交，等待审批' : (res.message || (productForm.productId ? '更新成功' : '创建成功')))
+      clearDraft(productDraftKey())
       dialogVisible.value = false
-      loadData()
-    } else {
-      ElMessage.error(res.message || '操作失败')
-    }
+      if (isApplication) {
+        activeTab.value = 'approval'
+        loadProductApplications()
+      } else {
+        loadData()
+      }
+    } else { ElMessage.error(res.message || '操作失败') }
   } catch (err) {
-    ElMessage.error('操作失败')
-  } finally {
-    submitLoading.value = false
+    ElMessage.error(err?.response?.data?.message || err?.message || '操作失败')
+  } finally { submitLoading.value = false }
+}
+
+// ========== 分类管理 ==========
+const categoryLoading = ref(false)
+const categoryDialogVisible = ref(false)
+const categoryDialogTitle = ref('')
+const categorySaveLoading = ref(false)
+const categoryFinanceLoadingId = ref('')
+const categoryExpanded = ref({})
+const categoryParentName = ref('无（一级分类）')
+const editingCategory = ref(null)
+const parentCategory = ref(null)
+const categoryForm = reactive({ name: '', sortOrder: 0 })
+
+const categoryCount = computed(() => {
+  const countNodes = (nodes = []) => nodes.reduce((sum, node) => sum + 1 + countNodes(node.children || []), 0)
+  return countNodes(categoryTree.value)
+})
+
+const isCategoryExpanded = (category) => categoryExpanded.value[category.category_id] !== false
+
+const toggleCategoryExpanded = (category) => {
+  const categoryId = category.category_id
+  categoryExpanded.value = {
+    ...categoryExpanded.value,
+    [categoryId]: !isCategoryExpanded(category)
   }
 }
+
+const setCategoryExpanded = (expanded) => {
+  const nextState = { ...categoryExpanded.value }
+  const visit = (nodes = []) => {
+    nodes.forEach(node => {
+      if (node.children?.length) nextState[node.category_id] = expanded
+      visit(node.children || [])
+    })
+  }
+  visit(categoryTree.value)
+  categoryExpanded.value = nextState
+}
+
+const expandAllCategories = () => setCategoryExpanded(true)
+const collapseAllCategories = () => setCategoryExpanded(false)
+
+const handleAddCategory = (parent) => {
+  if (parent && Number(parent.level) >= 4) {
+    ElMessage.warning('分类最多支持四级')
+    return
+  }
+  editingCategory.value = null; parentCategory.value = parent
+  const siblingCount = parent ? (parent.children?.length || 0) : categoryTree.value.length
+  categoryForm.name = ''; categoryForm.sortOrder = siblingCount
+  categoryParentName.value = parent ? parent.name : '无（一级分类）'
+  categoryDialogTitle.value = parent ? `添加子分类 - ${parent.name}` : '新增一级分类'
+  categoryDialogVisible.value = true
+}
+const handleEditCategory = (row) => {
+  editingCategory.value = row; parentCategory.value = null
+  categoryForm.name = row.name; categoryForm.sortOrder = row.sort_order || 0
+  categoryParentName.value = row.parent_id ? '（已有父级）' : '无（一级分类）'
+  categoryDialogTitle.value = `编辑分类 - ${row.name}`
+  categoryDialogVisible.value = true
+}
+const categoryFocusLoading = reactive({})
+const toggleCategoryFocus = async (row, value) => {
+  if (categoryFocusLoading[row.category_id]) return
+  categoryFocusLoading[row.category_id] = true
+  try {
+    const res = await api.updateCategory(row.category_id, { isFocusCategory: Boolean(value) })
+    if (res.code !== 0) throw new Error(res.message || '保存失败')
+    row.is_focus_category = value ? 1 : 0
+    ElMessage.success(value ? '已设为重点分类' : '已取消重点分类')
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.message || err?.message || '重点分类设置保存失败')
+  } finally {
+    delete categoryFocusLoading[row.category_id]
+  }
+}
+const toggleCategoryFinance = async (row, value) => {
+  const previousValue = Number(row.show_in_finance || 0)
+  const nextValue = value ? 1 : 0
+  row.show_in_finance = nextValue
+  categoryFinanceLoadingId.value = row.category_id
+  try {
+    const res = await api.updateCategory(row.category_id, { showInFinance: nextValue })
+    if (res.code !== 0) throw new Error(res.message || '保存失败')
+    ElMessage.success(nextValue ? '已展示在财务页面' : '已从财务页面隐藏')
+  } catch (err) {
+    row.show_in_finance = previousValue
+    ElMessage.error(err?.response?.data?.message || err?.message || '财务展示设置保存失败')
+  } finally {
+    categoryFinanceLoadingId.value = ''
+  }
+}
+const handleDeleteCategory = async (row) => {
+  try {
+    await ElMessageBox.confirm(`确定要删除分类"${row.name}"吗？`, '提示', { type: 'warning' })
+    const res = await api.deleteCategory(row.category_id)
+    if (res.code === 0) { ElMessage.success('删除成功'); loadCategoryTree() }
+    else ElMessage.error(res.message || '删除失败')
+  } catch (err) {
+    if (err !== 'cancel') ElMessage.error(err?.response?.data?.message || '删除失败')
+  }
+}
+const handleSaveCategory = async () => {
+  if (!categoryForm.name) { ElMessage.warning('请输入分类名称'); return }
+  categorySaveLoading.value = true
+  try {
+    if (editingCategory.value) {
+      const res = await api.updateCategory(editingCategory.value.category_id, { name: categoryForm.name, sortOrder: categoryForm.sortOrder })
+      if (res.code === 0) { ElMessage.success('更新成功'); categoryDialogVisible.value = false; loadCategoryTree() }
+      else ElMessage.error(res.message || '更新失败')
+    } else {
+      const res = await api.createCategory({ parentId: parentCategory.value?.category_id || null, name: categoryForm.name, sortOrder: categoryForm.sortOrder })
+      if (res.code === 0) { ElMessage.success('创建成功'); categoryDialogVisible.value = false; loadCategoryTree() }
+      else ElMessage.error(res.message || '创建失败')
+    }
+  } catch (err) { ElMessage.error(err?.response?.data?.message || '保存失败') }
+  finally { categorySaveLoading.value = false }
+}
+const resetCategoryForm = () => { categoryForm.name = ''; categoryForm.sortOrder = 0; editingCategory.value = null; parentCategory.value = null }
+
+const handleMoveCategory = async (row, siblings, index, direction) => {
+  const targetIndex = index + direction
+  if (targetIndex < 0 || targetIndex >= siblings.length) return
+
+  const sorted = [...siblings]
+  ;[sorted[index], sorted[targetIndex]] = [sorted[targetIndex], sorted[index]]
+
+  try {
+    const res = await api.sortCategories({
+      items: sorted.map((item, idx) => ({ id: item.category_id, sortOrder: idx }))
+    })
+    if (res.code === 0) {
+      ElMessage.success('排序已更新')
+      await loadCategoryTree()
+    } else {
+      ElMessage.error(res.message || '排序失败')
+    }
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.message || '排序失败')
+  }
+}
+
+// ========== 价格管理 ==========
+const priceLoading = ref(false); const priceTableData = ref([]); const priceTotal = ref(0)
+const priceParams = reactive({ page: 1, pageSize: 20, manufacturerCode: '', productName: '', manufacturerConfig: '' })
+let priceLoadSequence = 0
+const priceTableRef = ref(null); const selectedPriceRows = ref([])
+const batchRefreshLoading = ref(false)
+const priceImportDialogVisible = ref(false)
+const priceImportFile = ref(null)
+const priceImportLoading = ref(false)
+const priceImportValidated = ref(false)
+const priceImportValidation = reactive({ success: 0, failed: 0, errors: [], affectedProducts: 0, priceChanges: 0, canImport: false })
+const costImportDialogVisible = ref(false)
+const costImportFile = ref(null)
+const costImportLoading = ref(false)
+const costExportLoading = ref(false)
+const priceHistoryVisible = ref(false)
+const priceHistoryLoading = ref(false)
+const priceHistoryData = ref([])
+const priceHistoryTotal = ref(0)
+const priceHistoryProduct = ref(null)
+const priceHistoryParams = reactive({ page: 1, pageSize: 20, productId: '' })
+
+const loadPriceData = async () => {
+  const sequence = ++priceLoadSequence
+  priceLoading.value = true
+  try {
+    const res = await api.getPriceList(priceParams)
+    if (sequence !== priceLoadSequence) return
+    if (res.code === 0) {
+      priceTableData.value = (res.data?.list || []).map(p => ({
+        ...p,
+        _editing: false,
+        _stdPrice: p.standard_price || 0,
+        _retailPrice: p.retail_price || p.standard_price || 0,
+        _minPrice: p.min_sale_price || 0,
+        _outputTaxRate: Number((Number(p.output_tax_rate ?? 0.13) * 100).toFixed(2)),
+        _inputTaxRate: Number((Number(p.input_tax_rate ?? 0.13) * 100).toFixed(2)),
+        _inputTaxDeductible: Number(p.input_tax_deductible ?? 1) === 1,
+        _costPriceLocked: Number(p.cost_price_locked || 0) === 1
+      }))
+      priceTotal.value = res.data?.pagination?.total || res.data?.total || 0
+      const productIds = priceTableData.value.map(row => row.product_id).filter(Boolean)
+      if (productIds.length) {
+        try {
+          const costRes = await api.batchRefreshCost({ productIds })
+          if (sequence !== priceLoadSequence) return
+          if (costRes.code === 0) {
+            const costMap = new Map((costRes.data || []).map(item => [item.productId, Number(item.costPrice || 0)]))
+            priceTableData.value = priceTableData.value.map(row => ({
+              ...row,
+              cost_price: costMap.has(row.product_id) ? costMap.get(row.product_id) : row.cost_price
+            }))
+          } else {
+            ElMessage.warning(costRes.message || '库存成本自动同步失败，请手动刷新')
+          }
+        } catch (costError) {
+          if (sequence === priceLoadSequence) ElMessage.warning(costError?.response?.data?.message || '库存成本自动同步失败，请手动刷新')
+        }
+      }
+    }
+  } catch (err) { ElMessage.error(err?.response?.data?.message || '加载失败') }
+  finally { if (sequence === priceLoadSequence) priceLoading.value = false }
+}
+const searchPriceData = () => {
+  if (priceParams.page !== 1) priceParams.page = 1
+  else loadPriceData()
+}
+const startEditPrice = (row) => {
+  row._editing = true
+  row._stdPrice = row.standard_price || 0
+  row._retailPrice = row.retail_price || row.standard_price || 0
+  row._minPrice = row.min_sale_price || 0
+  row._outputTaxRate = Number((Number(row.output_tax_rate ?? 0.13) * 100).toFixed(2))
+  row._inputTaxRate = Number((Number(row.input_tax_rate ?? 0.13) * 100).toFixed(2))
+  row._inputTaxDeductible = Number(row.input_tax_deductible ?? 1) === 1
+}
+const cancelEditPrice = (row) => { row._editing = false }
+const toggleCostPriceLock = async (row) => {
+  const locked = Boolean(row._costPriceLocked)
+  try {
+    const res = await api.setCostPriceLock({
+      productId: row.product_id,
+      locked,
+      ...(locked ? { costPrice: Number(row.cost_price || 0) } : {})
+    })
+    if (res.code !== 0) throw new Error(res.message || '库存成本锁定状态保存失败')
+    ElMessage.success(locked ? '库存成本已锁定，自动同步不会再改写' : '已解除锁定，后续会按库存数据自动重算')
+  } catch (err) {
+    row._costPriceLocked = !locked
+    ElMessage.error(err?.response?.data?.message || err.message || '库存成本锁定状态保存失败')
+  }
+}
+const savePrice = async (row) => {
+  if (Number(row._minPrice) > Number(row._retailPrice)) {
+    ElMessage.warning('最低售价必须小于或等于零售价')
+    return
+  }
+  try {
+    const res = await api.setPrice({
+      productId: row.product_id,
+      standardPrice: row._stdPrice,
+      retailPrice: row._retailPrice,
+      minSalePrice: row._minPrice,
+      outputTaxRate: row._outputTaxRate,
+      inputTaxRate: row._inputTaxRate,
+      inputTaxDeductible: row._inputTaxDeductible
+    })
+    if (res.code === 0) {
+      row.standard_price = row._stdPrice
+      row.retail_price = row._retailPrice
+      row.min_sale_price = row._minPrice
+      row.output_tax_rate = Number(row._outputTaxRate) / 100
+      row.input_tax_rate = Number(row._inputTaxRate) / 100
+      row.input_tax_deductible = row._inputTaxDeductible ? 1 : 0
+      row._editing = false
+      ElMessage.success('更新成功')
+    }
+    else ElMessage.error(res.message || '更新失败')
+  } catch (err) { ElMessage.error(err?.response?.data?.message || '更新失败') }
+}
+const handleRefreshCost = async (row) => {
+  try {
+    const res = await api.refreshCostPrice(row.product_id)
+    if (res.code === 0) { row.cost_price = res.costPrice; ElMessage.success(`成本价已刷新: ¥${formatNum(res.costPrice)}`) }
+    else ElMessage.error(res.message || '刷新失败')
+  } catch (err) { ElMessage.error(err?.response?.data?.message || '刷新失败') }
+}
+const onPriceSelectionChange = (val) => { selectedPriceRows.value = val }
+const handleBatchRefreshCost = async () => {
+  if (selectedPriceRows.value.length === 0) { ElMessage.warning('请先选择'); return }
+  batchRefreshLoading.value = true
+  try {
+    const res = await api.batchRefreshCost({ productIds: selectedPriceRows.value.map(r => r.product_id) })
+    if (res.code === 0) {
+      const costMap = {}
+      for (const item of res.data) costMap[item.productId] = item.costPrice
+      for (const row of priceTableData.value) { if (costMap[row.product_id] !== undefined) row.cost_price = costMap[row.product_id] }
+      ElMessage.success(`已刷新 ${res.data.length} 个商品`)
+      priceTableRef.value?.clearSelection()
+    } else ElMessage.error(res.message || '失败')
+  } catch (err) { ElMessage.error(err?.response?.data?.message || '失败') }
+  finally { batchRefreshLoading.value = false }
+}
+
+const handlePriceImport = () => {
+  priceImportFile.value = null
+  resetPriceImportValidation()
+  priceImportDialogVisible.value = true
+}
+
+const handlePriceFileChange = (file) => {
+  priceImportFile.value = file.raw
+  resetPriceImportValidation()
+}
+
+const clearPriceFile = () => {
+  priceImportFile.value = null
+  resetPriceImportValidation()
+}
+
+const resetPriceImportValidation = () => {
+  priceImportValidated.value = false
+  priceImportValidation.success = 0
+  priceImportValidation.failed = 0
+  priceImportValidation.errors = []
+  priceImportValidation.affectedProducts = 0
+  priceImportValidation.priceChanges = 0
+  priceImportValidation.canImport = false
+}
+
+const downloadPriceTemplate = () => {
+  const data = [{
+    '商品编码': '',
+    '厂商编码': '',
+    '定价': '',
+    '零售价': '',
+    '最低售价': '',
+    '调价原因': '',
+    '备注': ''
+  }]
+  const ws = XLSX.utils.json_to_sheet(data)
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, '定价模板')
+  ws['!cols'] = [{ wch: 16 }, { wch: 18 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 18 }, { wch: 24 }]
+  XLSX.writeFile(wb, '商品定价导入模板.xlsx')
+}
+
+const handlePriceImportSubmit = async () => {
+  if (!priceImportFile.value) { ElMessage.warning('请选择文件'); return }
+  resetPriceImportValidation()
+  priceImportLoading.value = true
+  try {
+    const res = await api.importPrices(priceImportFile.value)
+    if (res.code === 0) {
+      const data = res.data || {}
+      priceImportFile.value = null
+      priceImportDialogVisible.value = false
+      showImportTaskResult(data, 'price')
+    } else ElMessage.error(res.message || '导入失败')
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.message || '文件格式校验失败，请修改后重新上传')
+  } finally {
+    priceImportLoading.value = false
+  }
+}
+
+const downloadPriceImportErrors = () => {
+  if (!priceImportValidation.errors.length) {
+    ElMessage.warning('暂无异常记录')
+    return
+  }
+  const data = priceImportValidation.errors.map(item => ({
+    '行号': item.row,
+    ...(item.product || {}),
+    '异常原因': item.message
+  }))
+  const ws = XLSX.utils.json_to_sheet(data)
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, '异常记录')
+  ws['!cols'] = Object.keys(data[0] || {}).map(key => ({ wch: Math.max(12, String(key).length + 6) }))
+  XLSX.writeFile(wb, '商品定价导入异常记录.xlsx')
+}
+
+const showPriceHistory = async (row) => {
+  priceHistoryProduct.value = row
+  priceHistoryParams.productId = row.product_id
+  priceHistoryParams.page = 1
+  priceHistoryVisible.value = true
+  await loadPriceHistory()
+}
+
+const loadPriceHistory = async () => {
+  if (!priceHistoryParams.productId) return
+  priceHistoryLoading.value = true
+  try {
+    const res = await api.getPriceChangeHistory(priceHistoryParams)
+    if (res.code === 0) {
+      priceHistoryData.value = res.data?.list || []
+      priceHistoryTotal.value = res.data?.pagination?.total || res.data?.total || 0
+    }
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.message || '加载价格历史失败')
+  } finally {
+    priceHistoryLoading.value = false
+  }
+}
+
+const handleCostImport = () => {
+  costImportFile.value = null
+  costImportDialogVisible.value = true
+}
+
+const handleCostExport = async () => {
+  costExportLoading.value = true
+  try {
+    await api.exportCostPrices({ manufacturerCode: priceParams.manufacturerCode, productName: priceParams.productName, manufacturerConfig: priceParams.manufacturerConfig })
+    ElMessage.success('成本导出成功')
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.message || err?.message || '成本导出失败')
+  } finally {
+    costExportLoading.value = false
+  }
+}
+
+const handleCostFileChange = (file) => {
+  costImportFile.value = file.raw
+}
+
+const clearCostFile = () => {
+  costImportFile.value = null
+}
+
+const downloadCostTemplate = () => {
+  const data = [{
+    '成本价': '',
+    '商品编码': '',
+    '商品名称': ''
+  }]
+  const ws = XLSX.utils.json_to_sheet(data)
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, '成本刷新模板')
+  ws['!cols'] = [{ wch: 16 }, { wch: 24 }, { wch: 14 }]
+  XLSX.writeFile(wb, '商品成本刷新模板.xlsx')
+}
+
+const handleCostImportSubmit = async () => {
+  if (!costImportFile.value) { ElMessage.warning('请选择文件'); return }
+  costImportLoading.value = true
+  try {
+    const res = await api.importCostRefresh(costImportFile.value)
+    if (res.code === 0) {
+      importResult.success = res.data.success
+      importResult.failed = res.data.failed
+      importResult.errors = res.data.errors || []
+      importResult.affectedProducts = 0
+      importResult.pending = 0
+      importResult.effective = 0
+      importResult.batchNo = ''
+      costImportDialogVisible.value = false
+      importResultVisible.value = true
+      loadPriceData()
+    } else ElMessage.error(res.message || '刷新失败')
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.message || '刷新失败')
+  } finally {
+    costImportLoading.value = false
+  }
+}
+
+// ========== 批量导入 ==========
+const importDialogVisible = ref(false); const importFile = ref(null)
+const importLoading = ref(false); const importResultVisible = ref(false)
+const importErrorsDownloading = ref(false)
+const importResult = reactive({
+  taskId: '', taskNo: '', importType: '', status: '', totalRows: 0, processedRows: 0,
+  success: 0, failed: 0, errors: [], affectedProducts: 0, pending: 0, effective: 0,
+  priceChanges: 0, batchNo: '', errorMessage: ''
+})
+let importTaskPollTimer = null
+
+const isImportTaskFinished = computed(() => ['completed', 'partial_failed', 'failed'].includes(importResult.status))
+const importTaskStatusText = computed(() => ({
+  queued: '排队中',
+  processing: '处理中',
+  completed: '已完成',
+  partial_failed: '部分失败',
+  failed: '失败'
+}[importResult.status] || '准备中'))
+const importResultAlertType = computed(() => {
+  if (!isImportTaskFinished.value) return 'info'
+  if (importResult.status === 'completed') return 'success'
+  return 'warning'
+})
+
+const clearImportTaskPoll = () => {
+  if (importTaskPollTimer) {
+    clearTimeout(importTaskPollTimer)
+    importTaskPollTimer = null
+  }
+}
+
+const applyImportTaskData = (data) => {
+  importResult.taskId = data.taskId || importResult.taskId
+  importResult.taskNo = data.taskNo || ''
+  importResult.importType = data.importType || importResult.importType
+  importResult.status = data.status || ''
+  importResult.totalRows = data.totalRows || 0
+  importResult.processedRows = data.processedRows || 0
+  importResult.success = data.success || 0
+  importResult.failed = data.failed || 0
+  importResult.errors = Array.isArray(data.errors)
+    ? data.errors
+    : (() => {
+        try {
+          const parsed = JSON.parse(data.errors || '[]')
+          return Array.isArray(parsed) ? parsed : []
+        } catch (_) {
+          return []
+        }
+      })()
+  importResult.affectedProducts = data.affectedProducts || 0
+  importResult.pending = data.pending || 0
+  importResult.effective = data.effective || 0
+  importResult.priceChanges = data.priceChanges || 0
+  importResult.batchNo = data.batchNo || ''
+  importResult.errorMessage = data.errorMessage || ''
+}
+
+const pollImportTask = async () => {
+  if (!importResult.taskId) return
+  try {
+    const res = await api.getProductImportTask(importResult.taskId)
+    if (res.code === 0) {
+      applyImportTaskData(res.data || {})
+      if (isImportTaskFinished.value) {
+        clearImportTaskPoll()
+        if (importResult.importType === 'price') loadPriceData()
+        else loadData()
+        if (importResult.status === 'partial_failed') {
+          ElMessage.warning('导入完成，但有失败记录，请下载失败清单修改后重新导入')
+        } else if (importResult.status === 'completed') {
+          ElMessage.success('批量导入已完成')
+        }
+        return
+      }
+    }
+  } catch (err) {
+    // 网络短暂中断时继续查询，避免把后台仍在处理的任务误报为失败。
+  }
+  importTaskPollTimer = setTimeout(pollImportTask, 1500)
+}
+
+const showImportTaskResult = (data, importType) => {
+  clearImportTaskPoll()
+  importResult.taskId = data.taskId || ''
+  importResult.importType = importType
+  applyImportTaskData(data)
+  importResultVisible.value = true
+  if (importResult.taskId && !isImportTaskFinished.value) pollImportTask()
+}
+
+const downloadImportErrors = async () => {
+  if (!importResult.errors.length) {
+    ElMessage.warning('暂无失败记录')
+    return
+  }
+  importErrorsDownloading.value = true
+  try {
+    if (importResult.taskId) {
+      await api.downloadProductImportErrors(importResult.taskId)
+    } else {
+      const rows = importResult.errors.map(item => ({
+        '行号': item.row,
+        ...(item.product || {}),
+        '异常原因': item.message
+      }))
+      const ws = XLSX.utils.json_to_sheet(rows)
+      const wb = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(wb, ws, '失败清单')
+      XLSX.writeFile(wb, importResult.importType === 'price' ? '商品定价导入失败清单.xlsx' : '商品导入失败清单.xlsx')
+    }
+    ElMessage.success('失败清单已下载')
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.message || err?.message || '失败清单下载失败')
+  } finally {
+    importErrorsDownloading.value = false
+  }
+}
+
+onUnmounted(clearImportTaskPoll)
+
+const handleImport = () => { importFile.value = null; importDialogVisible.value = true }
+const handleExport = async () => {
+  try {
+    await api.exportProducts({
+      keyword: queryParams.keyword,
+      categoryId: queryParams.categoryId
+    });
+    ElMessage.success('导出成功');
+  } catch (error) {
+    ElMessage.error(error?.message || '导出失败');
+  }
+}
+const handleFileChange = (file) => { importFile.value = file.raw }
+const clearFile = () => { importFile.value = null }
+const downloadTemplate = () => {
+  const d = [{
+    '商品名称': '',
+    '商品分类': '笔记本',
+    '品牌': '',
+    '系列': '',
+    '型号': '',
+    '处理器': '',
+    '内存': '',
+    '存储': '',
+    '颜色': '',
+    '显卡': '',
+    '配件类别': '',
+    '厂商商品名称': '',
+    '单位': '台',
+    '需要SN码': '是',
+    '厂商编码': '',
+    '69码': '',
+    '详细配置': '',
+    '状态': '启用'
+  }]
+  const ws = XLSX.utils.json_to_sheet(d); const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, '模板')
+  ws['!cols'] = Array(19).fill(null).map(() => ({ wch: 14 }))
+  XLSX.writeFile(wb, '商品导入模板.xlsx')
+}
+
+const getProductImportErrorMessage = (source) => {
+  const payload = source?.response?.data || source || {}
+  const errors = payload?.data?.errors || payload?.errors || []
+  const details = Array.isArray(errors)
+    ? errors.slice(0, 3).map(item => {
+        const row = item?.row ? `第${item.row}行：` : ''
+        return `${row}${item?.message || item?.reason || ''}`
+      }).filter(Boolean)
+    : []
+  const message = payload?.message || payload?.error || source?.message || '导入失败'
+  return details.length > 0 ? `${message}；${details.join('；')}` : message
+}
+
+const handleImportSubmit = async () => {
+  if (!importFile.value) { ElMessage.warning('请选择文件'); return }
+  importLoading.value = true
+  try {
+    const res = await api.importProducts(importFile.value)
+    if (res.code === 0) {
+      importFile.value = null
+      importDialogVisible.value = false
+      showImportTaskResult(res.data || {}, 'product')
+    } else ElMessage.error(getProductImportErrorMessage(res))
+  } catch (err) { ElMessage.error(err?.response?.data?.message || '文件格式校验失败，请修改后重新上传') }
+  finally { importLoading.value = false }
+}
+
+const formatNum = (v) => { if (v === null || v === undefined) return '0.00'; return Number(v).toFixed(2) }
+const formatPriceHistoryValue = (row, value) => {
+  if (row?.price_field === 'output_tax_rate' || row?.price_field === 'input_tax_rate') return `${formatNum(value)}%`
+  if (row?.price_field === 'input_tax_deductible') return Number(value) === 1 ? '是' : '否'
+  return `¥${formatNum(value)}`
+}
+const formatTime = (t) => { if (!t) return '-'; const d = new Date(t); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0') }
+
+const loadProductApplications = async () => {
+  applicationLoading.value = true
+  try {
+    const res = await api.getProductApplicationList(applicationParams)
+    if (res.code === 0) {
+      productApplications.value = res.data?.list || []
+      applicationTotal.value = res.data?.pagination?.total || res.data?.total || 0
+    }
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.message || '商品申请加载失败')
+  } finally {
+    applicationLoading.value = false
+  }
+}
+
+const productApplicationStatusText = (status) => ({ pending: '待审批', approved: '已通过', rejected: '已拒绝' }[status] || status)
+const productApplicationStatusType = (status) => ({ pending: 'warning', approved: 'success', rejected: 'danger' }[status] || 'info')
+const reviewProductApplication = async (row, action) => {
+  try {
+    let comment = ''
+    if (action === 'rejected') {
+      const prompt = await ElMessageBox.prompt('请输入拒绝原因', '拒绝商品申请', {
+        confirmButtonText: '确定拒绝', cancelButtonText: '取消', inputValidator: value => Boolean(String(value || '').trim()), inputErrorMessage: '拒绝原因不能为空'
+      })
+      comment = prompt.value
+    } else {
+      await ElMessageBox.confirm(`确认通过商品「${row.product_name}」的新建申请？`, '审批确认', { type: 'warning' })
+    }
+    const res = await api.reviewProductApplication(row.application_id, { action, comment })
+    if (res.code === 0) {
+      ElMessage.success(res.message || '审批完成')
+      await loadProductApplications()
+      if (action === 'approved') loadData()
+    }
+  } catch (err) {
+    if (err === 'cancel' || err === 'close') return
+    ElMessage.error(err?.response?.data?.message || err?.message || '审批失败')
+  }
+}
+
+const onTabChange = (tab) => {
+  if (tab === 'product') {
+    loadData()
+    loadCategoryTree()
+  }
+  else if (tab === 'category') loadCategoryTree()
+  else if (tab === 'price') loadPriceData()
+  else if (tab === 'approval') loadProductApplications()
+}
+onMounted(() => {
+  syncTabFromRoute()
+})
+
+watch(() => route.path, syncTabFromRoute)
 </script>
 
 <style scoped>
-.card-header {
+.module-tabs :deep(.el-tabs__header) {
+  display: none;
+}
+
+.card-header { display: flex; justify-content: space-between; align-items: center; }
+.filter-bar { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 16px; align-items: center; }
+.el-pagination { margin-top: 16px; justify-content: flex-end; }
+.text-muted { color: #c0c4cc; }
+.cost-price { font-weight: 600; color: #e6a23c; }
+
+.products-page :deep(.el-card__body) { padding: 0 22px 24px; }
+.category-toolbar {
   display: flex;
+  align-items: center;
   justify-content: space-between;
-  align-items: center;
+  gap: 20px;
+  margin: 0 0 18px;
+  padding: 16px 18px;
+  border: 1px solid #e7edf5;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #f8fbff 0%, #f4f7fb 100%);
 }
-.filter-bar {
+.category-toolbar-title { color: #1f2937; font-size: 16px; font-weight: 700; line-height: 24px; }
+.category-toolbar-subtitle { margin-top: 3px; color: #8a97a8; font-size: 12px; }
+.category-toolbar-actions { display: flex; align-items: center; gap: 14px; flex-shrink: 0; }
+.category-count { color: #7b8798; font-size: 13px; white-space: nowrap; }
+
+/* 表格自动换行样式 */
+:deep(.el-table .cell) {
+  white-space: normal !important;
+  word-break: break-all !important;
+}
+
+
+.category-tree { padding: 12px; border: 1px solid #e8eef6; border-radius: 14px; background: #f8fafc; }
+.category-node.level1 { margin-bottom: 14px; }
+.category-node.level1:last-child { margin-bottom: 0; }
+.category-row {
   display: flex;
-  gap: 12px;
-  margin-bottom: 16px;
-}
-.el-pagination {
-  margin-top: 16px;
-  justify-content: flex-end;
-}
-.add-pn-bar {
-  margin-top: 16px;
-  display: flex;
   align-items: center;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  min-height: 48px;
+  margin: 6px 0;
+  padding: 10px 14px;
+  border: 1px solid #e7edf5;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 2px 6px rgba(31, 41, 55, 0.035);
+  transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
 }
-.add-pn-form {
-  display: flex;
-  align-items: center;
+.category-row.level-1 {
+  min-height: 54px;
+  border-color: #d9e7f8;
+  background: linear-gradient(90deg, #eef6ff 0%, #fff 42%);
 }
+.category-row.level-2 { background: #fff; }
+.category-row.level-3, .category-row.level-4 { min-height: 44px; background: #fbfcfe; }
+.category-row:hover { border-color: #b7d4f5; background: #f7fbff; box-shadow: 0 5px 14px rgba(64, 158, 255, 0.09); }
+.category-expand-button,
+.category-expand-placeholder { flex: 0 0 20px; width: 20px; height: 20px; margin: 0; padding: 0; }
+.category-expand-button { color: #7b8da5; }
+.category-expand-button:hover { color: var(--el-color-primary); background: #eaf3ff; }
+.category-expand-button :deep(.el-icon) { font-size: 14px; }
+.cat-name { min-width: 120px; max-width: 240px; overflow: hidden; color: #27364b; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.category-row.level-1 .cat-name { color: #1f4f85; font-size: 15px; }
+.cat-level { flex: 0 0 auto; padding: 3px 8px; border-radius: 5px; color: #718096; background: #edf1f6; font-size: 11px; line-height: 16px; }
+.category-row.level-1 .cat-level { color: #337ecc; background: #dceeff; }
+.cat-actions { display: flex; flex: 1 1 560px; align-items: center; justify-content: flex-end; min-width: 0; gap: 3px 6px; flex-wrap: wrap; }
+.cat-actions :deep(.el-button) { margin-left: 0; padding: 5px 6px; border-radius: 5px; font-size: 12px; }
+.finance-category-toggle { display: inline-flex; align-items: center; gap: 6px; margin: 0 2px 0 5px; padding: 3px 7px 3px 8px; border-radius: 6px; color: #66758a; background: #f3f6fa; font-size: 12px; white-space: nowrap; }
+.finance-category-toggle :deep(.el-switch) { --el-switch-height: 18px; --el-switch-button-size: 14px; }
+.sub-categories { margin: 8px 0 0 24px; padding-left: 16px; border-left: 2px solid #d9e5f2; }
+
+@media (max-width: 1100px) {
+  .category-toolbar { align-items: flex-start; flex-direction: column; }
+  .category-toolbar-actions { width: 100%; justify-content: space-between; }
+  .cat-actions { flex-basis: 100%; justify-content: flex-start; }
+}
+
+@media (max-width: 640px) {
+  .products-page :deep(.el-card__body) { padding: 0 12px 18px; }
+  .category-tree { padding: 8px; }
+  .sub-categories { margin-left: 10px; padding-left: 10px; }
+  .category-row { padding: 10px; }
+  .cat-name { max-width: calc(100% - 80px); }
+  .cat-actions { justify-content: flex-start; }
+}
+
+.import-tips { margin-bottom: 16px; padding: 16px; background: #f5f7fa; border-radius: 8px; }
+.import-tips p { margin: 0 0 12px 0; color: #606266; }
+.selected-file { margin-top: 12px; text-align: center; }
 </style>

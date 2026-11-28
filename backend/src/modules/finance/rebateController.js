@@ -1,0 +1,870 @@
+/**
+ * 供应商返利管理控制器
+ */
+const {
+  SupplierRebate,
+  RebatePostingOrder,
+  RebateSettlementAllocation,
+  ResourceSettlement,
+  Supplier,
+  Product,
+  ManufacturerRebatePolicy,
+  ManufacturerPriceHistory,
+  RebateEstimate,
+  SalesSettlementCostAdjustment,
+  SettlementAccount,
+  SettlementAccountTransaction,
+  sequelize
+} = require('../../models');
+const { Op } = require('sequelize');
+const { generateUUID, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
+const { sendExcel } = require('../../utils/excelExport');
+
+function toNumber(value) {
+  if (value === null || value === undefined || value === '') return 0;
+  const normalized = String(value).replace(/[¥,\s]/g, '');
+  const number = Number(normalized);
+  return Number.isFinite(number) ? number : 0;
+}
+
+function parseDate(value) {
+  if (!value) return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  if (typeof value === 'number' && Number.isFinite(value) && value > 1000 && value < 100000) {
+    return new Date(Date.UTC(1899, 11, 30) + Math.floor(value) * 86400000);
+  }
+  const localized = String(value).trim().replace(/[年月]/g, '-').replace(/日/g, '').replace(/[/.]/g, '-');
+  const normalized = localized.replace(/-+/g, '-').replace(/-$/, '');
+  const date = new Date(normalized);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function businessNo(prefix = 'RPO') {
+  const date = new Date();
+  const stamp = [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, '0'),
+    String(date.getDate()).padStart(2, '0'),
+    String(date.getHours()).padStart(2, '0'),
+    String(date.getMinutes()).padStart(2, '0'),
+    String(date.getSeconds()).padStart(2, '0')
+  ].join('');
+  return `${prefix}${stamp}${generateUUID().slice(-6).toUpperCase()}`;
+}
+
+function chinaDateBoundary(dateText, endOfDay = false) {
+  if (!dateText) return null;
+  const value = String(dateText).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return new Date(`${value}T${endOfDay ? '23:59:59.999' : '00:00:00.000'}+08:00`);
+  }
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+async function recordSupplierRebateAccountTransaction(supplierId, type, amount, description, relatedRef, user, transaction = null) {
+  const account = await SettlementAccount.findOne({ where: { account_type: 'SUPPLIER_REBATE', supplier_id: supplierId, status: 1 }, transaction });
+  if (!account) return;
+  const income = Number(await SettlementAccountTransaction.sum('amount', { where: { account_id: account.account_id, type: 'income' }, transaction }) || 0);
+  const expense = Number(await SettlementAccountTransaction.sum('amount', { where: { account_id: account.account_id, type: 'expense' }, transaction }) || 0);
+  const numericAmount = Number(amount || 0);
+  await SettlementAccountTransaction.create({
+    transaction_id: generateUUID(), account_id: account.account_id, type, amount: numericAmount,
+    balance_after: income - expense + (type === 'income' ? numericAmount : -numericAmount),
+    description, related_ref: relatedRef || '', create_user: user
+  }, { transaction });
+}
+
+async function ensureSupplierRebateAccount(supplier, transaction = null) {
+  const supplierId = supplier?.supplier_id || supplier;
+  const supplierName = supplier?.name || supplier?.supplier_name || '';
+  let account = await SettlementAccount.findOne({
+    where: { account_type: 'SUPPLIER_REBATE', supplier_id: supplierId },
+    order: [['status', 'DESC'], ['sort_order', 'ASC']],
+    transaction,
+    lock: transaction?.LOCK?.UPDATE
+  });
+  if (account) {
+    if (account.status !== undefined && Number(account.status) !== 1) {
+      await account.update({ status: 1 }, { transaction });
+      account.status = 1;
+    }
+    return account;
+  }
+
+  account = await SettlementAccount.create({
+    account_id: generateUUID(),
+    account_name: `${supplierName || supplierId}返利内部账户`,
+    bank_name: '',
+    account_number: '',
+    account_type: 'SUPPLIER_REBATE',
+    supplier_id: supplierId,
+    usage_note: '系统自动维护，仅用于返利上账、采购抵扣、采购退单及冲销',
+    sort_order: 900,
+    status: 1
+  }, { transaction });
+
+  const latest = await SupplierRebate.findOne({
+    where: { supplier_id: supplierId },
+    order: [['create_time', 'DESC'], ['rebate_id', 'DESC']],
+    transaction,
+    lock: transaction?.LOCK?.UPDATE
+  });
+  const openingBalance = Number(latest?.balance || 0);
+  if (openingBalance !== 0) {
+    await SettlementAccountTransaction.create({
+      transaction_id: generateUUID(),
+      account_id: account.account_id,
+      type: openingBalance > 0 ? 'income' : 'expense',
+      amount: Math.abs(openingBalance),
+      balance_after: openingBalance,
+      description: '供应商返利内部账户期初余额同步',
+      related_ref: 'OPENING_BALANCE',
+      create_user: 'system'
+    }, { transaction });
+  }
+  return account;
+}
+
+/**
+ * 返利上账
+ */
+async function addRebate(ctx) {
+  const body = ctx.request.body || {};
+  const supplierId = body.supplierId || body.supplier_id;
+  const direction = String(body.direction || 'increase').trim().toLowerCase();
+  const inputAmount = Math.round(toNumber(body.amount) * 100) / 100;
+  const remark = String(body.remark || '').trim();
+  const postingDate = body.postingDate || body.posting_date || new Date().toISOString().slice(0, 10);
+  if (!supplierId) ctx.throw(400, '请选择供应商');
+  if (!['increase', 'decrease'].includes(direction)) ctx.throw(400, '请选择正确的上账类型');
+  if (!Number.isFinite(inputAmount) || inputAmount <= 0) ctx.throw(400, '请输入正确的上账金额');
+  if (!remark) ctx.throw(400, '返利上账必须填写备注');
+  if (!parseDate(postingDate)) ctx.throw(400, '请选择正确的上账日期');
+  const isDecrease = direction === 'decrease';
+  const amount = isDecrease ? -inputAmount : inputAmount;
+
+  const supplier = await Supplier.findOne({
+    where: { supplier_id: supplierId, status: 1, is_deleted: 0 }
+  });
+  if (!supplier) ctx.throw(404, '供应商不存在或已停用');
+  const user = ctx.state.user || {};
+  let postingOrder;
+  await sequelize.transaction(async transaction => {
+    const lockedSupplier = await Supplier.findByPk(supplierId, {
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!lockedSupplier) ctx.throw(404, '供应商不存在');
+    await ensureSupplierRebateAccount(lockedSupplier, transaction);
+    const latest = await SupplierRebate.findOne({
+      where: { supplier_id: supplierId },
+      order: [['create_time', 'DESC'], ['rebate_id', 'DESC']],
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    const postingId = generateUUID();
+    const postingNo = businessNo();
+    const rebateId = generateUUID();
+    const balance = Number(latest?.balance || 0) + amount;
+    postingOrder = await RebatePostingOrder.create({
+      posting_id: postingId,
+      posting_no: postingNo,
+      supplier_id: supplier.supplier_id,
+      supplier_name: supplier.name,
+      posting_date: postingDate,
+      amount,
+      matched_amount: 0,
+      status: 'UNMATCHED',
+      rebate_id: rebateId,
+      create_staff_id: user.staffId || null,
+      create_user: user.name || user.phone || '',
+      remark
+    }, { transaction });
+    await SupplierRebate.create({
+      rebate_id: rebateId,
+      supplier_id: supplier.supplier_id,
+      supplier_name: supplier.name,
+      type: isDecrease ? 'debit' : 'credit',
+      amount: inputAmount,
+      balance,
+      related_no: postingNo,
+      remark,
+      status: 'active',
+      source_type: 'posting_order',
+      source_id: postingId,
+      create_user: user.name || user.phone || ''
+    }, { transaction });
+    await recordSupplierRebateAccountTransaction(
+      supplierId,
+      isDecrease ? 'expense' : 'income',
+      inputAmount,
+      `返利${isDecrease ? '扣减' : '增加'}上账：${remark}`,
+      postingNo,
+      user.name || user.phone || '',
+      transaction
+    );
+  });
+  ctx.body = {
+    code: 0,
+    message: isDecrease ? '返利扣减上账单已生效' : '返利上账单已生效，可立即用于采购抵扣',
+    data: postingOrder
+  };
+}
+
+async function reverseRebate(ctx) {
+  ctx.throw(410, '返利流水不允许直接冲销，请从返利上账单发起冲销');
+}
+
+async function getRebatePostingOrders(ctx) {
+  const {
+    supplierId, status, remark, startDate, endDate, unmatchedOnly,
+    page = 1, pageSize = 20
+  } = ctx.query;
+  const where = {};
+  if (supplierId) where.supplier_id = supplierId;
+  if (status) where.status = status;
+  if (remark) where.remark = { [Op.like]: `%${remark}%` };
+  if (String(unmatchedOnly || '') === '1') {
+    where.status = { [Op.in]: ['UNMATCHED', 'PARTIALLY_MATCHED'] };
+    where.amount = { [Op.gt]: 0 };
+  }
+  const start = chinaDateBoundary(startDate, false);
+  const end = chinaDateBoundary(endDate, true);
+  if (start || end) {
+    where.posting_date = {};
+    if (start) where.posting_date[Op.gte] = start;
+    if (end) where.posting_date[Op.lte] = end;
+  }
+  const { count, rows } = await RebatePostingOrder.findAndCountAll({
+    where,
+    include: [{
+      model: RebateSettlementAllocation,
+      as: 'Allocations',
+      required: false,
+      where: { status: 'ACTIVE' },
+      include: [{
+        model: ResourceSettlement,
+        as: 'Settlement',
+        required: false,
+        attributes: ['settlement_id', 'settlement_no', 'amount', 'status', 'remark']
+      }]
+    }],
+    order: buildPendingFirstOrder(sequelize, {
+      statusColumn: 'RebatePostingOrder.status',
+      pendingStatuses: ['UNMATCHED', 'PARTIALLY_MATCHED'],
+      dateColumns: ['RebatePostingOrder.posting_date', 'RebatePostingOrder.create_time'],
+      idColumn: 'RebatePostingOrder.posting_id'
+    }),
+    distinct: true,
+    ...paginate({}, { page, pageSize })
+  });
+  const list = rows.map(row => {
+    const item = row.toJSON();
+    item.remaining_amount = Math.max(0, Number(item.amount || 0) - Number(item.matched_amount || 0));
+    return item;
+  });
+  ctx.body = formatPaginatedResult(list, { page, pageSize, count });
+}
+
+async function reverseRebatePostingOrder(ctx) {
+  const reason = String(ctx.request.body?.reason || '').trim();
+  if (!reason) ctx.throw(400, '请输入冲销原因');
+  await sequelize.transaction(async transaction => {
+    const order = await RebatePostingOrder.findByPk(ctx.params.postingId, {
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!order) ctx.throw(404, '返利上账单不存在');
+    if (order.status === 'REVERSED') ctx.throw(409, '该返利上账单已冲销');
+    if (Number(order.matched_amount || 0) > 0) {
+      ctx.throw(409, '该上账单已有下账核销记录，请先撤销对应核销');
+    }
+    const latest = await SupplierRebate.findOne({
+      where: { supplier_id: order.supplier_id },
+      order: [['create_time', 'DESC'], ['rebate_id', 'DESC']],
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    const amount = Number(order.amount || 0);
+    const absoluteAmount = Math.abs(amount);
+    const isDecrease = amount < 0;
+    const balance = Number(latest?.balance || 0);
+    if (!isDecrease) {
+      const activePostingAmount = Number(await RebatePostingOrder.sum('amount', {
+        where: {
+          supplier_id: order.supplier_id,
+          status: { [Op.ne]: 'REVERSED' },
+          amount: { [Op.gt]: 0 }
+        },
+        transaction
+      }) || 0);
+      if (balance + 0.0001 < activePostingAmount) {
+        ctx.throw(
+          409,
+          `该供应商仍有 ¥${(activePostingAmount - balance).toFixed(2)} 返利被采购占用；请先完成采购退单`
+        );
+      }
+    }
+    const originalRebate = await SupplierRebate.findOne({
+      where: {
+        source_type: 'posting_order',
+        source_id: order.posting_id,
+        type: isDecrease ? 'debit' : 'credit',
+        status: 'active'
+      },
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!originalRebate) ctx.throw(409, '未找到上账单对应的返利余额流水');
+    await SupplierRebate.create({
+      rebate_id: generateUUID(),
+      supplier_id: order.supplier_id,
+      supplier_name: order.supplier_name,
+      type: isDecrease ? 'credit' : 'debit',
+      amount: absoluteAmount,
+      balance: balance - amount,
+      related_no: order.posting_no,
+      remark: `返利上账单冲销：${reason}`,
+      status: 'active',
+      source_type: 'posting_order_reversal',
+      source_id: order.posting_id,
+      reversal_of: originalRebate.rebate_id,
+      create_user: ctx.state.user.name || ctx.state.user.phone || ''
+    }, { transaction });
+    await recordSupplierRebateAccountTransaction(
+      order.supplier_id,
+      isDecrease ? 'income' : 'expense',
+      absoluteAmount,
+      `返利上账单冲销：${reason}`,
+      `${order.posting_no}:REV`,
+      ctx.state.user.name || ctx.state.user.phone || '',
+      transaction
+    );
+    await originalRebate.update({ status: 'reversed' }, { transaction });
+    await order.update({
+      status: 'REVERSED',
+      reversed_at: new Date(),
+      reversed_by: ctx.state.user.staffId || null,
+      reversed_by_name: ctx.state.user.name || '',
+      reversal_reason: reason
+    }, { transaction });
+  });
+  ctx.body = { code: 0, message: '返利上账单已冲销' };
+}
+
+/**
+ * 返利清单查询
+ */
+async function getRebateList(ctx) {
+  const { supplierId, type, page = 1, pageSize = 20 } = ctx.query;
+  const where = {};
+
+  if (supplierId) where.supplier_id = supplierId;
+  if (type) where.type = type;
+
+  const { count, rows } = await SupplierRebate.findAndCountAll({
+    where,
+    order: [['create_time', 'DESC']],
+    ...paginate({}, { page, pageSize })
+  });
+
+  const list = await fillRebateSupplierNames(rows);
+  ctx.body = formatPaginatedResult(list, { page, pageSize, count });
+}
+
+async function fillRebateSupplierNames(rows) {
+  const list = rows.map(row => (typeof row.get === 'function' ? row.get({ plain: true }) : row));
+  const supplierIds = [...new Set(list.map(item => item.supplier_id).filter(Boolean))];
+  const suppliers = supplierIds.length > 0
+    ? await Supplier.findAll({
+      where: { supplier_id: { [Op.in]: supplierIds } },
+      attributes: ['supplier_id', 'name']
+    })
+    : [];
+  const supplierNameMap = new Map(suppliers.map(item => [item.supplier_id, item.name]));
+  return list.map(item => ({
+    ...item,
+    supplier_name: item.supplier_name || supplierNameMap.get(item.supplier_id) || `供应商(${item.supplier_id || '未知'})`
+  }));
+}
+
+async function exportRebateList(ctx) {
+  const { supplierId, type } = ctx.query;
+  const where = {};
+  if (supplierId) where.supplier_id = supplierId;
+  if (type) where.type = type;
+  const rows = await SupplierRebate.findAll({ where, order: [['create_time', 'DESC']] });
+  const list = await fillRebateSupplierNames(rows);
+  const data = list.map(item => ({
+    供应商: item.supplier_name,
+    类型: item.type === 'credit' ? '上账' : '抵扣',
+    金额: item.type === 'credit' ? Number(item.amount || 0) : -Number(item.amount || 0),
+    余额: Number(item.balance || 0),
+    关联单号: item.related_no || '',
+    备注: item.remark || '',
+    操作人: item.create_user || '',
+    时间: item.create_time || ''
+  }));
+  sendExcel(ctx, data, ['供应商', '类型', '金额', '余额', '关联单号', '备注', '操作人', '时间'], `返利流水_${new Date().toISOString().slice(0, 10)}.xlsx`, '返利流水');
+}
+
+/**
+ * 获取供应商返利余额
+ */
+async function getRebateBalance(ctx) {
+  const { supplierId } = ctx.query;
+  if (!supplierId) ctx.throw(400, '请选择供应商');
+
+  const balance = await _getRebateBalance(supplierId);
+
+  ctx.body = { code: 0, data: { supplier_id: supplierId, balance } };
+}
+
+/**
+ * 内部：计算某个供应商的返利余额（取最新记录）
+ */
+async function getRebateSummary(ctx) {
+  const rows = await SupplierRebate.findAll({
+    order: [
+      ['supplier_id', 'ASC'],
+      ['create_time', 'DESC']
+    ]
+  });
+
+  const latestMap = new Map();
+  for (const row of rows) {
+    const item = row.get({ plain: true });
+    if (!latestMap.has(item.supplier_id)) {
+      latestMap.set(item.supplier_id, item);
+    }
+  }
+
+  const suppliers = await Supplier.findAll({
+    where: { is_deleted: 0, status: 1 },
+    attributes: ['supplier_id', 'name'],
+    order: [['sort_order', 'ASC'], ['create_time', 'DESC']]
+  });
+  const supplierIds = new Set(suppliers.map(item => item.supplier_id));
+  const list = suppliers.map(supplier => {
+    const latest = latestMap.get(supplier.supplier_id);
+    return {
+      supplier_id: supplier.supplier_id,
+      supplier_name: supplier.name || `供应商(${supplier.supplier_id})`,
+      balance: parseFloat(latest?.balance || 0),
+      last_time: latest?.create_time || null
+    };
+  });
+  for (const item of latestMap.values()) {
+    if (!item.supplier_id || supplierIds.has(item.supplier_id)) continue;
+    list.push({
+      supplier_id: item.supplier_id,
+      supplier_name: item.supplier_name || `供应商(${item.supplier_id})`,
+      balance: parseFloat(item.balance || 0),
+      last_time: item.create_time
+    });
+  }
+  list
+    .sort((a, b) => b.balance - a.balance || new Date(b.last_time) - new Date(a.last_time));
+
+  // 余额为 0 的供应商不属于当前返利余额流水范围，不在汇总列表中展示。
+  const visibleList = list.filter(item => Number(item.balance || 0) !== 0);
+  const totalBalance = visibleList.reduce((sum, item) => sum + item.balance, 0);
+
+  ctx.body = { code: 0, data: { list: visibleList, totalBalance } };
+}
+
+async function _getRebateBalance(supplierId, transaction = null) {
+  const result = await SupplierRebate.findOne({
+    attributes: ['balance'],
+    where: { supplier_id: supplierId },
+    order: [['create_time', 'DESC']],
+    transaction
+  });
+  return parseFloat(result?.get('balance') || 0);
+}
+
+/**
+ * 记录返利抵扣（采购申请用）
+ */
+async function recordRebateDeduction(supplierId, supplierName, amount, relatedNo, remark, user, transaction = null) {
+  const execute = async currentTransaction => {
+    const currentBalance = await _getRebateBalance(supplierId, currentTransaction);
+    const newBalance = currentBalance - parseFloat(amount);
+    await SupplierRebate.create({
+      rebate_id: generateUUID(), supplier_id: supplierId, supplier_name: supplierName,
+      type: 'debit', amount: parseFloat(amount), balance: newBalance, related_no: relatedNo,
+      remark: remark || '', status: 'active', source_type: 'purchase', create_user: user
+    }, { transaction: currentTransaction });
+    await recordSupplierRebateAccountTransaction(supplierId, 'expense', amount, '采购返利抵扣', relatedNo, user, currentTransaction);
+    return newBalance;
+  };
+  return transaction ? execute(transaction) : sequelize.transaction(execute);
+}
+
+async function reverseSettlementRebateDeduction(supplierId, supplierName, amount, relatedNo, remark, user, transaction = null) {
+  const numericAmount = toNumber(amount);
+  if (numericAmount <= 0) return;
+  const currentBalance = await _getRebateBalance(supplierId, transaction);
+  const existing = await SupplierRebate.findOne({
+    where: { source_type: 'settlement_reversal', source_id: relatedNo, status: 'active' },
+    transaction
+  });
+  if (existing) return;
+  const rebate = await SupplierRebate.create({
+    rebate_id: generateUUID(),
+    supplier_id: supplierId,
+    supplier_name: supplierName || '',
+    type: 'credit',
+    amount: numericAmount,
+    balance: currentBalance + numericAmount,
+    related_no: relatedNo,
+    remark: remark || '',
+    status: 'active',
+    source_type: 'settlement_reversal',
+    source_id: relatedNo,
+    create_user: user || ''
+  }, { transaction });
+  await recordSupplierRebateAccountTransaction(
+    supplierId,
+    'income',
+    numericAmount,
+    remark || '结算返利抵扣退回',
+    relatedNo,
+    user || '',
+    transaction
+  );
+  return rebate;
+}
+
+async function createManufacturerPolicy(ctx) {
+  const user = ctx.state.user;
+  const body = ctx.request.body || {};
+  const supplierId = body.supplierId || body.supplier_id;
+  const policyName = body.policyName || body.policy_name;
+
+  if (!supplierId) ctx.throw(400, '请选择供应商/厂家');
+  if (!policyName) ctx.throw(400, '请输入政策名称');
+
+  const supplier = await Supplier.findByPk(supplierId);
+  if (!supplier) ctx.throw(404, '供应商不存在');
+
+  const policy = await ManufacturerRebatePolicy.create({
+    policy_id: generateUUID(),
+    supplier_id: supplierId,
+    supplier_name: supplier.name,
+    policy_name: policyName,
+    policy_type: body.policyType || body.policy_type || 'activity',
+    product_id: body.productId || body.product_id || null,
+    product_name: body.productName || body.product_name || '',
+    pn: body.pn || body.pnCode || body.pn_code || '',
+    model: body.model || '',
+    start_date: parseDate(body.startDate || body.start_date),
+    end_date: parseDate(body.endDate || body.end_date),
+    rebate_calculation_type: body.rebateCalculationType || body.rebate_calculation_type || 'fixed_amount',
+    rebate_amount: toNumber(body.rebateAmount || body.rebate_amount),
+    rebate_rate: toNumber(body.rebateRate || body.rebate_rate),
+    affect_sales_settlement_cost: body.affectSalesSettlementCost || body.affect_sales_settlement_cost ? 1 : 0,
+    cost_adjustment_type: body.costAdjustmentType || body.cost_adjustment_type || 'fixed_amount',
+    cost_adjustment_value: toNumber(body.costAdjustmentValue || body.cost_adjustment_value),
+    max_cost_adjustment_amount: body.maxCostAdjustmentAmount || body.max_cost_adjustment_amount ? toNumber(body.maxCostAdjustmentAmount || body.max_cost_adjustment_amount) : null,
+    cost_adjustment_remark: body.costAdjustmentRemark || body.cost_adjustment_remark || '',
+    remark: body.remark || '',
+    status: body.status === 0 ? 0 : 1,
+    create_user: user.name || user.phone
+  });
+
+  ctx.body = { code: 0, message: '厂家政策已保存', data: policy };
+}
+
+async function updateManufacturerPolicy(ctx) {
+  const { policyId } = ctx.params;
+  const user = ctx.state.user;
+  const body = ctx.request.body || {};
+  const policy = await ManufacturerRebatePolicy.findByPk(policyId);
+  if (!policy) ctx.throw(404, '厂家政策不存在');
+
+  let supplierName = policy.supplier_name;
+  const supplierId = body.supplierId || body.supplier_id || policy.supplier_id;
+  if (supplierId !== policy.supplier_id) {
+    const supplier = await Supplier.findByPk(supplierId);
+    if (!supplier) ctx.throw(404, '供应商不存在');
+    supplierName = supplier.name;
+  }
+
+  await policy.update({
+    supplier_id: supplierId,
+    supplier_name: supplierName,
+    policy_name: body.policyName || body.policy_name || policy.policy_name,
+    policy_type: body.policyType || body.policy_type || policy.policy_type,
+    product_id: body.productId || body.product_id || null,
+    product_name: body.productName || body.product_name || '',
+    pn: body.pn || body.pnCode || body.pn_code || '',
+    model: body.model || '',
+    start_date: parseDate(body.startDate || body.start_date),
+    end_date: parseDate(body.endDate || body.end_date),
+    rebate_calculation_type: body.rebateCalculationType || body.rebate_calculation_type || policy.rebate_calculation_type,
+    rebate_amount: toNumber(body.rebateAmount || body.rebate_amount),
+    rebate_rate: toNumber(body.rebateRate || body.rebate_rate),
+    affect_sales_settlement_cost: body.affectSalesSettlementCost || body.affect_sales_settlement_cost ? 1 : 0,
+    cost_adjustment_type: body.costAdjustmentType || body.cost_adjustment_type || policy.cost_adjustment_type,
+    cost_adjustment_value: toNumber(body.costAdjustmentValue || body.cost_adjustment_value),
+    max_cost_adjustment_amount: body.maxCostAdjustmentAmount || body.max_cost_adjustment_amount ? toNumber(body.maxCostAdjustmentAmount || body.max_cost_adjustment_amount) : null,
+    cost_adjustment_remark: body.costAdjustmentRemark || body.cost_adjustment_remark || '',
+    remark: body.remark || '',
+    status: body.status === 0 ? 0 : 1,
+    update_user: user.name || user.phone,
+    update_time: new Date()
+  });
+
+  ctx.body = { code: 0, message: '厂家政策已更新', data: policy };
+}
+
+async function getManufacturerPolicyList(ctx) {
+  const { supplierId, pn, policyType, page = 1, pageSize = 20 } = ctx.query;
+  const where = {};
+  if (supplierId) where.supplier_id = supplierId;
+  if (pn) where.pn = { [Op.like]: `%${pn}%` };
+  if (policyType) where.policy_type = policyType;
+
+  const { count, rows } = await ManufacturerRebatePolicy.findAndCountAll({
+    where,
+    order: [['create_time', 'DESC']],
+    ...paginate({}, { page, pageSize })
+  });
+
+  ctx.body = formatPaginatedResult(rows, { page, pageSize, count });
+}
+
+function getRowValue(row, keys) {
+  for (const key of keys) {
+    if (row[key] !== undefined && row[key] !== null && row[key] !== '') return row[key];
+  }
+  const normalize = value => String(value || '').toLowerCase().replace(/[\s_\-（）()【】\[\]：:]/g, '');
+  const entries = Object.entries(row || {});
+  for (const key of keys) {
+    const target = normalize(key);
+    if (target.length < 3) continue;
+    const match = entries.find(([header, value]) => normalize(header).includes(target) && value !== undefined && value !== null && value !== '');
+    if (match) return match[1];
+  }
+  return '';
+}
+
+async function importManufacturerPrices(ctx) {
+  const user = ctx.state.user;
+  const { rows = [], sourceFileUrl = '' } = ctx.request.body || {};
+  if (!Array.isArray(rows) || rows.length === 0) ctx.throw(400, '没有可导入的价格数据');
+
+  const batchNo = `MP${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}${String(Math.floor(Math.random() * 1000)).padStart(3, '0')}`;
+  const errors = [];
+  const validRows = [];
+
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index] || {};
+    const rowNo = index + 2;
+    const pn = String(getRowValue(row, ['PN', 'pn', 'pn_code', '商品编号', 'product_code', 'manufacturer_code'])).trim();
+    const productName = String(getRowValue(row, ['商品名称', '商品名', 'product_name'])).trim();
+    const settlementPrice = toNumber(getRowValue(row, ['结算价', '结算价格', 'settlement_price']));
+    const soPolicy = String(getRowValue(row, ['SO政策', 'SO政策说明', 'so_policy'])).trim();
+    const poPolicy = String(getRowValue(row, ['PO政策', 'PO政策说明', 'po_policy'])).trim();
+    const otherPolicy = String(getRowValue(row, ['其他政策', '其他政策说明', 'other_policy'])).trim();
+    const effectiveDateValue = getRowValue(row, ['生效日期', '有效期开始', '有效开始日期', 'effective_date', 'effectiveDate']);
+    const expireDateValue = getRowValue(row, ['失效日期', '有效期结束', '有效结束日期', 'expire_date', 'expireDate']);
+    // 兼容历史模板：未提供生效日期时沿用原规则，以本次上传时间作为生效时间。
+    const effectiveDate = effectiveDateValue ? parseDate(effectiveDateValue) : new Date();
+    const expireDate = expireDateValue ? parseDate(expireDateValue) : null;
+
+    if (!pn) {
+      errors.push({ row: rowNo, message: '厂商编号不能为空' });
+      continue;
+    }
+    if (!Number.isFinite(settlementPrice) || settlementPrice <= 0) {
+      errors.push({ row: rowNo, pn, message: '结算价必须大于0' });
+      continue;
+    }
+    if (!effectiveDate) {
+      errors.push({ row: rowNo, pn, message: '生效日期格式无效' });
+      continue;
+    }
+    if (expireDateValue && !expireDate) {
+      errors.push({ row: rowNo, pn, message: '失效日期格式无效' });
+      continue;
+    }
+    if (expireDate && expireDate < effectiveDate) {
+      errors.push({ row: rowNo, pn, message: '失效日期不能早于生效日期' });
+      continue;
+    }
+
+    const product = await Product.findOne({
+      where: {
+        [Op.or]: [
+          { product_code: pn },
+          { manufacturer_code: pn },
+          ...(productName ? [{ name: productName }] : [])
+        ]
+      }
+    });
+
+    validRows.push({
+      id: generateUUID(),
+      supplier_id: '',
+      supplier_name: '',
+      product_id: product?.product_id || null,
+      product_name: product?.name || productName,
+      pn,
+      effective_date: effectiveDate,
+      expire_date: expireDate,
+      pickup_price: settlementPrice,
+      p0_price: null,
+      settlement_price: settlementPrice,
+      po_rebate_amount: 0,
+      extra_resource: '',
+      pickup_policy: '',
+      so_policy: soPolicy,
+      po_policy: poPolicy,
+      other_policy: otherPolicy,
+      import_batch_no: batchNo,
+      source_file_url: sourceFileUrl,
+      remark: String(getRowValue(row, ['备注', 'remark'])).trim(),
+      created_by: user.name || user.phone
+    });
+  }
+
+  if (errors.length > 0) {
+    ctx.body = { code: 400, message: '导入校验失败，整批未处理', data: { errors, results: errors.map(error => ({ pn: error.pn || '', row: error.row, status: 'failed', message: error.message })) } };
+    return;
+  }
+
+  await ManufacturerPriceHistory.bulkCreate(validRows);
+  ctx.body = {
+    code: 0,
+    message: '厂家价格/产品政策导入成功',
+    data: { batchNo, count: validRows.length, results: validRows.map(row => ({ pn: row.pn, status: 'success' })) }
+  };
+}
+
+async function importManufacturerOperations(ctx) {
+  return importManufacturerPrices(ctx);
+}
+
+async function getManufacturerPriceHistory(ctx) {
+  const { supplierId, pn, productId, page = 1, pageSize = 20 } = ctx.query;
+  const where = {};
+  if (supplierId) where.supplier_id = supplierId;
+  if (pn) where.pn = { [Op.like]: `%${pn}%` };
+  if (productId) where.product_id = productId;
+
+  const { count, rows } = await ManufacturerPriceHistory.findAndCountAll({
+    where,
+    order: [['effective_date', 'DESC'], ['created_at', 'DESC'], ['id', 'DESC']],
+    ...paginate({}, { page, pageSize })
+  });
+
+  ctx.body = formatPaginatedResult(rows, { page, pageSize, count });
+}
+
+async function getRebateEstimateList(ctx) {
+  const { orderNo, supplierId, status, page = 1, pageSize = 20 } = ctx.query;
+  const where = {};
+  if (orderNo) where.sales_order_no = { [Op.like]: `%${orderNo}%` };
+  if (supplierId) where.supplier_id = supplierId;
+  if (status) where.status = status;
+  const { count, rows } = await RebateEstimate.findAndCountAll({
+    where,
+    order: buildPendingFirstOrder(sequelize, {
+      statusColumn: 'RebateEstimate.status',
+      pendingStatuses: ['estimated'],
+      dateColumns: ['RebateEstimate.created_at'],
+      idColumn: 'RebateEstimate.estimate_id'
+    }),
+    ...paginate({}, { page, pageSize })
+  });
+  ctx.body = formatPaginatedResult(rows, { page, pageSize, count });
+}
+
+async function getCostAdjustmentList(ctx) {
+  const { orderNo, supplierId, pn, page = 1, pageSize = 20 } = ctx.query;
+  const where = {};
+  if (orderNo) where.sales_order_no = { [Op.like]: `%${orderNo}%` };
+  if (supplierId) where.supplier_id = supplierId;
+  if (pn) where.pn = { [Op.like]: `%${pn}%` };
+  const { count, rows } = await SalesSettlementCostAdjustment.findAndCountAll({
+    where,
+    order: [['created_at', 'DESC']],
+    ...paginate({}, { page, pageSize })
+  });
+  ctx.body = formatPaginatedResult(rows, { page, pageSize, count });
+}
+
+async function reviewManufacturerRebateConfirmation(ctx) {
+  const user = ctx.state.user;
+  const estimateId = ctx.params.estimateId;
+  const action = ctx.request.body?.action;
+  const comment = String(ctx.request.body?.comment || '').trim();
+  if (!['approve', 'reject'].includes(action)) ctx.throw(400, '审批操作无效');
+  let confirmed = false;
+  await sequelize.transaction(async transaction => {
+    const estimate = await RebateEstimate.findByPk(estimateId, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!estimate || estimate.source_type !== 'manufacturer_rebate_confirmation') ctx.throw(404, '厂商返利确认单不存在');
+    if (estimate.status !== 'pending_confirmation') ctx.throw(409, '该返利确认单已处理，请刷新后重试');
+    if (action === 'approve') {
+      const rawAmount = ctx.request.body?.rebateAmount;
+      if (rawAmount === undefined || rawAmount === null || String(rawAmount).trim() === '') ctx.throw(400, '请填写厂商实际返利金额');
+      const amount = Number(rawAmount);
+      if (!Number.isFinite(amount) || amount < 0 || !/^\d+(?:\.\d{1,2})?$/.test(String(rawAmount).trim())) ctx.throw(400, '返利金额必须是大于或等于0且最多两位小数的数字');
+      await estimate.update({ rebate_estimate_amount: amount, updated_at: new Date() }, { transaction });
+    } else if (!comment) {
+      ctx.throw(400, '拒绝时必须填写审批意见');
+    }
+    const advanced = await require('../approval/businessRuntime').advance(
+      ctx, 'manufacturer_rebate_confirmation', estimate, transaction, action, comment
+    );
+    if (!advanced) return;
+    if (action === 'approve') {
+      await require('../inventory/resourceRights').createPendingSettlement({
+        sourceType: 'MANUFACTURER_REBATE',
+        sourceId: estimate.estimate_id,
+        sn: { sn_id: estimate.sn_id || null, sn_code: estimate.sn || '', product_id: estimate.product_id },
+        resourceType: 'MANUFACTURER_REBATE',
+        amount: Number(estimate.rebate_estimate_amount || 0),
+        counterpartyId: estimate.supplier_id,
+        counterpartyName: estimate.supplier_name || '',
+        distributorId: estimate.distributor_id,
+        remark: `销售订单 ${estimate.sales_order_no || ''} 厂商返利人工确认`,
+        transaction
+      });
+      await estimate.update({ status: 'confirmed', updated_at: new Date() }, { transaction });
+      confirmed = true;
+    } else {
+      await estimate.update({ status: 'rejected', remark: `${estimate.remark || ''}${comment ? `；拒绝原因：${comment}` : ''}`.slice(0, 512), updated_at: new Date() }, { transaction });
+    }
+  });
+  if (ctx.state.businessApproval?.status === 'pending') return;
+  ctx.body = { code: 0, status: confirmed ? 'confirmed' : 'rejected', message: confirmed ? '返利金额已确认，已进入待下账返利池' : '返利确认单已拒绝' };
+}
+
+module.exports = {
+  addRebate,
+  getRebateList,
+  exportRebateList,
+  getRebateBalance,
+  getRebateSummary,
+  reverseRebate,
+  getRebatePostingOrders,
+  reverseRebatePostingOrder,
+  createManufacturerPolicy,
+  updateManufacturerPolicy,
+  getManufacturerPolicyList,
+  importManufacturerPrices,
+  importManufacturerOperations,
+  getManufacturerPriceHistory,
+  getRebateEstimateList,
+  reviewManufacturerRebateConfirmation,
+  getCostAdjustmentList,
+  recordRebateDeduction,
+  reverseSettlementRebateDeduction,
+  recordSupplierRebateAccountTransaction,
+  ensureSupplierRebateAccount,
+  _getRebateBalance
+};

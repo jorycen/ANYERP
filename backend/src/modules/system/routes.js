@@ -2,22 +2,34 @@
  * 系统管理路由
  */
 const Router = require('koa-router');
-const { getMenus, getRoles, getRoleMenus, assignMenus, getUsers, updateUserRoles, getUserRegions, assignUserRegions } = require('./controller');
+const {
+  getMenus, reorderMenus, getRoles, getUserDistributors, createRole, updateRole, deleteRole, getRoleMenus, assignMenus,
+  getUsers, createUser, updateUser, resetUserPassword, getUserRegions, assignUserRegions,
+  getLocations, createLocation, updateLocation, deleteLocation, setStoreManager
+} = require('./controller');
+const { requireRole } = require('../../middleware/permission');
 
 const router = new Router();
 
-// 菜单管理
 router.get('/menus', getMenus);
-
-// 角色管理
+router.post('/menus/reorder', requireRole('admin', 'boss'), reorderMenus);
 router.get('/roles', getRoles);
-router.get('/roles/:roleId/menus', getRoleMenus);
-router.post('/roles/:roleId/menus', assignMenus);
-
-// 用户管理
-router.get('/users', getUsers);
-router.post('/users/:staffId/roles', updateUserRoles);
-router.get('/users/:staffId/regions', getUserRegions);
-router.post('/users/:staffId/regions', assignUserRegions);
+router.get('/user-distributors', requireRole('admin', 'boss', 'finance'), getUserDistributors);
+router.post('/role', requireRole('admin', 'boss'), createRole);
+router.put('/role/:roleId', requireRole('admin', 'boss'), updateRole);
+router.delete('/role/:roleId', requireRole('admin', 'boss'), deleteRole);
+router.get('/role-menus/:roleId', getRoleMenus);
+router.post('/role-menus/:roleId', requireRole('admin', 'boss'), assignMenus);
+router.get('/users', requireRole('admin', 'boss'), getUsers);
+router.post('/user', requireRole('admin', 'boss'), createUser);
+router.put('/user/:staffId', requireRole('admin', 'boss'), updateUser);
+router.post('/user/:staffId/reset-password', requireRole('admin', 'boss'), resetUserPassword);
+router.get('/user-regions/:staffId', requireRole('admin', 'boss'), getUserRegions);
+router.post('/assign-user-regions/:staffId', requireRole('admin', 'boss'), assignUserRegions);
+router.get('/locations', requireRole('admin', 'boss'), getLocations);
+router.post('/locations', requireRole('admin', 'boss'), createLocation);
+router.put('/locations/:locationId', requireRole('admin', 'boss'), updateLocation);
+router.delete('/locations/:locationId', requireRole('admin', 'boss'), deleteLocation);
+router.put('/stores/:storeId/manager', requireRole('admin', 'boss'), setStoreManager);
 
 module.exports = router;

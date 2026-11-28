@@ -1,0 +1,645 @@
+const { recordDatabaseStage } = require('../../utils/databaseTiming');
+const { QueryTypes, Op } = require('sequelize');
+const {
+  sequelize,
+  MonthlyTask,
+  MonthlyTaskProductBatch,
+  MonthlyTaskProduct,
+  MonthlyTaskGrossProfitAllocation,
+  Store,
+  Region,
+  Staff,
+  Role,
+  StaffStorePermission,
+  StaffDistributorPermission
+} = require('../../models');
+const { resolveReportStoreIds, isSelfOnlyReportUser } = require('../../utils/storePermissions');
+const {
+  normalizeParticipants,
+  orderItemSalesAmountSql,
+  orderItemTotalsJoin
+} = require('./dashboardDataSource');
+const { canViewProfit } = require('./dashboardService');
+
+const { INTERNAL_TRANSFER_SOURCE } = require('./operatingScope');
+const { buildRanges } = require('./dashboardService');
+
+function number(value) {
+  const parsed = Number(value || 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function money(value) {
+  return Number(number(value).toFixed(2));
+}
+
+function monthRange(monthKey) {
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(String(monthKey || ''))) {
+    const error = new Error('月份格式不正确');
+    error.status = 400;
+    throw error;
+  }
+  const startAt = new Date(`${monthKey}-01T00:00:00.000+08:00`);
+  const [year, month] = monthKey.split('-').map(Number);
+  const endAt = new Date(`${month === 12 ? year + 1 : year}-${String(month === 12 ? 1 : month + 1).padStart(2, '0')}-01T00:00:00.000+08:00`);
+  return { startAt, endAt };
+}
+
+function reportActualRange(query, monthKey) {
+  if (!query.startDate && !query.endDate) return monthRange(monthKey);
+  const lastMonthDay = new Date(Date.UTC(Number(monthKey.slice(0, 4)), Number(monthKey.slice(5, 7)), 0))
+    .toISOString().slice(0, 10);
+  const { current } = buildRanges({
+    startDate: query.startDate || `${monthKey}-01`,
+    endDate: query.endDate || lastMonthDay
+  });
+  const endDate = new Date(`${current.endDate}T00:00:00Z`);
+  endDate.setUTCDate(endDate.getUTCDate() + 1);
+  const endExclusive = `${endDate.toISOString().slice(0, 10)} 00:00:00.000`;
+  return { startAt: current.startAt, endAt: endExclusive };
+}
+
+async function resolveStores(user, requestedStoreId) {
+  let storeIds = await resolveReportStoreIds(user);
+  if (storeIds.includes('*')) {
+    const rows = await Store.findAll({ where: { is_deleted: 0, status: 1 }, attributes: ['store_id'], raw: true });
+    storeIds = rows.map(row => String(row.store_id));
+  } else {
+    storeIds = storeIds.map(String);
+  }
+  if (requestedStoreId) {
+    if (!storeIds.includes(String(requestedStoreId))) {
+      const error = new Error('无权访问该门店任务达成');
+      error.status = 403;
+      throw error;
+    }
+    storeIds = [String(requestedStoreId)];
+  }
+  return storeIds;
+}
+
+function createActual() {
+  return { salesAmount: 0, grossProfit: 0, productQuantities: new Map(), productValues: new Map(), unallocatedProfit: false };
+}
+
+function addProductQuantity(actual, productId, quantity) {
+  if (!productId) return;
+  actual.productQuantities.set(String(productId), number(actual.productQuantities.get(String(productId))) + number(quantity));
+}
+
+function addActual(actual, salesAmount, grossProfit, productId, quantity) {
+  actual.salesAmount += number(salesAmount);
+  actual.grossProfit += number(grossProfit);
+  addProductQuantity(actual, productId, quantity);
+  if (productId) {
+    const values = actual.productValues.get(String(productId)) || { sales: 0, profit: 0 };
+    values.sales += number(salesAmount);
+    values.profit += number(grossProfit);
+    actual.productValues.set(String(productId), values);
+  }
+}
+
+function employeeKey(staffId, name) {
+  return staffId ? `id:${staffId}` : `name:${String(name || '').trim()}`;
+}
+
+async function loadActuals(storeIds, startAt, endAt, archiveScope = 'archived', staffByStore = false, abilityScope = null) {
+  const partialScope=!!abilityScope&&abilityScope.abilityType!=='source';
+  if (!storeIds.length) return { storeActuals: new Map(), employeeActuals: new Map() };
+  const staffKey = (storeId, staffId, name) => staffByStore
+    ? `${storeId}:${employeeKey(staffId, name)}` : employeeKey(staffId, name);
+  const orderStatusFilter = archiveScope === 'all'
+    ? '(o.ORDER_STATUS IS NULL OR o.ORDER_STATUS NOT IN (:voidedStatuses))'
+    : 'o.ORDER_STATUS IN (:archivedStatuses)';
+  const replacements = {
+    storeIds,
+    startAt,
+    endAt,
+    archivedStatuses: require('./performanceEvents').PERFORMANCE_SALE_STATUSES,
+    voidedStatuses: require('./dashboardDataSource').VOIDED_STATUSES,
+    internalTransferSource: `${INTERNAL_TRANSFER_SOURCE}%`
+  };
+  const orderRows = await recordDatabaseStage('taskSalesOrders', () => sequelize.query(`
+    SELECT o.ORDER_ID AS orderId,
+           o.ORDER_NO AS orderNo,
+           o.STORE_ID AS storeId,
+           o.CREATE_TIME AS createTime,
+           o.CREATE_STAFF_ID AS createStaffId,
+           o.CREATE_USER AS createUser,
+           o.AUXILIARY_SALES_LIST AS auxiliarySalesList,
+           o.TOTAL_AMOUNT AS orderTotalAmount,
+           oi.PRODUCT_ID AS productId,
+           oi.ITEM_ID AS itemId, oi.SN_CODE AS snCode, o.CUSTOMER_SOURCE AS customerSource,
+           TIMESTAMPDIFF(DAY,COALESCE(ps.ORIGINAL_INBOUND_TIME,ps.INBOUND_TIME),o.CREATE_TIME) AS saleAgeDays,
+           gp.PRODUCT_PRICING_DETAILS AS pricingDetails,
+           oi.PRODUCT_NAME AS productName,
+           oi.QUANTITY AS quantity,
+           (${orderItemSalesAmountSql()}) AS salesAmount,
+           (CASE WHEN gp.ORDER_ID IS NOT NULL THEN gp.GROSS_PROFIT_AMOUNT * CASE WHEN COALESCE(oit.ITEM_SUBTOTAL, 0) <> 0 THEN COALESCE(oi.SUBTOTAL, 0) / oit.ITEM_SUBTOTAL ELSE 1 / GREATEST(oit.ITEM_COUNT, 1) END ELSE COALESCE(oi.SALES_GROSS_PROFIT, 0) END) AS itemGrossProfit
+      FROM T_ORDER o
+      INNER JOIN T_ORDER_ITEM oi ON oi.ORDER_ID = o.ORDER_ID
+      LEFT JOIN T_PRODUCT_SN ps ON ps.SN_ID=oi.SN_ID
+      ${orderItemTotalsJoin()}
+      LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID = o.ORDER_ID
+     WHERE o.IS_DELETED = 0
+       AND COALESCE(TRIM(o.CUSTOMER_SOURCE), '') NOT LIKE :internalTransferSource
+       AND ${orderStatusFilter}
+       AND o.STORE_ID IN (:storeIds)
+       AND o.CREATE_TIME >= :startAt
+       AND o.CREATE_TIME < :endAt
+     ORDER BY o.CREATE_TIME ASC, o.ORDER_ID ASC, oi.ITEM_ID ASC`, { replacements, type: QueryTypes.SELECT }));
+
+  const storeActuals = new Map();
+  const employeeActuals = new Map();
+  const orders = new Map();
+  const matches=row=>require('./monthlyIndicatorScope').matchesAbilityRow(row,abilityScope);
+  const orderScopeCache=new Map();
+  const remember=rows=>{for(const row of rows){const id=String(row.orderId);orderScopeCache.set(id,(orderScopeCache.get(id)||false)||matches(row)!==false);}};
+  if(abilityScope)remember(orderRows);
+  const primeOrderScopes=async rows=>{
+    if(!abilityScope)return;
+    const orderIds=[...new Set(rows.map(r=>String(r.orderId)).filter(id=>!orderScopeCache.has(id)))];
+    if(!orderIds.length)return;
+    const originals=await recordDatabaseStage('taskReturnOriginalOrders', () => sequelize.query(`SELECT o.ORDER_ID AS orderId, o.CUSTOMER_SOURCE AS customerSource,
+      oi.ITEM_ID AS itemId,oi.SN_CODE AS snCode,gp.PRODUCT_PRICING_DETAILS AS pricingDetails,
+      TIMESTAMPDIFF(DAY,COALESCE(ps.ORIGINAL_INBOUND_TIME,ps.INBOUND_TIME),o.CREATE_TIME) AS saleAgeDays
+      FROM T_ORDER o JOIN T_ORDER_ITEM oi ON oi.ORDER_ID=o.ORDER_ID
+      LEFT JOIN T_PRODUCT_SN ps ON ps.SN_ID=oi.SN_ID
+      LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID=o.ORDER_ID
+      WHERE o.ORDER_ID IN (:orderIds)`,{replacements:{orderIds},type:QueryTypes.SELECT}));
+    remember(originals);
+  };
+  for (const row of orderRows) {
+    const match=matches(row);if(match===false)continue;
+    if(match===null){row.scopeUnknown=true;row.salesAmount=0;row.itemGrossProfit=0;row.quantity=0;}
+    const order = orders.get(String(row.orderId)) || { ...row, create_staff_id: row.createStaffId, create_user: row.createUser, auxiliary_sales_list: row.auxiliarySalesList, items: [] };
+    order.items.push(row);
+    orders.set(String(row.orderId), order);
+  }
+  for (const order of orders.values()) {
+    const participants = normalizeParticipants(order);
+    const participantCount = participants.length || 1;
+    const storeActual = storeActuals.get(String(order.storeId)) || createActual();
+    storeActual.scopeUnknown ||= order.items.some(x=>x.scopeUnknown);
+    order.items.forEach(item => addActual(storeActual, item.salesAmount, item.itemGrossProfit, item.productId, item.quantity));
+    storeActuals.set(String(order.storeId), storeActual);
+    participants.forEach(participant => {
+      const key = staffKey(order.storeId, participant.staffId, participant.name);
+      const actual = employeeActuals.get(key) || { ...createActual(), staffId: participant.staffId, employeeName: participant.name, storeIds: new Set() };
+      actual.scopeUnknown ||= order.items.some(x=>x.scopeUnknown);
+      actual.storeIds.add(String(order.storeId));
+      order.items.forEach(item => addActual(actual, number(item.salesAmount) / participantCount, number(item.itemGrossProfit) / participantCount, item.productId, number(item.quantity) / participantCount));
+      employeeActuals.set(key, actual);
+    });
+  }
+
+  const adjustmentRows = await recordDatabaseStage('taskAdjustments', () => sequelize.query(`
+    SELECT pa.ORDER_ID AS orderId, SUM(pa.SIGNED_AMOUNT) AS signedAmount, o.STORE_ID AS storeId, o.CREATE_STAFF_ID AS createStaffId, o.CREATE_USER AS createUser, o.AUXILIARY_SALES_LIST AS auxiliarySalesList
+      FROM T_PERFORMANCE_PROFIT_ADJUSTMENT pa
+      INNER JOIN T_ORDER o ON o.ORDER_ID = pa.ORDER_ID
+     WHERE pa.STATUS = 'approved'
+       AND o.IS_DELETED = 0
+       AND COALESCE(TRIM(o.CUSTOMER_SOURCE), '') NOT LIKE :internalTransferSource
+       AND ${orderStatusFilter}
+       AND o.STORE_ID IN (:storeIds)
+       AND (CASE WHEN pa.ADJUSTMENT_NO LIKE 'AUTO-CARE-RET-%' OR pa.ADJUSTMENT_NO LIKE 'EDUR-%' OR pa.ADJUSTMENT_NO LIKE 'INVOICE-PERIOD-%' THEN pa.CREATE_TIME ELSE o.CREATE_TIME END) >= :startAt
+       AND (CASE WHEN pa.ADJUSTMENT_NO LIKE 'AUTO-CARE-RET-%' OR pa.ADJUSTMENT_NO LIKE 'EDUR-%' OR pa.ADJUSTMENT_NO LIKE 'INVOICE-PERIOD-%' THEN pa.CREATE_TIME ELSE o.CREATE_TIME END) < :endAt
+     GROUP BY pa.ORDER_ID, o.STORE_ID, o.CREATE_STAFF_ID, o.CREATE_USER, o.AUXILIARY_SALES_LIST`, { replacements, type: QueryTypes.SELECT }));
+  await primeOrderScopes(adjustmentRows);
+  for (const row of adjustmentRows) {
+    if(abilityScope&&orderScopeCache.get(String(row.orderId))===false)continue;
+    const storeActual = storeActuals.get(String(row.storeId)) || createActual();
+    storeActual.grossProfit += number(row.signedAmount);
+    storeActual.unallocatedProfit ||= !!number(row.signedAmount);
+    storeActuals.set(String(row.storeId), storeActual);
+    const order = orders.get(String(row.orderId)) || { create_staff_id: row.createStaffId, create_user: row.createUser, auxiliary_sales_list: row.auxiliarySalesList };
+    const participants = order ? normalizeParticipants(order) : [];
+    const count = participants.length || 1;
+    participants.forEach(participant => {
+      const key = staffKey(row.storeId, participant.staffId, participant.name);
+      const actual = employeeActuals.get(key) || { ...createActual(), staffId: participant.staffId, employeeName: participant.name, storeIds: new Set() };
+      actual.grossProfit += number(row.signedAmount) / count;
+      actual.unallocatedProfit ||= !!number(row.signedAmount);
+      employeeActuals.set(key, actual);
+    });
+  }
+
+  const returnItems = await recordDatabaseStage('taskReturnItems', () => sequelize.query(`
+    SELECT srs.ORDER_ID AS orderId,
+           srs.STORE_ID AS storeId,
+           o.CREATE_STAFF_ID AS createStaffId,
+           o.CREATE_USER AS createUser,
+           o.AUXILIARY_SALES_LIST AS auxiliarySalesList,
+           sri.PRODUCT_ID AS productId,
+           oi.ITEM_ID AS itemId, oi.SN_CODE AS snCode, o.CUSTOMER_SOURCE AS customerSource,
+           CASE WHEN oi.ITEM_ID IS NULL THEN 1 ELSE 0 END AS scopeIdentityMissing,
+           TIMESTAMPDIFF(DAY,COALESCE(ps.ORIGINAL_INBOUND_TIME,ps.INBOUND_TIME),o.CREATE_TIME) AS saleAgeDays,
+           gp.PRODUCT_PRICING_DETAILS AS pricingDetails,
+           sri.QUANTITY AS quantity,
+           sri.USER_RECEIVABLE_AMOUNT AS salesAmount
+      FROM T_SALES_RETURN_SETTLEMENT srs
+      INNER JOIN T_SALES_RETURN_SETTLEMENT_ITEM sri ON sri.SETTLEMENT_ID = srs.SETTLEMENT_ID
+      LEFT JOIN T_ORDER o ON o.ORDER_ID = srs.ORDER_ID
+      LEFT JOIN T_ORDER_ITEM oi ON oi.ITEM_ID=sri.ORDER_ITEM_ID AND oi.ORDER_ID=o.ORDER_ID
+      LEFT JOIN T_PRODUCT_SN ps ON ps.SN_ID=oi.SN_ID
+      LEFT JOIN T_ORDER_GROSS_PROFIT gp ON gp.ORDER_ID=o.ORDER_ID
+     WHERE srs.STORE_ID IN (:storeIds)
+       AND COALESCE(TRIM(o.CUSTOMER_SOURCE), '') NOT LIKE :internalTransferSource
+       AND srs.CREATE_TIME >= :startAt
+       AND srs.CREATE_TIME < :endAt`, { replacements, type: QueryTypes.SELECT }));
+  for (const row of returnItems) {
+    if(abilityScope&&matches(row)===false)continue;
+    const storeActual = storeActuals.get(String(row.storeId)) || createActual();
+    storeActual.scopeUnknown ||= !!abilityScope&&matches(row)===null;
+    storeActual.unallocatedProfit ||= partialScope&&!!number(row.salesAmount);
+    // Dashboard sales ranking takes returned sales from the return GP ledger;
+    // settlement items remain the source for returned product quantities only.
+    addActual(storeActual, 0, 0, row.productId, row.quantity);
+    addProductReturnSales(storeActual, row.productId, row.salesAmount);
+    if(partialScope)storeActual.salesAmount-=Math.abs(number(row.salesAmount));
+    storeActuals.set(String(row.storeId), storeActual);
+    const order = orders.get(String(row.orderId)) || {
+      create_staff_id: row.createStaffId,
+      create_user: row.createUser,
+      auxiliary_sales_list: row.auxiliarySalesList
+    };
+    const participants = order ? normalizeParticipants(order) : [];
+    const count = participants.length || 1;
+    participants.forEach(participant => {
+      const key = staffKey(row.storeId, participant.staffId, participant.name);
+      const actual = employeeActuals.get(key) || { ...createActual(), staffId: participant.staffId, employeeName: participant.name, storeIds: new Set() };
+      actual.scopeUnknown ||= !!abilityScope&&matches(row)===null;
+      actual.unallocatedProfit ||= partialScope&&!!number(row.salesAmount);
+      actual.storeIds.add(String(row.storeId));
+      addProductQuantity(actual, row.productId, number(row.quantity) / count);
+      addProductReturnSales(actual, row.productId, number(row.salesAmount) / count);
+      if(partialScope)actual.salesAmount-=Math.abs(number(row.salesAmount))/count;
+      employeeActuals.set(key, actual);
+    });
+  }
+
+  const returnLedgerRows = await recordDatabaseStage('taskReturnLedger', () => sequelize.query(`
+    SELECT return_gp.ORDER_ID AS orderId, return_gp.STORE_ID AS storeId,
+           return_gp.STAFF_ID AS staffId,
+           return_gp.EMPLOYEE_NAME AS employeeName,
+           return_gp.RETURNED_SALES_AMOUNT AS salesAmount,
+           return_gp.GROSS_PROFIT_AMOUNT AS grossProfitAmount
+      FROM T_SALES_RETURN_GROSS_PROFIT return_gp
+      INNER JOIN T_ORDER o ON o.ORDER_ID = return_gp.ORDER_ID
+     WHERE return_gp.STORE_ID IN (:storeIds)
+       AND COALESCE(TRIM(o.CUSTOMER_SOURCE), '') NOT LIKE :internalTransferSource
+       AND return_gp.CREATE_TIME >= :startAt
+       AND return_gp.CREATE_TIME < :endAt`, { replacements, type: QueryTypes.SELECT }));
+  await primeOrderScopes(returnLedgerRows);
+  for (const row of returnLedgerRows) {
+    if(abilityScope&&orderScopeCache.get(String(row.orderId))===false)continue;
+    const key = staffKey(row.storeId, row.staffId, row.employeeName);
+    const actual = employeeActuals.get(key) || { ...createActual(), staffId: row.staffId ? String(row.staffId) : null, employeeName: row.employeeName || '', storeIds: new Set() };
+    actual.storeIds.add(String(row.storeId));
+    if(!partialScope)actual.salesAmount += number(row.salesAmount);
+    actual.grossProfit += number(row.grossProfitAmount);
+    actual.unallocatedProfit ||= !!number(row.grossProfitAmount);
+    employeeActuals.set(key, actual);
+    const storeActual = storeActuals.get(String(row.storeId)) || createActual();
+    if(!partialScope)storeActual.salesAmount += number(row.salesAmount);
+    storeActual.grossProfit += number(row.grossProfitAmount);
+    storeActual.unallocatedProfit ||= !!number(row.grossProfitAmount);
+    storeActuals.set(String(row.storeId), storeActual);
+  }
+  if(abilityScope)for(const actual of [...storeActuals.values(),...employeeActuals.values()])actual.abilityScoped=partialScope;
+  return { storeActuals, employeeActuals };
+}
+
+function rate(actual, target) {
+  const goal = number(target);
+  return goal > 0 ? Number(((number(actual) / goal) * 100).toFixed(2)) : null;
+}
+
+function buildAchievement({ task, actual, grossProfitTarget, name, storeId, storeName, allocationTotal = null, profitVisible = true }) {
+  const metrics = [];
+  const sales = { actual: money(actual.salesAmount), target: money(task.salesTarget), rate: rate(actual.salesAmount, task.salesTarget) };
+  const grossProfit = profitVisible
+    ? { actual: money(actual.grossProfit), target: money(grossProfitTarget), rate: rate(actual.grossProfit, grossProfitTarget) }
+    : { actual: null, target: null, rate: null };
+  if (sales.target > 0) metrics.push(sales.rate);
+  if (profitVisible && grossProfit.target > 0) metrics.push(grossProfit.rate);
+  const productBatches = (task.productBatches || []).map(batch => {
+    const products = (batch.products || []).map(product => ({
+      productId: product.productId,
+      productName: product.productName,
+      targetQuantity: Number(product.targetQuantity || 0),
+      actualQuantity: Number(number(actual.productQuantities.get(String(product.productId))).toFixed(2)),
+      rate: rate(actual.productQuantities.get(String(product.productId)), product.targetQuantity)
+    }));
+    const rates = products.map(product => product.rate).filter(value => value !== null);
+    const batchRate = rates.length ? Number(Math.min(...rates).toFixed(2)) : null;
+    if (batchRate !== null) metrics.push(batchRate);
+    return { batchId: batch.batchId, batchName: batch.batchName, rate: batchRate, products };
+  });
+  const overallRate = metrics.length ? Number((metrics.reduce((sum, value) => sum + number(value), 0) / metrics.length).toFixed(2)) : null;
+  return {
+    targetType: task.targetType,
+    targetId: String(task.targetId),
+    targetName: name,
+    storeId: storeId || '',
+    storeName: storeName || '',
+    overallRate,
+    status: overallRate === null ? '未设置目标' : (overallRate >= 100 ? '已达成' : '进行中'),
+    sales,
+    grossProfit,
+    productBatches,
+    unallocatedGrossProfit: allocationTotal === null ? 0 : money(number(grossProfitTarget) - number(allocationTotal))
+  };
+}
+
+function summarizeAchievements(rows, profitVisible) {
+  const salesActual = rows.reduce((sum, row) => sum + number(row.sales?.actual), 0);
+  const salesTarget = rows.reduce((sum, row) => sum + number(row.sales?.target), 0);
+  const grossActual = rows.reduce((sum, row) => sum + number(row.grossProfit?.actual), 0);
+  const grossTarget = rows.reduce((sum, row) => sum + number(row.grossProfit?.target), 0);
+  return {
+    taskCount: rows.length,
+    sales: {
+      actual: money(salesActual),
+      target: money(salesTarget),
+      rate: rate(salesActual, salesTarget)
+    },
+    grossProfit: profitVisible
+      ? {
+          actual: money(grossActual),
+          target: money(grossTarget),
+          rate: rate(grossActual, grossTarget)
+        }
+      : { actual: null, target: null, rate: null }
+  };
+}
+
+async function getMonthlyTaskAchievement(ctx) {
+  const user = ctx.state.user;
+  const profitVisible = canViewProfit(user);
+  const selfOnly = isSelfOnlyReportUser(user);
+  const leaderboardOnly = String(ctx.query.companyWideLeaderboard || '') === '1';
+  if (leaderboardOnly && !user.staffId) ctx.throw(403, '仅员工账号可查看任务排行榜');
+  const companyWideRank = (leaderboardOnly || String(ctx.query.companyWideRank || ctx.query.company_wide_rank || '') === '1')
+    && Boolean(user.staffId);
+  const homeSummary = ctx.query.homeSummary === '1' && !companyWideRank;
+  const requestedDimension = String(ctx.query.dimension || 'store').trim().toLowerCase() === 'staff' ? 'staff' : 'store';
+  const dimension = selfOnly || companyWideRank ? 'staff' : requestedDimension;
+  const requestedStaffId = companyWideRank || selfOnly
+    ? String(user.staffId || '')
+    : String(ctx.query.staffId || ctx.query.staff_id || '').trim();
+  const archiveScope = !leaderboardOnly && String(ctx.query.archiveScope || ctx.query.archive_scope || 'archived').trim().toLowerCase() === 'all' ? 'all' : 'archived';
+  const businessDate = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const monthKey = (leaderboardOnly ? '' : String(ctx.query.monthKey || ctx.query.month_key || '').trim()) || businessDate.slice(0, 7);
+  const reportScope = companyWideRank ? ['*'] : await resolveReportStoreIds(user);
+  const globalScope = reportScope.includes('*');
+  const storeIds = companyWideRank
+    ? (await Store.findAll({ where: { is_deleted: 0, status: 1 }, attributes: ['store_id'], raw: true })).map(row => String(row.store_id))
+    : await resolveStores(user, dimension === 'store' ? (ctx.query.storeId || ctx.query.store_id) : '');
+  const { startAt, endAt } = reportActualRange(leaderboardOnly ? { startDate: `${monthKey}-01`, endDate: businessDate } : ctx.query, monthKey);
+  if (!storeIds.length) {
+    ctx.body = { code: 0, data: leaderboardOnly ? { monthKey, leaderboard: [] } : {
+      monthKey, stores: [], employees: [],
+      ...(homeSummary && { regionalTasks: { total: null, chengdu: null, chongqing: null } })
+    } };
+    return;
+  }
+  const taskWhere = { month_key: monthKey, status: 1 };
+  const staffWhere = { is_deleted: 0, status: 1 };
+  if (!globalScope) {
+    taskWhere.distributor_id = user.distributorId;
+    staffWhere.distributor_id = user.distributorId;
+  }
+  const taskRequest = MonthlyTask.findAll({ where: taskWhere, raw: true });
+  const loadTaskDetails = async () => {
+    if (!homeSummary) return Promise.all([
+      MonthlyTaskGrossProfitAllocation.findAll({ raw: true }),
+      MonthlyTaskProductBatch.findAll({ raw: true }),
+      MonthlyTaskProduct.findAll({ raw: true })
+    ]);
+    const ids = (await taskRequest).map(task => task.task_id);
+    if (!ids.length) return [[], [], []];
+    const where = { task_id: { [Op.in]: ids } };
+    const [allocations, batches] = await Promise.all([
+      MonthlyTaskGrossProfitAllocation.findAll({ where, raw: true }),
+      MonthlyTaskProductBatch.findAll({ where, raw: true })
+    ]);
+    const products = batches.length ? await MonthlyTaskProduct.findAll({
+      where: { batch_id: { [Op.in]: batches.map(batch => batch.batch_id) } }, raw: true
+    }) : [];
+    return [allocations, batches, products];
+  };
+  const [stores, tasks, staffRows, permissions, [allocations, batches, products], actuals, excludedDistributorStaffRows] = await Promise.all([
+    Store.findAll({ where: { store_id: { [Op.in]: storeIds }, is_deleted: 0, status: 1 }, attributes: ['store_id', 'name', 'region_id'], raw: true }),
+    taskRequest,
+    Staff.findAll({
+      where: staffWhere,
+      attributes: ['staff_id', 'name', 'store_id', 'role_code', 'distributor_id'],
+      include: [{ model: Role, as: 'Roles', attributes: ['role_code'], through: { attributes: [] }, required: false }]
+    }),
+    StaffStorePermission.findAll({ where: { store_id: { [Op.in]: storeIds } }, attributes: ['staff_id', 'store_id'], raw: true }),
+    recordDatabaseStage('taskConfiguration', () => loadTaskDetails()),
+    recordDatabaseStage('taskActuals', () => loadActuals(storeIds, startAt, endAt, archiveScope)),
+    companyWideRank
+      ? StaffDistributorPermission.findAll({ where: { distributor_id: 'DIST003' }, attributes: ['staff_id'], raw: true })
+      : Promise.resolve([])
+  ]);
+  await require('../sales/monthlyProfitTargets').overlayMigratedProfit(tasks,allocations,monthKey,storeIds);
+  const storeMap = new Map(stores.map(row => [String(row.store_id), row]));
+  const regionIds = [...new Set(stores.map(row => String(row.region_id || '')).filter(Boolean))];
+  const regions = regionIds.length
+    ? await Region.findAll({ where: { region_id: { [Op.in]: regionIds } }, attributes: ['region_id', 'region_code', 'name'], raw: true })
+    : [];
+  const regionMap = new Map(regions.map(row => [String(row.region_id), row]));
+  const staffMap = new Map(staffRows.map(row => [String(row.staff_id), row]));
+  const visibleStaffIds = new Set(permissions.map(row => String(row.staff_id)));
+  staffRows.forEach(row => {
+    if (row.store_id && storeIds.includes(String(row.store_id))) visibleStaffIds.add(String(row.staff_id));
+  });
+  if (requestedStaffId && (
+    String(user.staffId || '') === requestedStaffId
+    || selfOnly
+    || companyWideRank
+  )) visibleStaffIds.add(requestedStaffId);
+  if (dimension === 'staff' && requestedStaffId && !visibleStaffIds.has(requestedStaffId)) {
+    ctx.throw(403, '无权访问该员工任务达成');
+  }
+  const batchesByTask = new Map();
+  const productsByBatch = new Map();
+  products.forEach(row => {
+    const list = productsByBatch.get(String(row.batch_id)) || [];
+    list.push({ productId: row.product_id, productName: row.product_name, targetQuantity: Number(row.target_quantity || 0) });
+    productsByBatch.set(String(row.batch_id), list);
+  });
+  batches.forEach(row => {
+    if (!tasks.some(task => String(task.task_id) === String(row.task_id))) return;
+    const list = batchesByTask.get(String(row.task_id)) || [];
+    list.push({ batchId: row.batch_id, batchName: row.batch_name, products: productsByBatch.get(String(row.batch_id)) || [] });
+    batchesByTask.set(String(row.task_id), list);
+  });
+  const taskMap = new Map(tasks.map(task => [String(task.task_id), { ...task, targetId: String(task.target_id), targetType: task.target_type, salesTarget: task.sales_target, grossProfitTarget: task.gross_profit_target, productBatches: batchesByTask.get(String(task.task_id)) || [] }]));
+  const visibleTasks = tasks.filter(task => task.target_type === 'store'
+    ? storeMap.has(String(task.target_id))
+    : visibleStaffIds.has(String(task.target_id)));
+  const allocationMap = new Map();
+  const allocationTotalByTask = new Map();
+  allocations.forEach(row => {
+    const task = taskMap.get(String(row.task_id));
+    if (!task || task.targetType !== 'store' || !storeMap.has(String(task.targetId))) return;
+    const list = allocationMap.get(String(row.staff_id)) || [];
+    list.push({ task, allocatedTarget: money(row.allocated_target) });
+    allocationMap.set(String(row.staff_id), list);
+    allocationTotalByTask.set(String(row.task_id), number(allocationTotalByTask.get(String(row.task_id))) + money(row.allocated_target));
+  });
+  const storesResult = (dimension === 'staff' ? [] : visibleTasks.filter(task => task.target_type === 'store')).map(task => {
+    const store = storeMap.get(String(task.target_id)) || {};
+    const region = regionMap.get(String(store.region_id || '')) || {};
+    return Object.assign(buildAchievement({
+    task: taskMap.get(String(task.task_id)),
+    actual: actuals.storeActuals.get(String(task.target_id)) || createActual(),
+    grossProfitTarget: task.gross_profit_target,
+    name: store.name || task.target_id,
+    storeId: task.target_id,
+    storeName: store.name || '',
+    allocationTotal: allocationTotalByTask.get(String(task.task_id)) || 0,
+    profitVisible
+    }), { regionId: region.region_id || '', regionCode: region.region_code || '', regionName: region.name || '' });
+  });
+  const allEmployeesResult = (dimension === 'store' ? [] : visibleTasks.filter(task => task.target_type === 'staff')).map(task => {
+    const normalizedTask = taskMap.get(String(task.task_id)) || task;
+    const staff = staffMap.get(String(normalizedTask.targetId));
+    const allocationsForStaff = allocationMap.get(String(normalizedTask.targetId)) || [];
+    const allocated = allocationsForStaff.reduce((sum, row) => sum + row.allocatedTarget, 0);
+    const grossTarget = number(normalizedTask.grossProfitTarget) > 0 ? normalizedTask.grossProfitTarget : allocated;
+    const actual = actuals.employeeActuals.get(employeeKey(normalizedTask.targetId, staff?.name))
+      || actuals.employeeActuals.get(employeeKey('', staff?.name))
+      || createActual();
+    return buildAchievement({ task: normalizedTask, actual, grossProfitTarget: grossTarget, name: staff?.name || normalizedTask.targetId, storeId: staff?.store_id || '', storeName: storeMap.get(String(staff?.store_id || ''))?.name || '', profitVisible });
+  });
+  if (companyWideRank) {
+    const rankableRoleCodes = new Set(['staff', 'clerk', 'manager', 'store_manager', 'store_admin']);
+    const excludedRankStaffIds = new Set([
+      ...staffRows.filter(staff => String(staff.distributor_id || '') === 'DIST003').map(staff => String(staff.staff_id)),
+      ...excludedDistributorStaffRows.map(row => String(row.staff_id))
+    ]);
+    const eligibleStaff = staffRows.filter(staff => {
+      if (excludedRankStaffIds.has(String(staff.staff_id))) return false;
+      const roles = (staff.Roles || []).map(role => String(role.role_code || '').toLowerCase());
+      // A staff record can have multiple associated roles. Keep the primary
+      // role_code in the eligibility check even when the association table
+      // also contains a role that is not rankable (for example, BOSS).
+      if (staff.role_code) roles.push(String(staff.role_code).toLowerCase());
+      return roles.some(role => rankableRoleCodes.has(role));
+    });
+    const eligibleIds = new Set(eligibleStaff.map(staff => String(staff.staff_id)));
+    const rankByStaffId = new Map(allEmployeesResult
+      .filter(row => eligibleIds.has(String(row.targetId)))
+      .map(row => [String(row.targetId), row]));
+    eligibleStaff.forEach(staff => {
+      const staffId = String(staff.staff_id);
+      if (rankByStaffId.has(staffId)) return;
+      const actual = actuals.employeeActuals.get(employeeKey(staffId, staff.name)) || createActual();
+      rankByStaffId.set(staffId, {
+        targetType: 'staff',
+        targetId: staffId,
+        targetName: staff.name || staffId,
+        storeId: staff.store_id || '',
+        storeName: storeMap.get(String(staff.store_id || ''))?.name || '',
+        overallRate: null,
+        status: '未设置目标',
+        sales: { actual: money(actual.salesAmount), target: 0, rate: null },
+        grossProfit: profitVisible
+          ? { actual: money(actual.grossProfit), target: 0, rate: null }
+          : { actual: null, target: null, rate: null },
+        productBatches: [],
+        unallocatedGrossProfit: 0
+      });
+    });
+    allEmployeesResult.splice(0, allEmployeesResult.length, ...[...rankByStaffId.values()]);
+  }
+  const sort = (left, right) => (number(right.overallRate) - number(left.overallRate)) || (number(right.sales.actual) - number(left.sales.actual)) || String(left.targetName).localeCompare(String(right.targetName), 'zh-CN');
+  storesResult.sort(sort);
+  allEmployeesResult.sort(sort);
+  if (leaderboardOnly) {
+    const leaderboard = allEmployeesResult.map((row, index) => ({
+      rank: index + 1,
+      name: row.targetName,
+      isSelf: String(row.targetId) === requestedStaffId
+    }));
+    ctx.body = { code: 0, data: { monthKey, leaderboard } };
+    return;
+  }
+  const companyWideTaskRank = companyWideRank
+    ? allEmployeesResult.findIndex(row => String(row.targetId) === requestedStaffId) + 1
+    : null;
+  const companyWideTaskTotal = companyWideRank ? allEmployeesResult.length : null;
+  const employeesResult = companyWideRank
+    ? allEmployeesResult.filter(row => String(row.targetId) === requestedStaffId)
+    : requestedStaffId
+      ? allEmployeesResult.filter(row => String(row.targetId) === requestedStaffId)
+      : allEmployeesResult;
+  if (homeSummary) {
+    const average = rows => {
+      const rates = rows.map(row => row.overallRate).filter(value => value !== null);
+      return rates.length ? rates.reduce((sum, value) => sum + value, 0) / rates.length : null;
+    };
+    const byRegion = pattern => storesResult.filter(row => pattern.test(`${row.regionName} ${row.regionCode}`));
+    ctx.body = { code: 0, data: {
+      monthKey,
+      regionalTasks: {
+        total: average(storesResult),
+        chengdu: average(byRegion(/成都|CD|SICHUAN/i)),
+        chongqing: average(byRegion(/重庆|CQ|CHONGQING/i))
+      },
+      employees: employeesResult.map(({ targetId, overallRate }) => ({ targetId, overallRate }))
+    } };
+    return;
+  }
+  ctx.body = {
+    code: 0,
+    data: {
+      monthKey,
+      meta: {
+        source: 'monthly_tasks',
+        dimension,
+        canViewProfit: profitVisible,
+        companyWideTaskRank,
+        companyWideTaskTotal,
+        calculation: 'ANY-ERP 按自然月实时汇总已归档销售与已完成退货，前端只负责展示'
+      },
+      summary: {
+        stores: summarizeAchievements(storesResult, profitVisible),
+        employees: summarizeAchievements(employeesResult, profitVisible)
+      },
+      stores: storesResult,
+      employees: employeesResult,
+      updatedAt: new Date().toISOString()
+    }
+  };
+}
+
+function addProductReturnSales(actual, productId, salesAmount) {
+  if (!productId) return;
+  const values = actual.productValues.get(String(productId)) || { sales: 0, profit: 0 };
+  values.sales -= Math.abs(number(salesAmount));
+  actual.productValues.set(String(productId), values);
+}
+
+function indicatorActual(actual, metric, productIds = []) {
+  if(actual?.scopeUnknown)return null;
+  if(actual?.abilityScoped&&metric==='profit'&&actual.unallocatedProfit)return null;
+  if (!actual) return 0;
+  let value;
+  if (metric === 'quantity') {
+    const ids = productIds.length ? productIds : [...actual.productQuantities.keys()];
+    value = ids.reduce((sum, id) => sum + number(actual.productQuantities.get(id)), 0);
+  } else if (!productIds.length) {
+    value = metric === 'sales' ? actual.salesAmount : actual.grossProfit;
+  } else {
+    if (metric === 'profit' && actual.unallocatedProfit) return null;
+    value = productIds.reduce((sum, id) => sum + number(actual.productValues.get(id)?.[metric]), 0);
+  }
+  return Number(value.toFixed(2));
+}
+
+module.exports = { getMonthlyTaskAchievement, loadActuals, indicatorActual };

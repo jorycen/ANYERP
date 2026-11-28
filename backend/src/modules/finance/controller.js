@@ -1,9 +1,426 @@
+const expenseApplication = require('./expenseApplication');
 /**
  * 财务管理控制器
  */
-const { DailyStatement, Expense, Store } = require('../../models');
-const { Op } = require('sequelize');
-const { generateUUID, paginate, formatPaginatedResult } = require('../../utils');
+const {
+  sequelize, DailyStatement, DailyStatementDetail, Expense, ExpenseType, PurchaseRequest, PurchaseRequestItem, Store, Region, Order, OrderPayment, Supplier, SupplierPaymentAccount, Distributor,
+  SettlementAccount, SettlementAccountTransaction, SubsidyAccountRoute, SubsidyReceipt, PaymentMethod, PaymentMethodStore, OrderItem,
+  SubsidyReceiptAllocation, SubsidyReceivableAdjustment, ExpensePerformanceAllocation,
+  ApprovalFlowInstance, ApprovalTask
+} = require('../../models');
+const { Op, Sequelize, fn, col } = require('sequelize');
+const { generateUUID, paginate, formatPaginatedResult, buildPendingFirstOrder } = require('../../utils');
+const { sendExcel } = require('../../utils/excelExport');
+const { getUserRoles } = require('../../middleware/permission');
+const {
+  ensureExpensePayable,
+  cancelExpenseRecord, closeExpenseApproval,
+  normalizeAttribution,
+  startExpenseApproval
+} = require('./expenseService');
+const { assertPeriodOpen } = require('./expenseAccountingController');
+const { accessibleDistributorIds, canAccessDistributor, distributorWhere } = require('../../utils/distributorScope');
+const { recordBusinessAction } = require('../../utils/businessActionLog');
+
+function buildDailyPaymentMethodWhere(paymentMethod) {
+  const method = String(paymentMethod || '').trim();
+  if (!method) return null;
+
+  if (method.startsWith('国补') && !method.endsWith('-客户实收') && !method.endsWith('-政策补贴应收')) {
+    return { [Op.or]: [method, `${method}-客户实收`] };
+  }
+  return method;
+}
+
+function resolveExpenseAccountingMonth(value, expenseDate) {
+  const raw = value || expenseDate;
+  const candidate = raw ? String(raw).slice(0, 7) : new Date().toISOString().slice(0, 7);
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(candidate)) {
+    const error = new Error('费用经营归属月份格式必须为 YYYY-MM');
+    error.status = 400;
+    throw error;
+  }
+  return candidate;
+}
+
+function parseExpenseDetails(value) {
+  if (Array.isArray(value)) return value;
+  try { return value ? JSON.parse(value) : []; } catch (_) { return []; }
+}
+
+async function getAccountBalance(accountId, transaction = null) {
+  const [incomeAmount, expenseAmount] = await Promise.all([
+    SettlementAccountTransaction.sum('amount', { where: { account_id: accountId, type: 'income' }, transaction }),
+    SettlementAccountTransaction.sum('amount', { where: { account_id: accountId, type: 'expense' }, transaction })
+  ]);
+  return Math.round((Number(incomeAmount || 0) - Number(expenseAmount || 0)) * 100) / 100;
+}
+
+/**
+ * 日结清单（逐条显示 - 按收款方式）
+ * 直接查询 DailyStatementDetail 平铺展示
+ */
+async function getStatementDetails(ctx, businessWhere) {
+  const { storeId, startDate, endDate, settled, paymentMethod, settlementAccountId, customerName, businessType, unionpayOrderNo, page = 1, pageSize = 20 } = ctx.query;
+  const user = ctx.state.user;
+  const exportMode = Boolean(ctx.state.exportMode);
+
+  const where = {};
+  if (businessWhere) where[Op.or] = businessWhere;
+  if (settled !== undefined && settled !== '') {
+    // 已下账的负向退款会把 settled 保存为负数；不能以“> 0”判断下账状态。
+    where.settled = parseFloat(settled) > 0 ? { [Op.ne]: 0 } : 0;
+  }
+  if (paymentMethod) {
+    where.payment_method = buildDailyPaymentMethodWhere(paymentMethod);
+  }
+  if (settlementAccountId) {
+    where.settlement_account_id = settlementAccountId;
+  }
+  if (customerName) where.customer_name = { [Op.like]: `%${String(customerName).trim()}%` };
+  if (businessType) where.business_type = businessType;
+  if (unionpayOrderNo) {
+    const keyword = String(unionpayOrderNo).trim();
+    const matchingOrders = await Order.findAll({
+      where: { invoice_info: { [Op.like]: `%${keyword}%` } },
+      attributes: ['order_id']
+    });
+    where[Op.and] = [{
+      [Op.or]: [
+        { unionpay_order_no: { [Op.like]: `%${keyword}%` } },
+        { order_id: { [Op.in]: matchingOrders.map(order => order.order_id) } }
+      ]
+    }];
+  }
+
+  const statementWhere = {};
+  if (startDate && endDate) {
+    statementWhere.statement_date = { [Op.gte]: startDate, [Op.lte]: endDate };
+  }
+
+  const storeWhere = {};
+  if (!user.accessibleStoreIds.includes('*')) {
+    storeWhere.store_id = user.accessibleStoreIds;
+  }
+  if (storeId) {
+    storeWhere.store_id = storeId;
+  }
+
+  const stores = await Store.findAll({ where: storeWhere });
+  const storeIds = stores.map(s => s.store_id);
+  if (storeIds.length === 0) {
+    ctx.body = formatPaginatedResult([], { page, pageSize, count: 0 });
+    return;
+  }
+  statementWhere.store_id = storeIds;
+
+  const statements = await DailyStatement.findAll({
+    where: statementWhere,
+    attributes: ['statement_id', 'statement_date', 'store_id']
+  });
+  const statementIds = statements.map(s => s.statement_id);
+  if (statementIds.length === 0) {
+    ctx.body = formatPaginatedResult([], { page, pageSize, count: 0 });
+    return;
+  }
+  where.statement_id = statementIds;
+
+  const detailQuery = {
+    where,
+    order: [
+      [Sequelize.literal('CASE WHEN `DailyStatementDetail`.`settled` = 0 THEN 0 ELSE 1 END'), 'ASC'],
+      [Sequelize.literal(`
+        COALESCE(
+          (SELECT o.create_time FROM T_ORDER o
+            WHERE o.order_id = \`DailyStatementDetail\`.\`order_id\` LIMIT 1),
+          (SELECT d.create_time FROM T_DEPOSIT_ORDER d
+            WHERE d.deposit_id = \`DailyStatementDetail\`.\`order_id\` LIMIT 1),
+          (SELECT s.statement_date FROM T_DAILY_STATEMENT s
+            WHERE s.statement_id = \`DailyStatementDetail\`.\`statement_id\` LIMIT 1)
+        )
+      `), 'DESC'],
+      ['detail_id', 'DESC']
+    ]
+  };
+  const result = exportMode
+    ? { count: 0, rows: await DailyStatementDetail.findAll(detailQuery) }
+    : await DailyStatementDetail.findAndCountAll({ ...detailQuery, ...paginate({}, { page, pageSize }) });
+  const { count, rows } = result;
+
+  const amountResult = await DailyStatementDetail.findOne({
+    where,
+    attributes: [[Sequelize.fn('SUM', Sequelize.col('amount')), 'total_amount']],
+    raw: true
+  });
+  const totalAmount = parseFloat(amountResult?.total_amount || 0);
+
+  const statementMap = {};
+  for (const s of statements) {
+    statementMap[s.statement_id] = s;
+  }
+  const storeMap = {};
+  for (const s of stores) {
+    storeMap[s.store_id] = s;
+  }
+
+  const accountIds = rows.map(r => r.settlement_account_id).filter(Boolean);
+  const accountMap = {};
+  if (accountIds.length > 0) {
+    const accounts = await SettlementAccount.findAll({
+      where: { account_id: accountIds }
+    });
+    for (const a of accounts) {
+      accountMap[a.account_id] = a.toJSON();
+    }
+  }
+  const linkedOrders = rows.length
+    ? await Order.findAll({
+        where: { order_id: rows.map(row => row.order_id) },
+        attributes: ['order_id', 'invoice_info']
+      })
+    : [];
+  const unionpayByOrderId = new Map(linkedOrders.map(order => [String(order.order_id), String(order.invoice_info || '').trim()]));
+  const orderItems = rows.length
+    ? await OrderItem.findAll({
+        where: { order_id: rows.map(row => row.order_id) },
+        attributes: ['order_id', 'sn_code']
+      })
+    : [];
+  const snByOrderId = new Map();
+  for (const item of orderItems) {
+    const sn = String(item.sn_code || '').trim();
+    if (!sn) continue;
+    const key = String(item.order_id);
+    const values = snByOrderId.get(key) || [];
+    if (!values.includes(sn)) values.push(sn);
+    snByOrderId.set(key, values);
+  }
+  const approvedAdjustments = rows.length
+    ? await SubsidyReceivableAdjustment.findAll({
+        attributes: ['detail_id', [Sequelize.fn('SUM', Sequelize.col('amount')), 'approved_amount']],
+        where: { detail_id: rows.map(row => row.detail_id), status: 'APPROVED' },
+        group: ['detail_id'],
+        raw: true
+      })
+    : [];
+  const adjustmentMap = new Map(approvedAdjustments.map(row => [row.detail_id, Number(row.approved_amount || 0)]));
+
+  const list = rows.map(d => {
+    const stmt = statementMap[d.statement_id];
+    const store = stmt ? storeMap[stmt.store_id] : null;
+    const remainingAmount = Math.max(0, Number(d.amount || 0) - Number(d.settled || 0));
+    const adjustmentAmount = adjustmentMap.get(d.detail_id) || 0;
+    return {
+      ...d.toJSON(),
+      statement_date: stmt ? stmt.statement_date : null,
+      store_name: store ? store.name : null,
+      store_id: stmt ? stmt.store_id : null,
+      region_id: store ? store.region_id : null,
+      unionpay_order_no: d.unionpay_order_no || unionpayByOrderId.get(String(d.order_id)) || '',
+      sn_code: (snByOrderId.get(String(d.order_id)) || []).join(', '),
+      remaining_amount: remainingAmount,
+      approved_adjustment_amount: adjustmentAmount,
+      receipt_status: remainingAmount <= 0 && adjustmentAmount > 0
+        ? 'ADJUSTED'
+        : Number(d.settled || 0) <= 0
+        ? 'PENDING'
+        : (remainingAmount <= 0 ? 'RECEIVED' : 'PARTIAL'),
+      settlementAccount: d.settlement_account_id ? accountMap[d.settlement_account_id] || null : null
+    };
+  });
+
+  ctx.body = formatPaginatedResult(list, { page, pageSize, count });
+  ctx.body.totalAmount = totalAmount;
+  ctx.body.totalCount = count;
+}
+
+async function getDailyDetails(ctx) {
+  return getStatementDetails(ctx, [
+    { business_type: { [Op.ne]: 'national_subsidy_receivable' } },
+    {
+      business_type: { [Op.is]: null },
+      payment_method: { [Op.notLike]: '国补%-政策补贴应收' }
+    }
+  ]);
+}
+
+async function getNationalSubsidyReceivables(ctx) {
+  return getStatementDetails(ctx, [
+    { business_type: 'national_subsidy_receivable' },
+    {
+      business_type: { [Op.is]: null },
+      payment_method: { [Op.like]: '国补%-政策补贴应收' }
+    }
+  ]);
+}
+
+async function exportDailyDetails(ctx) {
+  ctx.state.exportMode = true;
+  await getDailyDetails(ctx);
+  const rows = ctx.body?.list || [];
+  const data = rows.map(row => ({
+    日期: row.statement_date || '',
+    业务单号: row.order_no || row.order_id || '',
+    业务类型: row.business_type === 'deposit_receipt'
+      ? '定金收款'
+      : (row.business_type || '销售收款'),
+    客户: row.customer_name || '',
+    收款方式: row.payment_method || '',
+    收款金额: Number(row.amount || 0),
+    已下账金额: Number(row.settled || 0),
+    结算账号: row.settlementAccount?.account_name || '',
+    门店: row.store_name || '',
+    状态: Number(row.settled || 0) !== 0 ? '已下账' : '未下账',
+    下账时间: row.settled_at || ''
+  }));
+  sendExcel(ctx, data, [
+    '日期', '业务单号', '业务类型', '客户', '收款方式', '收款金额',
+    '已下账金额', '结算账号', '门店', '状态', '下账时间'
+  ], `日结单_${new Date().toISOString().slice(0, 10)}.xlsx`, '日结单');
+}
+
+async function exportNationalSubsidyReceivables(ctx) {
+  ctx.state.exportMode = true;
+  await getNationalSubsidyReceivables(ctx);
+  const rows = ctx.body?.list || [];
+  const data = rows.map(row => ({
+    应收日期: row.statement_date || '',
+    订单号: row.order_no || row.order_id || '',
+    云闪付订单号: row.unionpay_order_no || '',
+    SN: row.sn_code || '',
+    国补客户: row.customer_name || '',
+    国补类型: row.payment_method || '',
+    应收金额: Number(row.amount || 0),
+    累计核销: Number(row.settled || 0),
+    剩余应收: Number(row.remaining_amount || 0),
+    应收账户: row.settlementAccount?.account_name || '',
+    门店: row.store_name || '',
+    状态: row.receipt_status === 'ADJUSTED'
+      ? '差额结清'
+      : Number(row.remaining_amount || 0) <= 0
+        ? '已到账'
+        : Number(row.settled || 0) > 0 ? '部分到账' : '待回款',
+    结清时间: row.settled_at || ''
+  }));
+  sendExcel(ctx, data, [
+    '应收日期', '订单号', '云闪付订单号', 'SN', '国补客户', '国补类型', '应收金额', '累计核销',
+    '剩余应收', '应收账户', '门店', '状态', '结清时间'
+  ], `国补应收单_${new Date().toISOString().slice(0, 10)}.xlsx`, '国补应收单');
+}
+
+function normalizeUnionpayOrderNos(value) {
+  const values = Array.isArray(value) ? value : String(value || '').split(/[\s,，;；]+/);
+  return [...new Set(values.map(item => String(item || '').trim()).filter(Boolean))];
+}
+
+async function resolveManualSubsidyReceivableAccount(storeId, paymentMethod, transaction) {
+  const method = await PaymentMethod.findOne({
+    where: {
+      status: 1,
+      [Op.or]: [{ name: paymentMethod }, { code: paymentMethod }]
+    },
+    transaction
+  });
+  if (!method) return { accountId: null, paymentCode: paymentMethod };
+  if (Number(method.is_global) === 1) {
+    return {
+      accountId: method.receivable_settlement_account_id || method.settlement_account_id || null,
+      paymentCode: method.code || method.name
+    };
+  }
+  const config = await PaymentMethodStore.findOne({
+    where: { method_id: method.method_id, store_id: storeId },
+    transaction
+  });
+  return {
+    accountId: config?.receivable_settlement_account_id || config?.settlement_account_id || method.receivable_settlement_account_id || null,
+    paymentCode: method.code || method.name
+  };
+}
+
+async function createManualNationalSubsidyReceivable(ctx) {
+  const user = ctx.state.user;
+  const {
+    statementDate, storeId, unionpayOrderNo, customerName = '',
+    paymentMethod = '国补POS-政策补贴应收', amount, remark = ''
+  } = ctx.request.body || {};
+  const normalizedOrderNo = String(unionpayOrderNo || '').trim();
+  const normalizedPaymentMethod = String(paymentMethod || '').trim();
+  const receivableAmount = money(amount);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(statementDate || ''))) ctx.throw(400, '请选择正确的应收日期');
+  if (!storeId) ctx.throw(400, '请选择门店');
+  if (!normalizedOrderNo) ctx.throw(400, '请填写云闪付订单号');
+  if (!normalizedPaymentMethod) ctx.throw(400, '请填写国补类型');
+  if (receivableAmount <= 0) ctx.throw(400, '应收金额必须大于0');
+  const allowedStoreIds = (user.accessibleStoreIds || []).map(String);
+  if (!allowedStoreIds.includes('*') && !allowedStoreIds.includes(String(storeId))) ctx.throw(403, '无权登记该门店的国补数据');
+
+  let created;
+  await sequelize.transaction(async transaction => {
+    const store = await Store.findByPk(storeId, { transaction });
+    if (!store) ctx.throw(404, '门店不存在');
+    const linkedOrders = await Order.findAll({
+      where: { invoice_info: normalizedOrderNo },
+      attributes: ['order_id'],
+      transaction
+    });
+    const duplicate = await DailyStatementDetail.findOne({
+      where: {
+        [Op.and]: [
+          {
+            [Op.or]: [
+              { unionpay_order_no: normalizedOrderNo },
+              ...(linkedOrders.length ? [{ order_id: linkedOrders.map(order => order.order_id) }] : [])
+            ]
+          },
+          {
+            [Op.or]: [
+              { business_type: 'national_subsidy_receivable' },
+              { payment_method: { [Op.like]: '国补%-政策补贴应收' } }
+            ]
+          }
+        ]
+      },
+      transaction
+    });
+    if (duplicate) ctx.throw(409, `云闪付订单号 ${normalizedOrderNo} 已登记`);
+
+    const [statement] = await DailyStatement.findOrCreate({
+      where: { store_id: storeId, statement_date: statementDate },
+      defaults: {
+        statement_id: generateUUID(), store_id: storeId, statement_date: statementDate,
+        total_revenue: 0, total_order_count: 0, total_settled: 0, status: 'pending'
+      },
+      transaction
+    });
+    await statement.reload({ transaction, lock: transaction.LOCK.UPDATE });
+    const account = await resolveManualSubsidyReceivableAccount(storeId, normalizedPaymentMethod, transaction);
+    created = await DailyStatementDetail.create({
+      detail_id: generateUUID(),
+      statement_id: statement.statement_id,
+      order_id: generateUUID(),
+      order_no: `GBSD${Date.now()}`,
+      unionpay_order_no: normalizedOrderNo,
+      customer_name: String(customerName || '').trim(),
+      payment_method: normalizedPaymentMethod,
+      payment_code: account.paymentCode,
+      business_type: 'national_subsidy_receivable',
+      source_type: 'manual',
+      remark: String(remark || '').trim(),
+      create_user: user.name || userIdOf(user),
+      create_time: new Date(),
+      amount: receivableAmount,
+      settlement_account_id: account.accountId,
+      settled: 0
+    }, { transaction });
+    await statement.update({
+      total_revenue: money(Number(statement.total_revenue || 0) + receivableAmount),
+      total_order_count: Number(statement.total_order_count || 0) + 1,
+      status: 'pending'
+    }, { transaction });
+  });
+  ctx.body = { code: 0, message: '国补数据登记成功', data: created };
+}
 
 /**
  * 日结列表
@@ -15,32 +432,403 @@ async function getDailyStatement(ctx) {
   const where = {};
   const whereStore = {};
 
-  // 区域权限过滤
-  if (!user.regionCodes.includes('*')) {
-    whereStore.region_id = user.regionCodes;
+  if (!user.accessibleStoreIds.includes('*')) {
+    whereStore.store_id = user.accessibleStoreIds;
   }
-  if (storeId) whereStore.store_id = storeId;
+  if (storeId) {
+    const allowedStoreIds = (user.accessibleStoreIds || []).map(String);
+    if (!allowedStoreIds.includes('*') && !allowedStoreIds.includes(String(storeId))) {
+      ctx.throw(403, '无权访问该门店日结记录');
+    }
+    whereStore.store_id = storeId;
+  }
 
   const stores = await Store.findAll({ where: whereStore });
   const storeIds = stores.map(s => s.store_id);
   where.store_id = storeIds;
 
   if (startDate && endDate) {
-    where.statement_date = {
-      [Op.gte]: startDate,
-      [Op.lte]: endDate
-    };
+    where.statement_date = { [Op.gte]: startDate, [Op.lte]: endDate };
   }
   if (status) where.status = status;
 
   const { count, rows } = await DailyStatement.findAndCountAll({
     where,
-    include: [{ model: Store }],
-    order: [['statement_date', 'DESC']],
+    include: [{ model: Store }, { model: DailyStatementDetail, as: 'Details' }],
+    order: buildPendingFirstOrder(sequelize, {
+      statusColumn: 'DailyStatement.status',
+      pendingStatuses: ['pending', 'partial'],
+      dateColumns: ['DailyStatement.statement_date'],
+      idColumn: 'DailyStatement.statement_id'
+    }),
     ...paginate({}, { page, pageSize })
   });
 
   ctx.body = formatPaginatedResult(rows, { page, pageSize, count });
+}
+
+/**
+ * 提交报销申请（发起人报销）
+ */
+async function submitExpense(ctx) {
+  return sequelize.transaction(transaction => submitExpenseLocked(ctx, transaction));
+}
+async function submitExpenseLocked(ctx, transaction) {
+  const user = ctx.state.user;
+  const { id } = ctx.params;
+
+  const record = await Expense.findByPk(id, {transaction,lock:transaction.LOCK.UPDATE});
+  if (!record || record.is_deleted) ctx.throw(404, '支出记录不存在');
+  if (!canAccessDistributor(user,record.distributor_id)) ctx.throw(403,'无权提交该经销商费用');
+  if (record.status === 'draft') {
+    if (!canManageExpenseDraft(user, record)) ctx.throw(403, '只有费用单创建人、店长或管理员可以提交');
+    {
+      await assertPeriodOpen(record.distributor_id, record.accounting_month || resolveExpenseAccountingMonth(null, record.expense_date), transaction);
+      if (record.source_type === 'purchase') {
+        if (record.payment_method === 'CORPORATE') {
+          const payable = await ensureExpensePayable(record, { sourceType: 'expense', status: 'unpaid' }, transaction);
+          await record.update({ status: 'pending_payment', payable_id: payable.payable_id, submit_user: user.name, update_time: new Date() }, { transaction });
+        } else {
+          await record.update({ status: 'pending_approval', submit_user: user.name, update_time: new Date() }, { transaction });
+        }
+      } else {
+        expenseApplication.attachments(JSON.parse(record.attachment_urls || '[]'));
+        if (!record.recipient_snapshot_json) ctx.throw(400, '请先补齐费用收款信息');
+        if (record.payment_method === 'PROFIT_DEDUCTION') {
+          const deduction = require('./expenseProfitDeduction');
+          const store = await deduction.storeContext(record.store_id, user, transaction);
+          await deduction.normalize(deduction.read(record), {amount:record.amount,store,user,transaction});
+        }
+
+        await record.update({ status: 'pending_approval', submit_user: user.name, update_time: new Date() }, { transaction });
+        await startExpenseApproval(record, user, transaction);
+      }
+    }
+    ctx.body = { code: 0, message: '费用单已提交', status: record.status };
+    return;
+  }
+  if (record.status !== 'pending') ctx.throw(400, '当前状态不可提交报销');
+
+  await record.update({
+    status: 'processing',
+    submit_user: user.name
+  }, {transaction});
+
+  ctx.body = { code: 0, message: '报销申请已提交' };
+}
+
+/**
+ * 出纳确认付款
+ */
+async function payExpense(ctx) {
+  const user = ctx.state.user;
+  const { id } = ctx.params;
+  const { paymentMethod, settlementAccountId } = ctx.request.body;
+
+  await sequelize.transaction(async transaction => {
+    const record = await Expense.findByPk(id, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!record) ctx.throw(404, '支出记录不存在');
+    if (record.payment_method === 'PROFIT_DEDUCTION') ctx.throw(400,'抵扣毛利费用不产生现金付款');
+    if (record.payable_id) ctx.throw(400, '该费用已进入付款管理，请在付款管理中登记实际付款');
+    if (record.status !== 'processing') ctx.throw(400, '当前状态不可付款');
+
+    const settleAccountId = settlementAccountId || record.settlement_account_id;
+    await record.update({
+      status: 'paid',
+      settled_amount: record.amount,
+      settle_user: user.name,
+      settled_payment_method: paymentMethod || record.payment_method,
+      settlement_account_id: settleAccountId || null,
+      settled_at: new Date()
+    }, { transaction });
+
+    if (settleAccountId) {
+      const amount = parseFloat(record.amount) || 0;
+      const currentBalance = await getAccountBalance(settleAccountId, transaction);
+      const balanceAfter = currentBalance - amount;
+      await SettlementAccountTransaction.create({
+        transaction_id: generateUUID(),
+        account_id: settleAccountId,
+        type: 'expense',
+        amount,
+        balance_after: balanceAfter,
+        description: `费用支出：${record.expense_type || '其他'} ${record.remark || ''}`,
+        related_ref: record.expense_no || record.expense_id,
+        create_user: user.name
+      }, { transaction });
+    }
+  });
+
+  ctx.body = { code: 0, message: '付款完成' };
+}
+
+/**
+ * 日结单详情（含订单明细）
+ */
+async function getDailyStatementDetail(ctx) {
+  const { id } = ctx.params;
+
+  const statement = await DailyStatement.findByPk(id, {
+    include: [
+      { model: Store },
+      { model: DailyStatementDetail, as: 'Details' }
+    ]
+  });
+
+  if (!statement) ctx.throw(404, '日结单不存在');
+
+  const detailsWithAccount = [];
+  for (const d of statement.Details || []) {
+    const detail = d.toJSON();
+    if (d.settlement_account_id) {
+      const acc = await SettlementAccount.findByPk(d.settlement_account_id);
+      if (acc) detail.settlementAccount = acc.toJSON();
+    }
+    detailsWithAccount.push(detail);
+  }
+
+  ctx.body = {
+    code: 0,
+    data: {
+      ...statement.toJSON(),
+      Details: detailsWithAccount
+    }
+  };
+}
+
+/**
+ * 批量下账
+ * 按收款账户汇总和批量标记下账
+ */
+async function settleStatementDetails(ctx, businessType) {
+  const { detailIds, settlementAccounts = {} } = ctx.request.body;
+  const user = ctx.state.user;
+  if (!settlementAccounts || typeof settlementAccounts !== 'object' || Array.isArray(settlementAccounts)) ctx.throw(400, '下账账户参数格式错误');
+
+  if (!detailIds || !Array.isArray(detailIds) || detailIds.length === 0) {
+    ctx.throw(400, '请选择要下账的记录');
+  }
+
+  const businessWhere = businessType === 'national_subsidy_receivable'
+    ? [
+      { business_type: 'national_subsidy_receivable' },
+      {
+        business_type: { [Op.is]: null },
+        payment_method: { [Op.like]: '国补%-政策补贴应收' }
+      }
+    ]
+    : [
+      { business_type: { [Op.ne]: 'national_subsidy_receivable' } },
+      {
+        business_type: { [Op.is]: null },
+        payment_method: { [Op.notLike]: '国补%-政策补贴应收' }
+      }
+    ];
+  let accountSelection = null;
+  let totalSettledAmount = 0;
+  let settledCount = 0;
+  // 明细ID按逗号拼接会随着批量数量增长超过账户流水 RELATED_REF 的 128 字符限制。
+  // 使用固定长度的批次关联号，明细本身仍通过 settled/settled_at 和本次业务操作关联。
+  const settlementBatchRef = `${businessType === 'national_subsidy_receivable' ? 'SUBSIDY' : 'DAILY'}_SETTLE_${generateUUID()}`;
+  await sequelize.transaction(async transaction => {
+    let details = await DailyStatementDetail.findAll({
+      where: {
+        detail_id: detailIds,
+        ...(businessType === 'national_subsidy_receivable' ? {} : { settled: 0 }),
+        [Op.or]: businessWhere
+      },
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (businessType === 'national_subsidy_receivable') {
+      details = details.filter(detail => money(Number(detail.amount || 0) - Number(detail.settled || 0)) > 0);
+    }
+    if (details.length === 0) {
+      ctx.throw(400, '没有可下账的记录');
+    }
+    await fillMissingDailySettlementAccounts(details, transaction);
+    const unassignedDetails = details.filter(detail => !detail.settlement_account_id);
+    if (unassignedDetails.length > 0 && businessType === 'daily') {
+      const scope = distributorWhere(user);
+      const shared = getUserRoles(user).some(role => ['admin', 'boss', 'finance'].includes(role));
+      const accountWhere = { status: 1, account_type: 'FUND' };
+      if (Object.keys(scope).length) {
+        if (shared) accountWhere[Op.or] = [scope, { distributor_id: null }];
+        else Object.assign(accountWhere, scope);
+      }
+      const accounts = await SettlementAccount.findAll({ where: accountWhere, transaction, lock: transaction.LOCK.UPDATE });
+      const accountMap = new Map(accounts.map(account => [account.account_id, account]));
+      const missing = unassignedDetails.filter(detail => !settlementAccounts[detail.detail_id]);
+      if (missing.length) {
+        accountSelection = {
+          requiresAccountSelection: true,
+          details: unassignedDetails.map(detail => ({ detail_id: detail.detail_id, order_no: detail.order_no, payment_method: detail.payment_method, amount: detail.amount })),
+          accounts: accounts.map(account => ({ account_id: account.account_id, account_name: account.account_name }))
+        };
+        return;
+      }
+      const statements = await DailyStatement.findAll({ where: { statement_id: [...new Set(unassignedDetails.map(detail => detail.statement_id))] }, transaction });
+      const statementMap = new Map(statements.map(statement => [statement.statement_id, statement]));
+      for (const detail of unassignedDetails) {
+        const statement = statementMap.get(detail.statement_id);
+        if (!statement || !(user.accessibleStoreIds || []).some(id => id === '*' || String(id) === String(statement.store_id))) ctx.throw(403, '无权操作该门店的日结单');
+        if (!accountMap.has(settlementAccounts[detail.detail_id])) ctx.throw(400, '请选择有权限且启用的资金账户');
+      }
+      for (const detail of unassignedDetails) {
+        await detail.update({ settlement_account_id: settlementAccounts[detail.detail_id] }, { transaction });
+      }
+    } else if (unassignedDetails.length > 0) {
+      ctx.throw(400, '请选择下账账户');
+    }
+
+    const now = new Date();
+    const statementSettledMap = {};
+    const accountSettledMap = {};
+    settledCount = details.length;
+
+    for (const detail of details) {
+      const amount = businessType === 'national_subsidy_receivable'
+        ? money(Number(detail.amount || 0) - Number(detail.settled || 0))
+        : (parseFloat(detail.amount) || 0);
+      totalSettledAmount += amount;
+      await detail.update({ settled: detail.amount, settled_at: now }, { transaction });
+
+      if (!statementSettledMap[detail.statement_id]) {
+        statementSettledMap[detail.statement_id] = 0;
+      }
+      statementSettledMap[detail.statement_id] += amount;
+
+      if (!accountSettledMap[detail.settlement_account_id]) {
+        accountSettledMap[detail.settlement_account_id] = 0;
+      }
+      accountSettledMap[detail.settlement_account_id] += amount;
+    }
+
+    for (const [statementId, settledAmount] of Object.entries(statementSettledMap)) {
+      const statement = await DailyStatement.findByPk(statementId, {
+        transaction,
+        lock: transaction.LOCK.UPDATE
+      });
+      if (!statement) continue;
+      const newSettled = parseFloat(statement.total_settled || 0) + settledAmount;
+      const totalRevenue = parseFloat(statement.total_revenue || 0);
+      let newStatus = 'pending';
+      if (newSettled >= totalRevenue) {
+        newStatus = 'settled';
+      } else if (newSettled > 0) {
+        newStatus = 'partial';
+      }
+      await statement.update({
+        total_settled: newSettled,
+        status: newStatus,
+        confirm_staff: user.name
+      }, { transaction });
+    }
+
+    for (const [accountId, settledAmount] of Object.entries(accountSettledMap)) {
+      await SettlementAccount.findByPk(accountId, {
+        transaction,
+        lock: transaction.LOCK.UPDATE
+      });
+      const currentBalance = await getAccountBalance(accountId, transaction);
+      const balanceAfter = currentBalance + settledAmount;
+      const isNegativeSettlement = settledAmount < 0;
+
+      await SettlementAccountTransaction.create({
+        transaction_id: generateUUID(),
+        account_id: accountId,
+        type: isNegativeSettlement ? 'expense' : 'income',
+        amount: Math.abs(settledAmount),
+        balance_after: balanceAfter,
+        description: businessType === 'national_subsidy_receivable'
+          ? `国补应收单批量下账（${details.length}笔）`
+          : isNegativeSettlement
+            ? `日结单退款下账（${details.length}笔）`
+            : `日结单批量下账（${details.length}笔）`,
+        related_ref: settlementBatchRef,
+        create_user: user.name
+      }, { transaction });
+    }
+  });
+
+  if (accountSelection) {
+    ctx.body = { code: 0, data: accountSelection };
+    return;
+  }
+  ctx.body = { code: 0, message: `下账成功，共 ${settledCount} 笔，金额: ¥${totalSettledAmount.toFixed(2)}` };
+}
+
+async function batchSettle(ctx) {
+  return settleStatementDetails(ctx, 'daily');
+}
+
+async function settleNationalSubsidyReceivables(ctx) {
+  const snCodes = normalizeUnionpayOrderNos(
+    ctx.request.body?.snCodes || ctx.request.body?.snText
+  );
+  if (snCodes.length === 0) {
+    return settleStatementDetails(ctx, 'national_subsidy_receivable');
+  }
+  const matchedItems = await OrderItem.findAll({
+    where: { sn_code: { [Op.in]: snCodes } },
+    attributes: ['order_id', 'sn_code']
+  });
+  const orderIds = [...new Set(matchedItems.map(item => item.order_id))];
+  const details = await DailyStatementDetail.findAll({
+    where: {
+      [Op.and]: [
+        {
+          [Op.or]: [
+            { business_type: 'national_subsidy_receivable' },
+            { payment_method: { [Op.like]: '国补%-政策补贴应收' } }
+          ]
+        },
+        {
+          order_id: orderIds.length ? { [Op.in]: orderIds } : { [Op.in]: [] }
+        }
+      ]
+    }
+  });
+  const matchedOrderIds = new Set(details.map(detail => String(detail.order_id)));
+  const matchedSnCodes = new Set(matchedItems
+    .filter(item => matchedOrderIds.has(String(item.order_id)))
+    .map(item => String(item.sn_code || '').trim()));
+  const unmatched = snCodes.filter(sn => !matchedSnCodes.has(sn));
+  if (unmatched.length) ctx.throw(400, `以下SN未找到国补应收记录：${unmatched.join('、')}`);
+  ctx.request.body = { ...(ctx.request.body || {}), detailIds: details.map(detail => detail.detail_id) };
+  return settleStatementDetails(ctx, 'national_subsidy_receivable');
+}
+
+/**
+ * 按收款账户汇总下账金额
+ */
+async function getSettlementSummary(ctx) {
+  const { statementId } = ctx.query;
+  if (!statementId) ctx.throw(400, '日结单ID不能为空');
+
+  const details = await DailyStatementDetail.findAll({
+    where: { statement_id: statementId, settled: 0 }
+  });
+
+  const summaryMap = {};
+  for (const d of details) {
+    const accId = d.settlement_account_id || '__unassigned__';
+    if (!summaryMap[accId]) {
+      summaryMap[accId] = { account_id: accId, total: 0, count: 0, detailIds: [] };
+      if (d.settlement_account_id) {
+        const acc = await SettlementAccount.findByPk(d.settlement_account_id);
+        if (acc) summaryMap[accId].account = acc.toJSON();
+      }
+    }
+    summaryMap[accId].total += parseFloat(d.amount) || 0;
+    summaryMap[accId].count += 1;
+    summaryMap[accId].detailIds.push(d.detail_id);
+  }
+
+  ctx.body = {
+    code: 0,
+    data: Object.values(summaryMap)
+  };
 }
 
 /**
@@ -48,56 +836,1143 @@ async function getDailyStatement(ctx) {
  */
 async function createExpense(ctx) {
   const user = ctx.state.user;
-  const { storeId, expenseType, amount, paymentMethod, relatedOrderNo, remark } = ctx.request.body;
+  const {
+    storeId, expenseTypeId, expenseItems, expenseParty, amount, paymentMethod,
+    hasInvoice, invoiceType, invoiceNo, expenseDate, attachmentUrls,
+    relatedOrderNo, remark, accountingMonth, affectsStoreProfit = true, saveDraft = false, expenseId,
+    attributionType, attributionMethod, allocationDetails, companyTargetType, companyTargetId, companyTargetName,
+    rebateSupplierId, rebateSupplierName
+  } = ctx.request.body;
+  const isDraft = Boolean(saveDraft);
+  const targetStoreId = storeId || user.storeId;
+  if (!targetStoreId) ctx.throw(400, '请选择门店');
+  const allowed = user.accessibleStoreIds || [];
+  if (!allowed.includes('*') && !allowed.map(String).includes(String(targetStoreId))) ctx.throw(403, '无权操作该门店');
+  const { normalizedItems, normalizedAmount } = require('./expenseItems').normalizeInput(ctx, { expenseItems, expenseTypeId, amount });
+  const primaryExpenseTypeId = normalizedItems[0].expenseTypeId;
+  if (!String(expenseParty || '').trim()) ctx.throw(400, '请填写费用发生方');
+  if (!Number.isSafeInteger(Math.round(normalizedAmount*100)) || normalizedAmount>9999999999.99)ctx.throw(400,'费用总额超出有效范围');
+  if (amount !== undefined && amount !== null && amount !== '' && (!Number.isFinite(Number(amount)) || Math.abs(Number(amount) - normalizedAmount) > 0.000001)) ctx.throw(400, '费用总额必须等于各报销类型明细金额合计');
+  if (!['CORPORATE', 'CORPORATE_OTHER', 'PERSONAL_ADVANCE', 'PROFIT_DEDUCTION'].includes(paymentMethod)) ctx.throw(400, '支付方式无效');
+  let recipient = paymentMethod === 'PROFIT_DEDUCTION' ? {} : expenseApplication.recipient(ctx.request.body.recipient, paymentMethod, user.name || '', isDraft);
+  const files = expenseApplication.attachments(attachmentUrls || [], isDraft);
+  if (recipient.supplierId) {
+    const selectedSupplier = await Supplier.findOne({ where: { supplier_id: recipient.supplierId, status: 1, is_deleted: 0 } });
+    if (!selectedSupplier) ctx.throw(400, '所选供应商不存在或已停用');
+    recipient.supplierName = selectedSupplier.name;
+    if (recipient.accountId && !await SupplierPaymentAccount.findOne({ where: { account_id: recipient.accountId, supplier_id: recipient.supplierId, status: 1, is_deleted: 0 } })) ctx.throw(400, '所选收款账户不属于该供应商或已停用');
+  }
+  const resolvedAccountingMonth = resolveExpenseAccountingMonth(accountingMonth, expenseDate);
 
-  const expenseNo = `EXP${Date.now()}`;
-  const expenseId = generateUUID();
+  const [expenseTypes, store] = await Promise.all([
+    ExpenseType.findAll({ where: { type_id: { [Op.in]: normalizedItems.map(item => item.expenseTypeId) }, status: 1 } }),
+    Store.findByPk(targetStoreId, { include: [{ model: Region }] })
+  ]);
+  if (expenseTypes.length !== new Set(normalizedItems.map(item => item.expenseTypeId)).size) ctx.throw(400, '存在不存在或已停用的报销类型');
+  const expenseTypeMap = new Map(expenseTypes.map(item => [String(item.type_id), item]));
+  normalizedItems.forEach(item => { item.expenseType = expenseTypeMap.get(String(item.expenseTypeId)).name; });
+  if (!store) ctx.throw(404, '门店不存在');
 
-  await Expense.create({
-    expense_id: expenseId,
-    expense_no: expenseNo,
-    store_id: storeId || user.storeId,
-    expense_type: expenseType,
-    amount,
-    payment_method: paymentMethod,
-    related_order_no: relatedOrderNo,
-    remark,
-    create_user: user.name
+  let existingRecord = null;
+  if (expenseId) {
+    existingRecord = await Expense.findOne({ where: { expense_id: expenseId, is_deleted: 0 } });
+    if (!existingRecord) ctx.throw(404, '费用单不存在');
+    if (!['draft', 'withdrawn'].includes(existingRecord.status) || (existingRecord.status === 'withdrawn' && !isDraft)) {
+      ctx.throw(400, '只有草稿或已撤回的费用单可以编辑');
+    }
+    if (!canManageExpenseDraft(user, existingRecord)) ctx.throw(403, '只有费用单创建人、店长或管理员可以编辑');
+    if (existingRecord.status !== 'withdrawn' && String(existingRecord.store_id || '') !== String(targetStoreId || '')) {
+      ctx.throw(400, '费用单草稿不可更换门店');
+    }
+  }
+
+  const normalizedRebateSupplierId = rebateSupplierId || ctx.request.body.supplierId;
+  let resolvedRebateSupplierName = rebateSupplierName || '';
+  if (normalizedRebateSupplierId) {
+    const supplier = await Supplier.findOne({ where: { supplier_id: normalizedRebateSupplierId, status: 1, is_deleted: 0 } });
+    if (!supplier) ctx.throw(404, '返利供应商不存在或已停用');
+    resolvedRebateSupplierName = supplier.name;
+  }
+  const attribution = normalizeAttribution({
+    attributionType,
+    attributionMethod,
+    allocationDetails,
+    totalAmount: normalizedAmount,
+    applicantStaffId: existingRecord?.applicant_staff_id || user.staffId || user.id,
+    applicantName: existingRecord?.applicant_name || user.name || user.phone || '',
+    sourceStoreId: targetStoreId,
+    sourceStoreName: store.name,
+    companyTargetType,
+    companyTargetId,
+    companyTargetName,
+    rebateSupplierId: normalizedRebateSupplierId,
+    rebateSupplierName: resolvedRebateSupplierName
+  });
+  if (attribution.type === 'PERSONAL') ctx.throw(400, '费用经营分摊不能自动扣减员工绩效，请选择门店或产品端');
+  if (attribution.type === 'COMPANY' && attribution.details[0].target_type === 'distributor'
+    && String(attribution.details[0].target_id) !== String(store.distributor_id || '')) {
+    ctx.throw(400, '公司归属只能选择当前费用所属经销商');
+  }
+  if (attribution.type === 'COMPANY' && attribution.details[0].target_type === 'store') {
+    const companyStore = await Store.findOne({ where: { store_id: attribution.details[0].target_id, status: 1, is_deleted: 0 } });
+    if (!companyStore || String(companyStore.distributor_id || '') !== String(store.distributor_id || '')) {
+      ctx.throw(400, '公司归属门店必须属于当前经销商');
+    }
+  }
+
+  const expenseNo = existingRecord?.expense_no || `EXP${Date.now()}${String(Math.floor(Math.random() * 100)).padStart(2, '0')}`;
+  const currentExpenseId = existingRecord?.expense_id || expenseId || generateUUID();
+  let record;
+  await sequelize.transaction(async transaction => {
+    if(existingRecord){await existingRecord.reload({transaction,lock:transaction.LOCK.UPDATE});if(!['draft','withdrawn'].includes(existingRecord.status))ctx.throw(409,'费用状态已变化，请刷新后重试');}
+    await assertPeriodOpen(store.distributor_id, resolvedAccountingMonth, transaction);
+    await expenseApplication.validateTargets(attribution, resolvedAccountingMonth, transaction);
+    if (paymentMethod === 'PROFIT_DEDUCTION') recipient = await require('./expenseProfitDeduction').normalize(ctx.request.body.profitDeduction, {amount: normalizedAmount,store,user,transaction,draft:isDraft});
+    const expensePayload = {
+      expense_id: currentExpenseId,
+      expense_no: expenseNo,
+      store_id: targetStoreId,
+      distributor_id: store.distributor_id || null,
+      region_id: store.region_id || null,
+      region_name: store.Region?.name || '',
+      expense_type_id: primaryExpenseTypeId,
+      expense_type: normalizedItems.length > 1 ? '多类型费用' : normalizedItems[0].expenseType,
+      expense_items_json: JSON.stringify(normalizedItems),
+      expense_party: String(expenseParty).trim(),
+      amount: normalizedAmount,
+      payment_method: paymentMethod === 'CORPORATE_OTHER' ? 'CORPORATE' : paymentMethod,
+      recipient_snapshot_json: JSON.stringify({ ...recipient, ...(recipient.mode === 'EMPLOYEE' && existingRecord ? { payeeName: existingRecord.applicant_name || existingRecord.create_user } : {}) }),
+      accounting_month: resolvedAccountingMonth,
+      affects_store_profit: affectsStoreProfit ? 1 : 0,
+      has_invoice: hasInvoice ? 1 : 0,
+      invoice_type: hasInvoice ? String(invoiceType || '').trim() : '',
+      invoice_no: hasInvoice ? String(invoiceNo || '').trim() : '',
+      expense_date: expenseDate || new Date(),
+      attachment_urls: JSON.stringify(files),
+      status: isDraft ? 'draft' : 'pending_approval',
+      applicant_staff_id: existingRecord?.applicant_staff_id || user.staffId || user.id || null,
+      applicant_name: existingRecord?.applicant_name || user.name || user.phone || '',
+      source_type: 'expense',
+      source_id: currentExpenseId,
+      source_no: expenseNo,
+      attribution_type: attribution.type,
+      attribution_method: attribution.method,
+      attribution_details_json: JSON.stringify(attribution.details),
+      related_order_no: relatedOrderNo || '',
+      remark: String(remark || '').trim(),
+      create_user: existingRecord?.create_user || user.name || user.phone || '',
+      create_time: existingRecord?.create_time || new Date(),
+      update_time: new Date()
+    };
+    if (existingRecord) {
+      record = await existingRecord.update(expensePayload, { transaction });
+    } else {
+      record = await Expense.create(expensePayload, { transaction });
+    }
+
+    if (!isDraft) await startExpenseApproval(record, user, transaction);
   });
 
-  ctx.body = { expenseId, expenseNo, message: '支出记录创建成功' };
+  ctx.body = {
+    code: 0,
+    expenseId: currentExpenseId,
+    expenseNo,
+    status: isDraft ? 'draft' : 'pending_approval',
+    message: isDraft ? '费用单草稿已保存' : '报销单已提交审批'
+  };
+}
+
+async function fillMissingDailySettlementAccounts(details, transaction) {
+  const missingDetails = details.filter(detail => !detail.settlement_account_id);
+  if (missingDetails.length === 0) return;
+
+  const statementIds = [...new Set(missingDetails.map(detail => detail.statement_id).filter(Boolean))];
+  const statements = await DailyStatement.findAll({
+    where: { statement_id: statementIds },
+    attributes: ['statement_id', 'store_id'],
+    transaction,
+    lock: transaction.LOCK.UPDATE
+  });
+  const storeByStatementId = new Map(statements.map(statement => [statement.statement_id, statement.store_id]));
+  const paymentNames = [...new Set(missingDetails.map(detail => String(detail.payment_method || '').trim()).filter(Boolean))];
+  const methods = await PaymentMethod.findAll({
+    where: { name: { [Op.in]: paymentNames }, status: 1 },
+    attributes: ['method_id', 'name', 'is_global', 'settlement_account_id'],
+    transaction
+  });
+  const methodByName = new Map(methods.map(method => [method.name, method]));
+  const methodIds = methods.map(method => method.method_id);
+  const storeConfigs = methodIds.length > 0
+    ? await PaymentMethodStore.findAll({
+      where: { method_id: { [Op.in]: methodIds } },
+      attributes: ['method_id', 'store_id', 'settlement_account_id'],
+      transaction
+    })
+    : [];
+  const accountByStoreMethod = new Map(
+    storeConfigs
+      .filter(config => config.settlement_account_id)
+      .map(config => [`${config.store_id}:${config.method_id}`, config.settlement_account_id])
+  );
+
+  for (const detail of missingDetails) {
+    const method = methodByName.get(String(detail.payment_method || '').trim());
+    const storeId = storeByStatementId.get(detail.statement_id);
+    const accountId = method
+      ? (Number(method.is_global) === 1
+        ? method.settlement_account_id
+        : accountByStoreMethod.get(`${storeId}:${method.method_id}`))
+      : null;
+    if (!accountId) continue;
+    await detail.update({ settlement_account_id: accountId }, { transaction });
+  }
+}
+
+function canManageExpenseDraft(user, record) {
+  const roles = getUserRoles(user);
+  const privileged = roles.some(role => ['boss', 'admin', 'manager', 'store_manager'].includes(role));
+  return privileged
+    || String(user?.staffId || user?.id || '') === String(record.applicant_staff_id || '')
+    || String(user?.name || '') === String(record.applicant_name || record.create_user || '');
+}
+
+async function saveExpenseDraft(ctx) {
+  ctx.request.body = { ...(ctx.request.body || {}), saveDraft: true };
+  return createExpense(ctx);
+}
+
+async function updateExpenseDraft(ctx) {
+  ctx.request.body = { ...(ctx.request.body || {}), saveDraft: true, expenseId: ctx.params.id };
+  return createExpense(ctx);
+}
+
+async function deleteExpenseDraft(ctx) {
+  const user = ctx.state.user;
+  const record = await Expense.findOne({ where: { expense_id: ctx.params.id, is_deleted: 0 } });
+  if (!record) ctx.throw(404, '费用单不存在');
+  if (record.status !== 'draft') ctx.throw(400, '只有草稿状态的费用单可以删除');
+  if (!canManageExpenseDraft(user, record)) ctx.throw(403, '只有费用单创建人、店长或管理员可以删除');
+  await record.update({ is_deleted: 1, update_time: new Date() });
+  ctx.body = { code: 0, message: '费用单草稿已删除', expenseId: record.expense_id };
 }
 
 /**
  * 支出列表
  */
 async function getExpenseList(ctx) {
-  const { storeId, expenseType, startDate, endDate, page = 1, pageSize = 20 } = ctx.query;
+  if (await require('../approval/businessRuntime').reviewList(ctx, 'purchase_expense')) return;
+  const { storeId, expenseType, status, scope, startDate, endDate, accountingMonth, page = 1, pageSize = 20 } = ctx.query;
   const user = ctx.state.user;
+  const exportMode = Boolean(ctx.state.exportMode);
 
   const where = { is_deleted: 0 };
+  Object.assign(where, distributorWhere(user));
+  if(ctx.query.distributorId)where[Op.and]=[{distributor_id:String(ctx.query.distributorId)}];
+  if(ctx.query.creator)where.create_user={[Op.like]:`%${String(ctx.query.creator).trim()}%`};
+  if(ctx.query.ids)where.expense_id={[Op.in]:require('./batchSubmission').ids(ctx.query.ids)};
   const whereStore = {};
 
-  if (!user.regionCodes.includes('*')) {
-    whereStore.region_id = user.regionCodes;
+  if (scope === 'review' && !getUserRoles(user).some(role => ['admin', 'boss'].includes(role))) {
+    where.expense_id = '__NO_EXPENSE_APPROVAL_ACCESS__';
   }
-  if (storeId) whereStore.store_id = storeId;
+
+  if (!user.accessibleStoreIds.includes('*')) {
+    whereStore.store_id = user.accessibleStoreIds;
+  }
+  if (storeId) {
+    const allowedStoreIds = (user.accessibleStoreIds || []).map(String);
+    if (!allowedStoreIds.includes('*') && !allowedStoreIds.includes(String(storeId))) {
+      ctx.throw(403, '无权访问该门店费用记录');
+    }
+    whereStore.store_id = storeId;
+  }
 
   const stores = await Store.findAll({ where: whereStore });
   const storeIds = stores.map(s => s.store_id);
   where.store_id = storeIds;
 
-  if (expenseType) where.expense_type = expenseType;
-  if (startDate && endDate) {
-    where.create_time = {
-      [Op.gte]: new Date(startDate),
-      [Op.lte]: new Date(endDate + ' 23:59:59')
-    };
+  if (expenseType) where[Op.and]=[...(where[Op.and]||[]),sequelize.literal(`(Expense.EXPENSE_TYPE=${sequelize.escape(String(expenseType))} OR EXISTS (SELECT 1 FROM JSON_TABLE(CASE WHEN JSON_VALID(Expense.EXPENSE_ITEMS_JSON) THEN Expense.EXPENSE_ITEMS_JSON ELSE '[]' END, '$[*]' COLUMNS (type_name VARCHAR(128) PATH '$.expenseType')) expense_types WHERE expense_types.type_name=${sequelize.escape(String(expenseType))}))`)];
+  if (scope === 'my') where.applicant_staff_id = user.staffId || user.id || -1;
+  if (status) {
+    const statuses = status.split(',').map(s => s.trim());
+    where.status = statuses.length > 1 ? { [Op.in]: statuses } : statuses[0];
+  }
+  if (startDate || endDate) {
+    where.create_time = {};
+    if(startDate)where.create_time[Op.gte]=new Date(startDate+'T00:00:00+08:00');
+    if(endDate)where.create_time[Op.lt]=new Date(new Date(endDate+'T00:00:00+08:00').getTime()+86400000);
+  }
+  if (accountingMonth) {
+    where.accounting_month = resolveExpenseAccountingMonth(accountingMonth, accountingMonth + '-01');
   }
 
-  const { count, rows } = await Expense.findAndCountAll({
+  const expenseQuery = {
     where,
-    include: [{ model: Store }],
+    include: [
+      { model: Store },
+      { model: SettlementAccount, as: 'SettlementAccount', attributes: ['account_id', 'account_name', 'bank_name', 'account_number'] }
+    ],
+    order: buildPendingFirstOrder(sequelize, {
+      statusColumn: 'Expense.status',
+      pendingStatuses: ['draft', 'pending_approval', 'pending_payment', 'pending', 'processing'],
+      dateColumns: ['Expense.create_time'],
+      idColumn: 'Expense.expense_id'
+    })
+  };
+  const result = exportMode
+    ? { count: 0, rows: await Expense.findAll(expenseQuery) }
+    : await Expense.findAndCountAll({ ...expenseQuery, ...paginate({}, { page, pageSize }) });
+  const { count, rows } = result;
+  const expenseIds = rows.map(row => row.expense_id).filter(Boolean);
+  const dealers=rows.length?await Distributor.findAll({where:distributorWhere(user),attributes:['distributor_id','name'],raw:true}):[];
+  rows.forEach(row => {
+    row.setDataValue('distributor_name',dealers.find(d=>String(d.distributor_id)===String(row.distributor_id))?.name||'归属待核对');
+    row.setDataValue('profit_deduction', require('./expenseProfitDeduction').display(row));
+    row.setDataValue('expense_items', require('./expenseItems').display(row));
+    row.setDataValue('can_submit',(row.status==='draft'&&canManageExpenseDraft(user,row))||row.status==='pending');
+    const userId = user.staffId || user.id;
+    const isApplicant = Number(row.applicant_staff_id) === Number(userId)
+      || (!row.applicant_staff_id && [row.applicant_name, row.create_user].includes(user.name || user.phone));
+    row.setDataValue('can_cancel_profit_deduction', row.payment_method === 'PROFIT_DEDUCTION' && row.status === 'approved' && isApplicant);
+    row.setDataValue('can_withdraw', row.status === 'pending_approval' && row.source_type === 'expense' && isApplicant);
+    row.setDataValue('can_edit_withdrawn', row.status === 'withdrawn' && row.source_type === 'expense' && canManageExpenseDraft(user, row));
+  });
+  if (expenseIds.length) {
+    const allocationRows = await ExpensePerformanceAllocation.findAll({
+      where: { expense_id: { [Op.in]: expenseIds }, status: { [Op.in]: ['pending_finance', 'pending_admin', 'approved'] } },
+      attributes: ['expense_id', [Sequelize.fn('SUM', Sequelize.col('amount')), 'amount']],
+      group: ['expense_id'],
+      raw: true
+    });
+    const allocationMap = new Map(allocationRows.map(row => [String(row.expense_id), Number(row.amount || 0)]));
+    rows.forEach(row => {
+      row.setDataValue('performance_allocation_amount', allocationMap.get(String(row.expense_id)) || 0);
+      row.setDataValue('attribution_details', parseExpenseDetails(row.attribution_details_json));
+    });
+  }
+  if (!expenseIds.length) rows.forEach(row => row.setDataValue('attribution_details', parseExpenseDetails(row.attribution_details_json)));
+
+  ctx.body = formatPaginatedResult(rows, { page, pageSize, count });
+}
+
+async function exportExpenseList(ctx) {
+  ctx.state.exportMode = true;
+  await getExpenseList(ctx);
+  const rows = ctx.body?.list || [];
+  const data = rows.map(row => {
+    const item = row.toJSON ? row.toJSON() : row;
+    return {
+      费用单号: item.expense_no || '',
+      经销商: item.distributor_name || '',
+      时间: item.create_time || '',
+      费用日期: item.expense_date || '',
+      经营归属月份: item.accounting_month || '',
+      抵扣月份: item.profit_deduction?.performanceMonth || '',
+      抵扣人员及分摊: item.profit_deduction?.allocationText || '',
+      费用类型: require('./expenseItems').display(item).map(line=>`${line.expenseType}：${Number(line.amount).toFixed(2)}`).join('；'),
+      费用发生方: item.expense_party || '',
+      金额: Number(item.amount || 0),
+      已结算金额: Number(item.settled_amount || 0),
+      门店: item.Store?.name || item.store_name || '',
+      制单人: item.create_user || item.applicant_name || '',
+      发起人: item.submit_user || '',
+      状态: item.status || '',
+      付款方式: item.payment_method === 'PROFIT_DEDUCTION' ? '抵扣毛利' : (item.payment_method || ''),
+      备注: item.remark || ''
+    };
+  });
+  data.push({费用单号:`合计（${data.length}单）`,金额:require('./batchSubmission').totals(rows.map(row=>row.toJSON?row.toJSON():row),'amount').totalAmount});
+  sendExcel(ctx, data, [
+    '费用单号', '经销商', '时间', '费用日期', '经营归属月份', '抵扣月份', '抵扣人员及分摊', '费用类型', '费用发生方', '金额', '已结算金额',
+    '门店', '制单人', '发起人', '状态', '付款方式', '备注'
+  ], `费用报销管理_${new Date().toISOString().slice(0, 10)}.xlsx`, '费用报销管理', {sheets:[{name:'报销类型明细',rows:rows.flatMap(row=>{const item=row.toJSON?row.toJSON():row;return require('./expenseItems').display(item).map(line=>({费用单号:item.expense_no,报销类型:line.expenseType,金额:Number(line.amount),明细说明:line.remark||'',状态:item.status}));})}]});
+}
+
+async function previewExpenseSelection(ctx) {
+ const selected=require('./batchSubmission').ids(ctx.request.body.ids);
+ const child={state:{...ctx.state,exportMode:true},query:{ids:selected.join(',')},throw:ctx.throw.bind(ctx)};
+ await getExpenseList(child);
+ const rows=child.body?.list||[];
+ if(rows.length!==selected.length)ctx.throw(400,'勾选单据已变化或无权限，请刷新后重新勾选');
+ ctx.body={code:0,data:require('./batchSubmission').totals(rows,'amount')};
+}
+async function batchSubmitExpenses(ctx){return require('./batchSubmission').submit(ctx,submitExpense);}
+
+async function getExpenseDetail(ctx) {
+  const user = ctx.state.user;
+  const record = await Expense.findByPk(ctx.params.id, { include: [{ model: Store }] });
+  if (!record || record.is_deleted) ctx.throw(404, '报销单不存在');
+
+  const staffId = user.staffId || user.id;
+  const isApplicant = Number(record.applicant_staff_id) === Number(staffId)
+    || (!record.applicant_staff_id && [record.applicant_name, record.create_user].includes(user.name || user.phone));
+  const roles = getUserRoles(user);
+  const canViewAll = roles.some(role => ['finance', 'admin', 'boss'].includes(role));
+  let assignedReviewer = false;
+  if (!isApplicant && !canViewAll && record.source_type === 'expense') {
+    const instance = await ApprovalFlowInstance.findOne({ where: { business_type: 'expense', business_id: record.expense_id, status: 'pending' } });
+    assignedReviewer = Boolean(instance && await ApprovalTask.findOne({ where: { instance_id: instance.instance_id, assignee_staff_id: staffId, status: 'pending' } }));
+  }
+  if (!isApplicant && !canViewAll && !assignedReviewer) ctx.throw(403, '无权查看该报销申请');
+  if (!(user.accessibleStoreIds || []).includes('*') && !(user.accessibleStoreIds || []).includes(record.store_id) && !canViewAll && !assignedReviewer) {
+    ctx.throw(403, '无权查看该门店的报销申请');
+  }
+
+  const data = record.toJSON();
+  data.expense_items = require('./expenseItems').display(record);
+  data.attribution_details = parseExpenseDetails(data.attribution_details_json);
+  data.profit_deduction = require('./expenseProfitDeduction').display(record);
+  if (record.source_type === 'purchase' && record.source_id) {
+    const request = await PurchaseRequest.findOne({
+      where: { request_id: record.source_id },
+      attributes: ['request_id', 'request_no', 'status', 'total_amount', 'actual_total', 'reason', 'create_time', 'store_id', 'supplier_id', 'invoice_type'],
+      include: [
+        { model: PurchaseRequestItem, as: 'items' },
+        { model: Supplier, attributes: ['supplier_id', 'name'], required: false },
+        { model: Store, attributes: ['store_id', 'name'], required: false }
+      ]
+    });
+    data.purchase_request = request ? request.toJSON() : null;
+  }
+  ctx.body = { code: 0, data };
+}
+
+async function updateExpenseAttribution(ctx) {
+  const user = ctx.state.user || {};
+  const record = await Expense.findByPk(ctx.params.id);
+  if (!record || record.is_deleted) ctx.throw(404, '报销单不存在');
+  if (record.source_type !== 'expense') ctx.throw(400, '采购垫付费用沿用原审批流程，不支持修改归属');
+  if (record.status !== 'pending_approval') ctx.throw(400, '只有审批中的费用可以修改归属');
+
+  const instance = await ApprovalFlowInstance.findOne({
+    where: { business_type: 'expense', business_id: record.expense_id, status: 'pending' },
+    order: [['create_time', 'DESC']]
+  });
+  const staffId = user.staffId || user.id;
+  const task = instance && await ApprovalTask.findOne({
+    where: { instance_id: instance.instance_id, assignee_staff_id: staffId, status: 'pending' }
+  });
+  if (!task) ctx.throw(403, '只有当前审批节点的审批人可以修改费用归属');
+
+  const body = ctx.request.body || {};
+  const currentDetails = parseExpenseDetails(record.attribution_details_json);
+  const type = body.attributionType || record.attribution_type || 'STORE';
+  if (!['STORE', 'PRODUCT_SIDE', 'COMPANY', 'REBATE'].includes(type)) ctx.throw(400, '费用分摊不能自动扣减员工绩效');
+  const supplierId = body.rebateSupplierId || body.supplierId || currentDetails[0]?.target_id;
+  let supplierName = currentDetails[0]?.target_name || '';
+  if (type === 'REBATE') {
+    const supplier = await Supplier.findOne({ where: { supplier_id: supplierId, status: 1, is_deleted: 0 } });
+    if (!supplier) ctx.throw(404, '返利供应商不存在或已停用');
+    supplierName = supplier.name;
+  }
+  const attribution = normalizeAttribution({
+    attributionType: type,
+    attributionMethod: body.attributionMethod || record.attribution_method,
+    allocationDetails: Array.isArray(body.allocationDetails) ? body.allocationDetails : currentDetails,
+    totalAmount: record.amount,
+    applicantStaffId: record.applicant_staff_id,
+    applicantName: record.applicant_name,
+    sourceStoreId: record.store_id,
+    companyTargetType: body.companyTargetType || currentDetails[0]?.target_type,
+    companyTargetId: body.companyTargetId || currentDetails[0]?.target_id,
+    companyTargetName: body.companyTargetName || currentDetails[0]?.target_name,
+    rebateSupplierId: supplierId,
+    rebateSupplierName: supplierName
+  });
+  if (attribution.type === 'COMPANY') {
+    const target = attribution.details[0];
+    if (target.target_type === 'distributor' && String(target.target_id) !== String(record.distributor_id)) ctx.throw(400, '公司归属只能选择原费用经销商，跨经销商请使用门店分摊');
+    if (target.target_type === 'store' && !await Store.findOne({ where: { store_id: target.target_id, distributor_id: record.distributor_id, status: 1, is_deleted: 0 } })) ctx.throw(400, '公司归属对象无效，跨经销商请使用门店分摊');
+  }
+  await sequelize.transaction(async transaction => {
+    const locked = await Expense.findByPk(record.expense_id, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!locked || locked.status !== 'pending_approval') ctx.throw(409, '费用状态已变化，请刷新后重试');
+    const currentTask = await ApprovalTask.findOne({ where: { instance_id: instance.instance_id, assignee_staff_id: staffId, status: 'pending' }, transaction, lock: transaction.LOCK.UPDATE });
+    if (!currentTask) ctx.throw(409, '审批节点已变化，请刷新后重试');
+    const month = body.accountingMonth === undefined ? locked.accounting_month : resolveExpenseAccountingMonth(body.accountingMonth, locked.expense_date);
+    await assertPeriodOpen(locked.distributor_id, locked.accounting_month, transaction);
+    await assertPeriodOpen(locked.distributor_id, month, transaction);
+    await expenseApplication.validateTargets(attribution, month, transaction);
+    const oldDetails = parseExpenseDetails(locked.attribution_details_json);
+    const oldType = locked.attribution_type, oldMethod = locked.attribution_method, oldMonth = locked.accounting_month;
+    await locked.update({
+      attribution_type: attribution.type,
+      attribution_method: attribution.method,
+      attribution_details_json: JSON.stringify(attribution.details),
+      accounting_month: month,
+      update_time: new Date()
+    }, { transaction });
+    const latestPayload = {
+      ...(() => { try { return JSON.parse(instance.payload_json || '{}') } catch (_) { return {} } })(),
+      expenseId: locked.expense_id,
+      expenseNo: locked.expense_no,
+      amount: Number(locked.amount || 0),
+      accountingMonth: locked.accounting_month,
+      attributionType: locked.attribution_type,
+      attributionMethod: attribution.method,
+      allocationDetails: attribution.details
+    };
+    await instance.update({ payload_json: JSON.stringify(latestPayload), update_time: new Date() }, { transaction });
+    await recordBusinessAction({
+      businessType: 'expense', businessId: locked.expense_id, businessNo: locked.expense_no,
+      action: 'update_attribution', fromStatus: locked.status, toStatus: locked.status, user,
+      detail: { before: oldDetails, after: attribution.details, beforeType: oldType, afterType: attribution.type, beforeMethod: oldMethod, afterMethod: attribution.method, beforeMonth: oldMonth, afterMonth: month, node: task.node_name }, transaction
+    });
+  });
+  ctx.body = { code: 0, message: '费用归属已调整', data: { attributionType: attribution.type, attributionMethod: attribution.method, allocationDetails: attribution.details } };
+}
+
+function assertPurchaseExpenseReviewAllowed(action, sourceType, purchase) {
+  // 采购被拒后，关联的采购垫付报销仍必须能够走“拒绝”结案；
+  // 只有报销通过时才要求采购申请已经通过。
+  if (action !== 'approved' || sourceType !== 'purchase') return;
+  if (!purchase || purchase.status !== 'approved') throw new Error('关联采购申请尚未审批通过');
+}
+
+async function reviewExpense(ctx) {
+  const user = ctx.state.user;
+  const { action, comment } = ctx.request.body;
+  if (!['approved', 'rejected'].includes(action)) ctx.throw(400, '审批动作无效');
+  const record = await Expense.findByPk(ctx.params.id);
+  if (!record || record.is_deleted) ctx.throw(404, '报销单不存在');
+  if (record.source_type === 'expense') ctx.throw(400, '费用归属报销请在审批中心按审批节点处理');
+  if (!(user.accessibleStoreIds || []).includes('*')
+    && !(user.accessibleStoreIds || []).map(String).includes(String(record.store_id || ''))) {
+    ctx.throw(403, '无权审批该门店费用记录');
+  }
+  if (record.status !== 'pending_approval') ctx.throw(400, '当前报销单不可审批');
+  if (record.source_type === 'purchase') {
+    const purchase = await PurchaseRequest.findByPk(record.source_id);
+    try {
+      assertPurchaseExpenseReviewAllowed(action, record.source_type, purchase);
+    } catch (error) {
+      ctx.throw(400, error.message);
+    }
+  }
+
+  await sequelize.transaction(async transaction => {
+    await record.reload({ transaction, lock: transaction.LOCK.UPDATE });
+    if (!await require('../approval/businessRuntime').advance(ctx, 'purchase_expense', record, transaction, action, comment || '')) return;
+    await record.update({
+      status: action,
+      review_staff_id: user.staffId || user.id || null,
+      review_user_name: user.name || user.phone || '',
+      review_comment: String(comment || '').trim(),
+      review_time: new Date(),
+      update_time: new Date()
+    }, { transaction });
+    if (action === 'approved') {
+      await ensureExpensePayable(record, {
+        sourceType: record.payment_method === 'PERSONAL_ADVANCE' ? 'reimbursement' : 'expense',
+        status: 'unpaid'
+      }, transaction);
+    }
+  });
+  ctx.body = {
+    code: 0,
+    message: ctx.state.businessApproval?.status === 'pending' ? '本次审批已记录，等待下一审批人' : action === 'approved' ? '审批通过，已进入待结算列表' : '报销申请已拒绝',
+    data: null
+  };
+}
+
+async function cancelExpense(ctx) {
+  const user = ctx.state.user;
+  const { reason = '报销申请已撤销' } = ctx.request.body || {};
+  const staffId = user.staffId || user.id;
+
+  await sequelize.transaction(async transaction => {
+    const record = await Expense.findByPk(ctx.params.id, {
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!record || record.is_deleted) ctx.throw(404, '报销单不存在');
+    const isApplicant = Number(record.applicant_staff_id) === Number(staffId)
+      || (!record.applicant_staff_id && [record.applicant_name, record.create_user].includes(user.name || user.phone));
+    if (!isApplicant) ctx.throw(403, '只有申请人可以撤销该报销');
+    if (!['pending_approval', 'approved', 'pending_payment', 'pending', 'processing'].includes(record.status)) {
+      ctx.throw(400, '当前报销状态不允许撤销');
+    }
+    const comment = String(reason || '').trim() || '报销申请已撤销';
+    await cancelExpenseRecord(record, user, transaction, comment);
+    await closeExpenseApproval(record, user, transaction, comment, 'cancelled');
+  });
+
+  ctx.body = { code: 0, expenseId: ctx.params.id, status: 'cancelled', message: '报销申请已撤销' };
+}
+
+async function withdrawExpense(ctx) {
+  const user = ctx.state.user;
+  const staffId = user.staffId || user.id;
+  const reason = String(ctx.request.body?.reason || '').trim() || '申请人撤回费用审批';
+  await sequelize.transaction(async transaction => {
+    const record = await Expense.findByPk(ctx.params.id, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!record || record.is_deleted) ctx.throw(404, '费用单不存在');
+    if (record.source_type !== 'expense' || record.status !== 'pending_approval') {
+      ctx.throw(409, '只有审批中的费用申请可以撤回');
+    }
+    const isApplicant = Number(record.applicant_staff_id) === Number(staffId)
+      || (!record.applicant_staff_id && [record.applicant_name, record.create_user].includes(user.name || user.phone));
+    if (!isApplicant) ctx.throw(403, '只有申请人可以撤回费用申请');
+
+    const now = new Date();
+    await closeExpenseApproval(record, user, transaction, reason, 'withdrawn', now);
+    await record.update({ status: 'withdrawn', update_time: now }, { transaction });
+  });
+  ctx.body = { code: 0, expenseId: ctx.params.id, status: 'withdrawn', message: '费用申请已撤回，可编辑后重新提交' };
+}
+
+/**
+ * 应付列表
+ */
+// ==============================================
+// 结算账户流水管理
+// ==============================================
+
+async function getSettlementAccountsWithBalance(ctx) {
+  try {
+    const { page = 1, pageSize = 20, regionId } = ctx.query;
+    const accountWhere = { status: 1 };
+    if (regionId) accountWhere.region_id = regionId;
+    const accountScope = distributorWhere(ctx.state.user);
+    if (Object.keys(accountScope).length) {
+      const roles = getUserRoles(ctx.state.user);
+      const canViewSharedFunds = roles.some(role => ['admin', 'boss', 'finance'].includes(role));
+      if (canViewSharedFunds) {
+        accountWhere[Op.or] = [accountScope, { distributor_id: null }];
+      } else {
+        Object.assign(accountWhere, accountScope);
+      }
+    }
+
+    const { count, rows } = await SettlementAccount.findAndCountAll({
+      where: accountWhere,
+      include: [{ model: Region, attributes: ['region_id', 'region_code', 'name'] }],
+      order: [['sort_order', 'ASC']],
+      ...paginate({}, { page, pageSize })
+    });
+
+    const supplierIds = [...new Set(rows.map(row => row.supplier_id).filter(Boolean))];
+    const suppliers = supplierIds.length > 0
+      ? await Supplier.findAll({ where: { supplier_id: supplierIds }, attributes: ['supplier_id', 'name'], raw: true })
+      : [];
+    const supplierNameMap = new Map(suppliers.map(supplier => [supplier.supplier_id, supplier.name]));
+
+    const accountIds = rows.map(a => a.account_id);
+    const balanceMap = {};
+
+    if (accountIds.length > 0) {
+      try {
+        const accountTransactions = await SettlementAccountTransaction.findAll({
+          attributes: ['account_id', 'type', 'amount'],
+          where: { account_id: accountIds },
+          raw: true
+        });
+
+        for (const tx of accountTransactions) {
+          const amount = Number(tx.amount) || 0;
+          balanceMap[tx.account_id] = (balanceMap[tx.account_id] || 0) + (tx.type === 'income' ? amount : -amount);
+        }
+      } catch (e) {
+        console.error('查询账户余额失败(表可能尚未创建):', e.message);
+      }
+    }
+
+    const policyAccountIds = rows.filter(row => row.account_type === 'POLICY_RECEIVABLE').map(row => row.account_id);
+    if (policyAccountIds.length > 0) {
+      const receivables = await DailyStatementDetail.findAll({
+        attributes: [
+          'settlement_account_id',
+          [Sequelize.fn('SUM', Sequelize.literal('GREATEST(AMOUNT - SETTLED, 0)')), 'outstanding']
+        ],
+        where: {
+          settlement_account_id: policyAccountIds,
+          [Op.or]: [
+            { business_type: 'national_subsidy_receivable' },
+            { payment_method: { [Op.like]: '国补%-政策补贴应收' } }
+          ]
+        },
+        group: ['settlement_account_id'],
+        raw: true
+      });
+      for (const row of receivables) balanceMap[row.settlement_account_id] = Number(row.outstanding || 0);
+    }
+
+    const list = rows.map(row => ({
+      ...row.toJSON(),
+      supplier_name: row.supplier_id ? (supplierNameMap.get(row.supplier_id) || '') : '',
+      balance: Math.round((balanceMap[row.account_id] || 0) * 100) / 100
+    }));
+
+    ctx.body = formatPaginatedResult(list, { page, pageSize, count });
+  } catch (err) {
+    console.error('getSettlementAccountsWithBalance error:', err);
+    ctx.throw(500, '查询结算账户失败');
+  }
+}
+
+async function getAccountTransactions(ctx) {
+  const { accountId } = ctx.params;
+  const { page = 1, pageSize = 20 } = ctx.query;
+
+  const account = await SettlementAccount.findByPk(accountId);
+  if (!account) ctx.throw(404, '结算账户不存在');
+  if (!canAccessDistributor(ctx.state.user, account.distributor_id)) ctx.throw(403, '无权访问该经销商账户');
+
+  const { count, rows } = await SettlementAccountTransaction.findAndCountAll({
+    where: { account_id: accountId },
+    order: [['create_time', 'DESC']],
+    ...paginate({}, { page, pageSize })
+  });
+
+  const currentBalance = await getAccountBalance(accountId);
+
+  ctx.body = {
+    code: 0,
+    data: {
+      account,
+      currentBalance,
+      list: rows,
+      pagination: {
+        total: count,
+        page: Number(page),
+        pageSize: Number(pageSize),
+        totalPages: Math.ceil(count / pageSize)
+      }
+    }
+  };
+}
+
+async function addAccountTransaction(ctx) {
+  const user = ctx.state.user;
+  const { accountId, type, amount, description, relatedRef } = ctx.request.body;
+
+  if (!accountId) ctx.throw(400, '请选择结算账户');
+  if (!type || !['income', 'expense'].includes(type)) ctx.throw(400, '类型必须是入账或出账');
+  if (!amount || amount <= 0) ctx.throw(400, '金额必须大于0');
+
+  const account = await SettlementAccount.findByPk(accountId);
+  if (!account) ctx.throw(404, '结算账户不存在');
+  if (!canAccessDistributor(user, account.distributor_id)) ctx.throw(403, '无权操作该经销商账户');
+  if (account.account_type === 'SUPPLIER_REBATE') ctx.throw(400, '供应商返利请在返利管理中上账、抵扣或冲销');
+
+  const currentBalance = await getAccountBalance(accountId);
+  const balanceAfter = type === 'income'
+    ? currentBalance + Number(amount)
+    : currentBalance - Number(amount);
+
+  await SettlementAccountTransaction.create({
+    transaction_id: generateUUID(),
+    account_id: accountId,
+    type,
+    amount,
+    balance_after: balanceAfter,
+    description: description || '',
+    related_ref: relatedRef || '',
+    create_user: user.name || user.staffId
+  });
+
+  ctx.body = { code: 0, message: '操作成功', data: { balanceAfter } };
+}
+
+const money = value => Math.round(Number(value || 0) * 100) / 100;
+const userIdOf = user => String(user?.staffId || user?.staff_id || user?.id || '');
+
+async function updateStatementSettled(statementId, delta, user, transaction) {
+  const statement = await DailyStatement.findByPk(statementId, { transaction, lock: transaction.LOCK.UPDATE });
+  if (!statement) return;
+  const totalSettled = money(Number(statement.total_settled || 0) + Number(delta || 0));
+  const totalRevenue = money(statement.total_revenue);
+  await statement.update({
+    total_settled: totalSettled,
+    status: totalSettled >= totalRevenue ? 'settled' : (totalSettled > 0 ? 'partial' : 'pending'),
+    confirm_staff: user.name || userIdOf(user)
+  }, { transaction });
+}
+
+async function getSubsidyAccountRoutes(ctx) {
+  const regions = await Region.findAll({ where: { status: 1 }, order: [['sort_order', 'ASC']] });
+  const routes = await SubsidyAccountRoute.findAll();
+  const routeMap = new Map(routes.map(row => [row.region_id, row]));
+  const accountIds = routes.map(row => row.account_id).filter(Boolean);
+  const accounts = accountIds.length
+    ? await SettlementAccount.findAll({ where: { account_id: accountIds, status: 1, account_type: 'FUND' } })
+    : [];
+  const accountMap = new Map(accounts.map(row => [row.account_id, row]));
+  ctx.body = {
+    code: 0,
+    data: regions.map(region => {
+      const route = routeMap.get(region.region_id);
+      return {
+        region_id: region.region_id,
+        region_name: region.name,
+        account_id: route?.account_id || '',
+        account: route?.account_id ? accountMap.get(route.account_id) || null : null,
+        update_user: route?.update_user || '',
+        update_time: route?.update_time || null
+      };
+    })
+  };
+}
+
+async function saveSubsidyAccountRoute(ctx) {
+  const { regionId, accountId = '' } = ctx.request.body || {};
+  const region = await Region.findByPk(regionId);
+  if (!region) ctx.throw(404, '区域不存在');
+  if (accountId) {
+    const account = await SettlementAccount.findOne({ where: { account_id: accountId, account_type: 'FUND', status: 1 } });
+    if (!account) ctx.throw(400, '国补到账账户必须是启用的资金账户');
+  }
+  await SubsidyAccountRoute.upsert({
+    region_id: regionId,
+    account_id: accountId || null,
+    update_user: ctx.state.user.name || userIdOf(ctx.state.user),
+    update_time: new Date()
+  });
+  ctx.body = { code: 0, message: accountId ? '区域到账账户已保存' : '区域到账账户已清空' };
+}
+
+async function validateSubsidyDetails(detailIds, transaction, user = null) {
+  const details = await DailyStatementDetail.findAll({
+    where: {
+      detail_id: detailIds,
+      [Op.or]: [
+        { business_type: 'national_subsidy_receivable' },
+        { payment_method: { [Op.like]: '国补%-政策补贴应收' } }
+      ]
+    },
+    transaction,
+    lock: transaction.LOCK.UPDATE
+  });
+  if (details.length !== detailIds.length) ctxThrow(400, '存在无效的国补应收单');
+  const statements = await DailyStatement.findAll({
+    where: { statement_id: [...new Set(details.map(row => row.statement_id))] },
+    transaction
+  });
+  const statementMap = new Map(statements.map(row => [row.statement_id, row]));
+  const storeIds = [...new Set(statements.map(row => row.store_id))];
+  const stores = await Store.findAll({ where: { store_id: storeIds }, transaction });
+  const storeMap = new Map(stores.map(row => [row.store_id, row]));
+  if (user && Array.isArray(user.accessibleStoreIds) && !user.accessibleStoreIds.includes('*')) {
+    const allowed = new Set((user.accessibleStoreIds || []).map(String));
+    if (stores.some(store => !allowed.has(String(store.store_id)))) ctxThrow(403, '无权核销所选门店的国补应收');
+  }
+  const regionIds = [...new Set(details.map(row => {
+    const statement = statementMap.get(row.statement_id);
+    return storeMap.get(statement?.store_id)?.region_id || '';
+  }))];
+  if (regionIds.length !== 1 || !regionIds[0]) ctxThrow(400, '所选应收单必须属于同一且已配置的区域');
+  return { details, regionId: regionIds[0] };
+}
+
+function ctxThrow(status, message) {
+  const error = new Error(message);
+  error.status = status;
+  throw error;
+}
+
+async function createSubsidyReceipt(ctx) {
+  const user = ctx.state.user;
+  const { receiptDate, bankReference = '', amount, allocations = [], remark = '', accountId = '' } = ctx.request.body || {};
+  const receiptAmount = money(amount);
+  if (!receiptDate) ctx.throw(400, '请选择到账日期');
+  if (receiptAmount <= 0) ctx.throw(400, '到账金额必须大于0');
+  if (!Array.isArray(allocations) || allocations.length === 0) ctx.throw(400, '请至少选择一笔国补应收进行核销');
+  const normalized = allocations.map(row => ({ detailId: row.detailId, amount: money(row.amount) })).filter(row => row.detailId && row.amount > 0);
+  if (normalized.length !== allocations.length) ctx.throw(400, '核销明细金额必须大于0');
+  const detailIds = [...new Set(normalized.map(row => row.detailId))];
+  if (detailIds.length !== normalized.length) ctx.throw(400, '同一应收单不能重复分配');
+  const allocatedAmount = money(normalized.reduce((sum, row) => sum + row.amount, 0));
+  if (allocatedAmount > receiptAmount) ctx.throw(400, '分配金额不得超过银行实际到账金额');
+
+  let result;
+  await sequelize.transaction(async transaction => {
+    const { details, regionId } = await validateSubsidyDetails(detailIds, transaction, user);
+    const route = await SubsidyAccountRoute.findByPk(regionId, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!route?.account_id) ctx.throw(400, '该区域尚未配置国补到账资金账户');
+    const effectiveAccountId = accountId || route.account_id;
+    const account = await SettlementAccount.findOne({
+      where: { account_id: effectiveAccountId, account_type: 'FUND', status: 1 },
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!account) ctx.throw(400, '到账资金账户不存在、已停用或不是资金账户');
+    const normalizedBankReference = String(bankReference || '').trim();
+    if (normalizedBankReference) {
+      const duplicateReceipt = await SubsidyReceipt.findOne({
+        where: { account_id: account.account_id, bank_reference: normalizedBankReference },
+        transaction
+      });
+      if (duplicateReceipt) ctx.throw(400, '该资金账户下的银行流水号已登记');
+    }
+
+    const detailMap = new Map(details.map(row => [row.detail_id, row]));
+    for (const item of normalized) {
+      const detail = detailMap.get(item.detailId);
+      const remaining = money(Number(detail.amount || 0) - Number(detail.settled || 0));
+      if (item.amount > remaining) ctx.throw(400, `订单 ${detail.order_no || detail.detail_id} 的核销金额超过剩余应收`);
+    }
+
+    const receiptId = generateUUID();
+    const receiptNo = `GBDZ${Date.now()}${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`;
+    const receipt = await SubsidyReceipt.create({
+      receipt_id: receiptId,
+      receipt_no: receiptNo,
+      region_id: regionId,
+      account_id: account.account_id,
+      account_name_snapshot: account.account_name,
+      receipt_date: receiptDate,
+      bank_reference: normalizedBankReference || null,
+      amount: receiptAmount,
+      allocated_amount: allocatedAmount,
+      refunded_amount: 0,
+      status: allocatedAmount >= receiptAmount ? 'ALLOCATED' : 'PARTIAL',
+      remark,
+      create_user: user.name || userIdOf(user)
+    }, { transaction });
+
+    for (const item of normalized) {
+      const detail = detailMap.get(item.detailId);
+      const newSettled = money(Number(detail.settled || 0) + item.amount);
+      await SubsidyReceiptAllocation.create({
+        allocation_id: generateUUID(),
+        receipt_id: receiptId,
+        detail_id: detail.detail_id,
+        amount: item.amount,
+        create_user: user.name || userIdOf(user)
+      }, { transaction });
+      await detail.update({
+        settled: newSettled,
+        settled_at: newSettled >= Number(detail.amount || 0) ? new Date() : null
+      }, { transaction });
+      await updateStatementSettled(detail.statement_id, item.amount, user, transaction);
+    }
+
+    const currentBalance = await getAccountBalance(account.account_id, transaction);
+    await SettlementAccountTransaction.create({
+      transaction_id: generateUUID(),
+      account_id: account.account_id,
+      type: 'income',
+      amount: receiptAmount,
+      balance_after: money(currentBalance + receiptAmount),
+      description: `国补银行到账 ${receiptNo}`,
+      related_ref: receiptNo,
+      create_user: user.name || userIdOf(user)
+    }, { transaction });
+    result = receipt;
+  });
+  ctx.body = { code: 0, message: '国补到账登记成功', data: result };
+}
+
+async function getSubsidyReceipts(ctx) {
+  const { page = 1, pageSize = 20, regionId } = ctx.query;
+  const where = {};
+  if (regionId) where.region_id = regionId;
+  const { count, rows } = await SubsidyReceipt.findAndCountAll({
+    where,
+    order: [['receipt_date', 'DESC'], ['create_time', 'DESC']],
+    ...paginate({}, { page, pageSize })
+  });
+  const list = rows.map(row => ({
+    ...row.toJSON(),
+    unallocated_amount: row.status === 'REVERSED'
+      ? 0
+      : money(Number(row.amount || 0) - Number(row.allocated_amount || 0) - Number(row.refunded_amount || 0))
+  }));
+  ctx.body = formatPaginatedResult(list, { page, pageSize, count });
+}
+
+async function allocateSubsidyReceipt(ctx) {
+  const user = ctx.state.user;
+  const { id } = ctx.params;
+  const { allocations = [] } = ctx.request.body || {};
+  const normalized = allocations.map(row => ({ detailId: row.detailId, amount: money(row.amount) })).filter(row => row.detailId && row.amount > 0);
+  if (!normalized.length) ctx.throw(400, '请填写核销明细');
+  await sequelize.transaction(async transaction => {
+    const receipt = await SubsidyReceipt.findByPk(id, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!receipt) ctx.throw(404, '到账单不存在');
+    const total = money(normalized.reduce((sum, row) => sum + row.amount, 0));
+    const available = money(Number(receipt.amount) - Number(receipt.allocated_amount) - Number(receipt.refunded_amount));
+    if (total > available) ctx.throw(400, '核销金额超过到账单未分配金额');
+    const { details, regionId } = await validateSubsidyDetails(normalized.map(row => row.detailId), transaction, user);
+    if (regionId !== receipt.region_id) ctx.throw(400, '到账单与应收单区域不一致');
+    const detailMap = new Map(details.map(row => [row.detail_id, row]));
+    for (const item of normalized) {
+      const detail = detailMap.get(item.detailId);
+      const remaining = money(Number(detail.amount) - Number(detail.settled));
+      if (item.amount > remaining) ctx.throw(400, `订单 ${detail.order_no || detail.detail_id} 的核销金额超过剩余应收`);
+      await SubsidyReceiptAllocation.create({
+        allocation_id: generateUUID(), receipt_id: id, detail_id: item.detailId, amount: item.amount,
+        create_user: user.name || userIdOf(user)
+      }, { transaction });
+      const settled = money(Number(detail.settled) + item.amount);
+      await detail.update({ settled, settled_at: settled >= Number(detail.amount) ? new Date() : null }, { transaction });
+      await updateStatementSettled(detail.statement_id, item.amount, user, transaction);
+    }
+    const allocated = money(Number(receipt.allocated_amount) + total);
+    await receipt.update({
+      allocated_amount: allocated,
+      status: allocated + Number(receipt.refunded_amount) >= Number(receipt.amount) ? 'ALLOCATED' : 'PARTIAL'
+    }, { transaction });
+  });
+  ctx.body = { code: 0, message: '未分配到账款核销成功' };
+}
+
+async function refundSubsidyReceipt(ctx) {
+  const user = ctx.state.user;
+  const { id } = ctx.params;
+  const { amount, remark = '' } = ctx.request.body || {};
+  const refundAmount = money(amount);
+  if (refundAmount <= 0) ctx.throw(400, '退款金额必须大于0');
+  await sequelize.transaction(async transaction => {
+    const receipt = await SubsidyReceipt.findByPk(id, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!receipt) ctx.throw(404, '到账单不存在');
+    const available = money(Number(receipt.amount) - Number(receipt.allocated_amount) - Number(receipt.refunded_amount));
+    if (refundAmount > available) ctx.throw(400, '退款金额超过未分配到账款');
+    const account = await SettlementAccount.findByPk(receipt.account_id, { transaction, lock: transaction.LOCK.UPDATE });
+    const currentBalance = await getAccountBalance(receipt.account_id, transaction);
+    await SettlementAccountTransaction.create({
+      transaction_id: generateUUID(), account_id: receipt.account_id, type: 'expense', amount: refundAmount,
+      balance_after: money(currentBalance - refundAmount), description: `国补未分配到账款退款 ${receipt.receipt_no} ${remark}`,
+      related_ref: `${receipt.receipt_no}_REFUND`, create_user: user.name || userIdOf(user)
+    }, { transaction });
+    const refunded = money(Number(receipt.refunded_amount) + refundAmount);
+    await receipt.update({
+      refunded_amount: refunded,
+      status: Number(receipt.allocated_amount) + refunded >= Number(receipt.amount) ? 'CLOSED' : 'PARTIAL'
+    }, { transaction });
+  });
+  ctx.body = { code: 0, message: '退款登记成功' };
+}
+
+async function reverseSubsidyReceipt(ctx) {
+  const user = ctx.state.user;
+  const { id } = ctx.params;
+  const { reason } = ctx.request.body || {};
+  if (!String(reason || '').trim()) ctx.throw(400, '请填写冲销原因');
+  await sequelize.transaction(async transaction => {
+    const receipt = await SubsidyReceipt.findByPk(id, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!receipt) ctx.throw(404, '到账单不存在');
+    if (receipt.status === 'REVERSED') ctx.throw(400, '该到账单已冲销');
+    if (Number(receipt.refunded_amount || 0) > 0) ctx.throw(400, '已发生退款的到账单不能直接冲销');
+    const allocations = await SubsidyReceiptAllocation.findAll({ where: { receipt_id: id }, transaction });
+    for (const allocation of allocations) {
+      const detail = await DailyStatementDetail.findByPk(allocation.detail_id, { transaction, lock: transaction.LOCK.UPDATE });
+      if (!detail) continue;
+      const settled = Math.max(0, money(Number(detail.settled) - Number(allocation.amount)));
+      await detail.update({ settled, settled_at: null }, { transaction });
+      await updateStatementSettled(detail.statement_id, -Number(allocation.amount), user, transaction);
+    }
+    const account = await SettlementAccount.findByPk(receipt.account_id, { transaction, lock: transaction.LOCK.UPDATE });
+    const currentBalance = await getAccountBalance(receipt.account_id, transaction);
+    await SettlementAccountTransaction.create({
+      transaction_id: generateUUID(), account_id: receipt.account_id, type: 'expense', amount: receipt.amount,
+      balance_after: money(currentBalance - Number(receipt.amount)), description: `冲销国补到账 ${receipt.receipt_no}：${reason}`,
+      related_ref: `${receipt.receipt_no}_REVERSE`, create_user: user.name || userIdOf(user)
+    }, { transaction });
+    await receipt.update({
+      status: 'REVERSED', reverse_reason: String(reason).trim(),
+      reversed_by: user.name || userIdOf(user), reversed_at: new Date()
+    }, { transaction });
+  });
+  ctx.body = { code: 0, message: '到账单已冲销' };
+}
+
+async function submitSubsidyAdjustment(ctx) {
+  const user = ctx.state.user;
+  const { detailId, adjustmentType, amount, financeCategory, reason } = ctx.request.body || {};
+  const adjustmentAmount = money(amount);
+  if (!['FEE', 'WRITEOFF'].includes(adjustmentType)) ctx.throw(400, '差额类型无效');
+  if (adjustmentAmount <= 0) ctx.throw(400, '差额金额必须大于0');
+  if (!String(financeCategory || '').trim()) ctx.throw(400, '请填写财务处理科目');
+  if (!String(reason || '').trim()) ctx.throw(400, '请填写差额原因');
+  await sequelize.transaction(async transaction => {
+    const detail = await DailyStatementDetail.findByPk(detailId, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!detail) ctx.throw(404, '国补应收单不存在');
+    await validateSubsidyDetails([detailId], transaction, user);
+    const pending = Number(await SubsidyReceivableAdjustment.sum('amount', {
+      where: { detail_id: detailId, status: 'PENDING' },
+      transaction
+    }) || 0);
+    const remaining = money(Number(detail.amount) - Number(detail.settled) - pending);
+    if (adjustmentAmount > remaining) ctx.throw(400, '差额金额超过剩余应收');
+    await SubsidyReceivableAdjustment.create({
+      adjustment_id: generateUUID(), detail_id: detailId, adjustment_type: adjustmentType,
+      amount: adjustmentAmount, finance_category: String(financeCategory).trim(),
+      reason: String(reason).trim(), status: 'PENDING',
+      applicant_id: userIdOf(user), applicant_name: user.name || userIdOf(user)
+    }, { transaction });
+  });
+  ctx.body = { code: 0, message: '差额审批已提交' };
+}
+
+async function getSubsidyAdjustments(ctx) {
+  if (await require('../approval/businessRuntime').reviewList(ctx, 'subsidy_receivable_adjustment')) return;
+  const { status = 'PENDING', page = 1, pageSize = 20 } = ctx.query;
+  const where = {};
+  if (status) where.status = status;
+  const { count, rows } = await SubsidyReceivableAdjustment.findAndCountAll({
+    where, order: [['create_time', 'DESC']], ...paginate({}, { page, pageSize })
+  });
+  ctx.body = formatPaginatedResult(rows, { page, pageSize, count });
+}
+
+async function reviewSubsidyAdjustment(ctx) {
+  const user = ctx.state.user;
+  const { id } = ctx.params;
+  const { action, comment = '' } = ctx.request.body || {};
+
+  if (!['approve', 'reject'].includes(action)) ctx.throw(400, '审批动作无效');
+  await sequelize.transaction(async transaction => {
+    const adjustment = await SubsidyReceivableAdjustment.findByPk(id, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!adjustment) ctx.throw(404, '差额审批不存在');
+    if (adjustment.status !== 'PENDING') ctx.throw(400, '该差额已审批');
+    if (!await require('../approval/businessRuntime').advance(ctx, 'subsidy_receivable_adjustment', adjustment, transaction, action, comment)) return;
+    if (action === 'approve') {
+      const detail = await DailyStatementDetail.findByPk(adjustment.detail_id, { transaction, lock: transaction.LOCK.UPDATE });
+      const remaining = money(Number(detail.amount) - Number(detail.settled));
+      if (Number(adjustment.amount) > remaining) ctx.throw(400, '差额金额超过当前剩余应收');
+      const settled = money(Number(detail.settled) + Number(adjustment.amount));
+      await detail.update({ settled, settled_at: settled >= Number(detail.amount) ? new Date() : null }, { transaction });
+      await updateStatementSettled(detail.statement_id, adjustment.amount, user, transaction);
+    }
+    await adjustment.update({
+      status: action === 'approve' ? 'APPROVED' : 'REJECTED',
+      reviewer_id: userIdOf(user), reviewer_name: user.name || userIdOf(user),
+      review_comment: comment, review_time: new Date()
+    }, { transaction });
+  });
+  if (ctx.state.businessApproval?.status === 'pending') return;
+  ctx.body = { code: 0, message: action === 'approve' ? '差额审批通过' : '差额审批已拒绝' };
+}
+
+async function reverseSubsidyAdjustment(ctx) {
+  const user = ctx.state.user;
+  const { id } = ctx.params;
+  const { reason } = ctx.request.body || {};
+  if (!getUserRoles(user).some(role => ['admin', 'boss'].includes(role))) ctx.throw(403, '只有 admin 或 BOSS 可以冲销国补差额');
+  if (!String(reason || '').trim()) ctx.throw(400, '请填写冲销原因');
+  await sequelize.transaction(async transaction => {
+    const adjustment = await SubsidyReceivableAdjustment.findByPk(id, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!adjustment) ctx.throw(404, '差额审批不存在');
+    if (adjustment.status !== 'APPROVED') ctx.throw(400, '只有已通过差额可以冲销');
+    const detail = await DailyStatementDetail.findByPk(adjustment.detail_id, { transaction, lock: transaction.LOCK.UPDATE });
+    const settled = Math.max(0, money(Number(detail.settled) - Number(adjustment.amount)));
+    await detail.update({ settled, settled_at: null }, { transaction });
+    await updateStatementSettled(detail.statement_id, -Number(adjustment.amount), user, transaction);
+    await adjustment.update({
+      status: 'REVERSED', reviewer_id: userIdOf(user), reviewer_name: user.name || userIdOf(user),
+      review_comment: `冲销：${String(reason).trim()}`, review_time: new Date()
+    }, { transaction });
+  });
+  ctx.body = { code: 0, message: '差额已冲销' };
+}
+
+async function getPayableList(ctx) {
+  const { Payable } = require('../../models');
+  const { page = 1, pageSize = 20 } = ctx.query;
+
+  const { count, rows } = await Payable.findAndCountAll({
+    where: { status: 'unpaid' },
     order: [['create_time', 'DESC']],
     ...paginate({}, { page, pageSize })
   });
@@ -105,4 +1980,46 @@ async function getExpenseList(ctx) {
   ctx.body = formatPaginatedResult(rows, { page, pageSize, count });
 }
 
-module.exports = { getDailyStatement, createExpense, getExpenseList };
+module.exports = {
+  previewExpenseSelection, batchSubmitExpenses,
+  buildDailyPaymentMethodWhere,
+  getDailyDetails,
+  getNationalSubsidyReceivables,
+  exportDailyDetails,
+  exportNationalSubsidyReceivables,
+  getDailyStatement,
+  getDailyStatementDetail,
+  batchSettle,
+  settleNationalSubsidyReceivables,
+  createManualNationalSubsidyReceivable,
+  getSettlementSummary,
+  createExpense,
+  saveExpenseDraft,
+  updateExpenseDraft,
+  deleteExpenseDraft,
+  getExpenseList,
+  exportExpenseList,
+  getExpenseDetail,
+  updateExpenseAttribution,
+  assertPurchaseExpenseReviewAllowed,
+  reviewExpense,
+  cancelExpense,
+  withdrawExpense,
+  submitExpense,
+  payExpense,
+  getPayableList,
+  getSettlementAccountsWithBalance,
+  getAccountTransactions,
+  addAccountTransaction,
+  getSubsidyAccountRoutes,
+  saveSubsidyAccountRoute,
+  createSubsidyReceipt,
+  getSubsidyReceipts,
+  allocateSubsidyReceipt,
+  refundSubsidyReceipt,
+  reverseSubsidyReceipt,
+  submitSubsidyAdjustment,
+  getSubsidyAdjustments,
+  reviewSubsidyAdjustment,
+  reverseSubsidyAdjustment
+};

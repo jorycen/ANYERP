@@ -1,0 +1,743 @@
+const { recordDatabaseStage } = require('../../utils/databaseTiming');
+const {
+  RealtimeSqlDashboardDataSource,
+  normalizeParticipants,
+  roundMoney,
+  toNumber
+} = require('./dashboardDataSource');
+const { resolveReportStoreIds, isSelfOnlyReportUser } = require('../../utils/storePermissions');
+const { allocateProfit, allocateAdjustment, isInstantRetail, instantRetailStaffShares, instantRetailReturnShares } = require('./performanceAllocation');
+
+const PROFIT_ROLES = new Set(['boss', 'admin', 'finance', 'manager']);
+const AGE_BUCKET_ORDER = ['0-7天', '8-15天', '16-30天', '31-60天', '60天以上'];
+
+function dateParts(key) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(key || ''));
+  if (!match) return null;
+  return { year: Number(match[1]), month: Number(match[2]), day: Number(match[3]) };
+}
+
+function keyFromUtcDate(date) {
+  return [
+    date.getUTCFullYear(),
+    String(date.getUTCMonth() + 1).padStart(2, '0'),
+    String(date.getUTCDate()).padStart(2, '0')
+  ].join('-');
+}
+
+function shiftDateKey(key, days) {
+  const parts = dateParts(key);
+  if (!parts) return null;
+  const date = new Date(Date.UTC(parts.year, parts.month - 1, parts.day));
+  date.setUTCDate(date.getUTCDate() + days);
+  return keyFromUtcDate(date);
+}
+
+function shiftYearKey(key, years) {
+  const parts = dateParts(key);
+  if (!parts) return null;
+  const date = new Date(Date.UTC(parts.year + years, parts.month - 1, parts.day));
+  if (date.getUTCMonth() !== parts.month - 1) {
+    date.setUTCDate(0);
+  }
+  return keyFromUtcDate(date);
+}
+
+function chinaTodayKey(now = new Date()) {
+  return keyFromUtcDate(new Date(now.getTime() + 8 * 60 * 60 * 1000));
+}
+
+function defaultWeekRange(now = new Date()) {
+  const today = chinaTodayKey(now);
+  const parts = dateParts(today);
+  const date = new Date(Date.UTC(parts.year, parts.month - 1, parts.day));
+  const weekday = date.getUTCDay() || 7;
+  return { startDate: shiftDateKey(today, 1 - weekday), endDate: today };
+}
+
+function dayDiff(startKey, endKey) {
+  const start = dateParts(startKey);
+  const end = dateParts(endKey);
+  if (!start || !end) return NaN;
+  return Math.round((
+    Date.UTC(end.year, end.month - 1, end.day) -
+    Date.UTC(start.year, start.month - 1, start.day)
+  ) / 86400000);
+}
+
+function toChinaBoundary(key, endOfDay = false) {
+  // T_ORDER.CREATE_TIME is a MySQL DATETIME and the connection is configured
+  // with Asia/Shanghai. Pass a local wall-clock value to the query so the
+  // driver cannot convert a JS Date through UTC and shift the report range.
+  return `${key} ${endOfDay ? '23:59:59.999' : '00:00:00.000'}`;
+}
+
+function buildRanges(query = {}, now = new Date()) {
+  const defaults = defaultWeekRange(now);
+  const startDate = query.startDate || defaults.startDate;
+  const endDate = query.endDate || defaults.endDate;
+  if (!dateParts(startDate) || !dateParts(endDate) || dayDiff(startDate, endDate) < 0) {
+    const error = new Error('日期范围格式不正确');
+    error.status = 400;
+    throw error;
+  }
+  const durationDays = dayDiff(startDate, endDate) + 1;
+  const previousEnd = shiftDateKey(startDate, -1);
+  const previousStart = shiftDateKey(previousEnd, -(durationDays - 1));
+  const yoyStart = shiftYearKey(startDate, -1);
+  const yoyEnd = shiftYearKey(endDate, -1);
+  const wrap = (start, end) => ({
+    startDate: start,
+    endDate: end,
+    startAt: toChinaBoundary(start, false),
+    endAt: toChinaBoundary(end, true)
+  });
+  return {
+    current: wrap(startDate, endDate),
+    previous: wrap(previousStart, previousEnd),
+    yoy: wrap(yoyStart, yoyEnd)
+  };
+}
+
+function comparisonRate(current, comparison) {
+  const base = toNumber(comparison);
+  if (base === 0) return null;
+  return Number((((toNumber(current) - base) / Math.abs(base)) * 100).toFixed(2));
+}
+
+function summarizeTrend(rows = []) {
+  const summary = rows.reduce((result, row) => {
+    result.salesAmount += toNumber(row.salesAmount);
+    result.grossProfit += toNumber(row.grossProfit);
+    result.orderCount += Number(row.orderCount || 0);
+    return result;
+  }, { salesAmount: 0, grossProfit: 0, orderCount: 0 });
+  summary.salesAmount = roundMoney(summary.salesAmount);
+  summary.grossProfit = roundMoney(summary.grossProfit);
+  summary.averageOrderValue = summary.orderCount
+    ? roundMoney(summary.salesAmount / summary.orderCount)
+    : 0;
+  summary.grossMargin = summary.salesAmount
+    ? Number(((summary.grossProfit / summary.salesAmount) * 100).toFixed(2))
+    : null;
+  return summary;
+}
+
+function metric(current, yoy, previous, options = {}) {
+  return {
+    value: current,
+    yoy: options.historyUnavailable ? null : comparisonRate(current, yoy),
+    periodCompare: options.historyUnavailable ? null : comparisonRate(current, previous),
+    unavailableReason: options.historyUnavailable ? options.unavailableReason : null
+  };
+}
+
+function summarizeProductQuantities(rows) {
+  const byStore = new Map((rows || []).map(row => [String(row.storeId), row]));
+  return [...byStore.values()].reduce((totals, row) => ({
+    laptop: totals.laptop + Number(row.laptopQuantity || 0),
+    phone: totals.phone + Number(row.phoneQuantity || 0),
+    tablet: totals.tablet + Number(row.tabletQuantity || 0)
+  }), { laptop: 0, phone: 0, tablet: 0 });
+}
+
+function buildKpis(current, yoy, previous, inventory, canViewProfit) {
+  return {
+    salesAmount: metric(current.salesAmount, yoy.salesAmount, previous.salesAmount),
+    grossProfit: canViewProfit
+      ? metric(current.grossProfit, yoy.grossProfit, previous.grossProfit)
+      : { value: null, yoy: null, periodCompare: null, unavailableReason: '无毛利查看权限' },
+    grossMargin: canViewProfit
+      ? metric(current.grossMargin, yoy.grossMargin, previous.grossMargin)
+      : { value: null, yoy: null, periodCompare: null, unavailableReason: '无毛利查看权限' },
+    orderCount: metric(current.orderCount, yoy.orderCount, previous.orderCount),
+    averageOrderValue: metric(current.averageOrderValue, yoy.averageOrderValue, previous.averageOrderValue),
+    inventoryAmount: canViewProfit
+      ? metric(inventory.inventoryAmount, null, null, {
+          historyUnavailable: true,
+          unavailableReason: '当前无库存历史快照'
+        })
+      : { value: null, yoy: null, periodCompare: null, unavailableReason: '无库存金额查看权限' }
+  };
+}
+
+function alignTrend(currentRows, yoyRows, previousRows, canViewProfit) {
+  return currentRows.map((row, index) => {
+    const yoy = yoyRows[index] || {};
+    const previous = previousRows[index] || {};
+    return {
+      bucket: row.bucket,
+      salesAmount: roundMoney(row.salesAmount),
+      grossProfit: canViewProfit ? roundMoney(row.grossProfit) : null,
+      orderCount: Number(row.orderCount || 0),
+      salesYoy: comparisonRate(row.salesAmount, yoy.salesAmount),
+      salesPeriodCompare: comparisonRate(row.salesAmount, previous.salesAmount),
+      grossYoy: canViewProfit ? comparisonRate(row.grossProfit, yoy.grossProfit) : null,
+      grossPeriodCompare: canViewProfit ? comparisonRate(row.grossProfit, previous.grossProfit) : null
+    };
+  });
+}
+
+function buildEmployeePerformance(orderRows, adjustmentRows, selectedEmployeeId, canViewProfit, options = {}) {
+  const adjustmentMap = new Map();
+  adjustmentRows.forEach(row => {
+    const orderId = String(row.orderId);
+    if (!adjustmentMap.has(orderId)) adjustmentMap.set(orderId, []);
+    adjustmentMap.get(orderId).push({
+      signedAmount: roundMoney(row.signedAmount),
+      reason: row.reason || '',
+      adjustmentType: row.adjustmentType,
+      adjustmentNo: row.adjustmentNo,
+      participantKey: row.participantKey ? String(row.participantKey) : ''
+    });
+  });
+
+  const rankMap = new Map();
+  const details = [];
+  const returnShares = instantRetailReturnShares(orderRows.filter(row => row.entry_type === 'return'),
+    row => row.return_id, row => ({ ...row, create_time: row.source_create_time }), row => row.base_gross_profit);
+  orderRows.forEach(order => {
+    const participants = normalizeParticipants(order);
+    if (!participants.length) return;
+    const participantCount = participants.length;
+    const adjustments = adjustmentMap.get(String(order.order_id)) || [];
+    const sharedAdjustments = adjustments.filter(row => !row.participantKey);
+    const totalAdjustment = roundMoney(sharedAdjustments.reduce((sum, row) => sum + row.signedAmount, 0));
+    const salesShare = roundMoney(toNumber(order.sales_amount) / participantCount);
+    const instantRetail = !order.entry_type && isInstantRetail({...order,create_time:order.source_create_time||order.create_time});
+    const adjustmentOnly=order.entry_type==='return_adjustment';
+    const allocationBase=adjustmentOnly?order.allocation_gross_profit:order.base_gross_profit;
+    const originalShares = allocateProfit(participants, allocationBase);
+    const baseProfitShares = adjustmentOnly?participants.map(()=>0):instantRetail
+      ? instantRetailStaffShares(order.base_gross_profit, participants)
+      : returnShares.has(order) ? [returnShares.get(order)] : originalShares;
+    const sharedAdjustmentShares = allocateAdjustment(participants,allocationBase,totalAdjustment);
+
+    participants.forEach((participant, index) => {
+      if (selectedEmployeeId && String(participant.staffId || '') !== String(selectedEmployeeId)) return;
+      if (!rankMap.has(participant.key)) {
+        rankMap.set(participant.key, {
+          staffId: participant.staffId,
+          employeeName: participant.name,
+          salesAmount: 0,
+          baseGrossProfit: 0,
+          approvedAdjustment: 0,
+          grossProfit: 0,
+          participatedOrderCount: 0
+        });
+      }
+      const participantAdjustments = adjustments.filter(row => (
+        !row.participantKey || row.participantKey === participant.key
+      ));
+      const directAdjustment = roundMoney(participantAdjustments
+        .filter(row => row.participantKey)
+        .reduce((sum, row) => sum + row.signedAmount, 0));
+      const participantAdjustment = roundMoney(directAdjustment + sharedAdjustmentShares[index]);
+      const baseProfitShare = baseProfitShares[index];
+      const participantGrossProfitShare = roundMoney(baseProfitShare + participantAdjustment);
+      const rank = rankMap.get(participant.key);
+      rank.salesAmount += salesShare;
+      rank.baseGrossProfit += baseProfitShare;
+      rank.approvedAdjustment += participantAdjustment;
+      rank.grossProfit += participantGrossProfitShare;
+      rank.participatedOrderCount += order.entry_type?.startsWith('return') || order.entry_type === 'reward_redemption' ? 0 : 1;
+      rank.returnCount = (rank.returnCount || 0) + (order.entry_type === 'return' ? 1 : 0);
+
+      details.push({
+        entryType: order.entry_type === 'reward_redemption' ? 'reward_redemption' : order.entry_type?.startsWith('return') ? 'return' : 'sale',
+        sourceOrderNo: order.source_order_no || order.order_no,
+        orderId: order.order_id,
+        orderNo: order.order_no,
+        orderTime: order.create_time,
+          storeId: order.store_id,
+          sourceOrderId: order.source_order_id || order.order_id,
+          returnId: order.return_id,
+          sourceEntryType: order.entry_type || 'sale',
+        storeName: order.store_name,
+        staffId: participant.staffId,
+        employeeName: participant.name,
+        role: order.participant_role || participant.role,
+        participantCount,
+        orderSalesAmount: roundMoney(order.sales_amount),
+        allocatedSalesAmount: salesShare,
+        orderBaseGrossProfit: canViewProfit ? roundMoney(order.base_gross_profit) : null,
+        allocatedBaseGrossProfit: canViewProfit ? baseProfitShare : null,
+        allocatedAdjustment: canViewProfit ? participantAdjustment : null,
+        allocatedGrossProfit: canViewProfit ? participantGrossProfitShare : null,
+        reasons: canViewProfit ? participantAdjustments : [],
+        allocationReason: participants.some(item => Number(item.profitAmount) > 0 || Number(item.ratio) > 0)
+          ? '按订单保存的辅助销售固定金额或比例分配毛利'
+          : `主销售与${Math.max(0, participantCount - 1)}名辅助销售平均分摊`
+      });
+    });
+  });
+
+  const ranking = [...rankMap.values()].map(row => ({
+    ...row,
+    salesAmount: roundMoney(row.salesAmount),
+    baseGrossProfit: canViewProfit ? roundMoney(row.baseGrossProfit) : null,
+    approvedAdjustment: canViewProfit ? roundMoney(row.approvedAdjustment) : null,
+    grossProfit: canViewProfit ? roundMoney(row.grossProfit) : null
+  })).sort((a, b) => (
+    canViewProfit ? b.grossProfit - a.grossProfit : b.salesAmount - a.salesAmount
+  ));
+
+  return {
+    ranking,
+    details: options.allDetails ? details : details.slice(0, 100)
+  };
+}
+
+function mapProductRows(rows, canViewProfit) {
+  const normalized = rows.map(row => {
+    const salesAmount = roundMoney(row.salesAmount);
+    const grossProfit = roundMoney(row.grossProfit);
+    const rootCategory = String(row.categoryRoot || row.categoryPath || '')
+      .split('/')[0]
+      .trim()
+      .toLocaleLowerCase();
+    let deviceCategory = '';
+    if (/^(平板|tablet)$/.test(rootCategory)) deviceCategory = '平板';
+    else if (/^(手机|phone)$/.test(rootCategory)) deviceCategory = '手机';
+    else if (/^(台机|台式机|desktop)$/.test(rootCategory)) deviceCategory = '台机';
+    else if (/^(笔记本|laptop|notebook)$/.test(rootCategory)) deviceCategory = '笔记本';
+    return {
+      productId: row.productId,
+      productName: row.productName || '未命名商品',
+      manufacturerCode: row.manufacturerCode || '',
+      deviceCategory,
+      isFocusProduct: Number(row.isFocusProduct || 0) === 1,
+      salesAmount,
+      grossProfit: canViewProfit ? grossProfit : null,
+      quantity: toNumber(row.quantity),
+      grossMargin: canViewProfit && salesAmount
+        ? Number(((grossProfit / salesAmount) * 100).toFixed(2))
+        : null
+    };
+  });
+  return {
+    salesTop10: [...normalized].sort((a, b) => b.salesAmount - a.salesAmount).slice(0, 10),
+    grossProfitTop10: canViewProfit
+      ? [...normalized].sort((a, b) => b.grossProfit - a.grossProfit).slice(0, 10)
+      : [],
+    quantityTop10: [...normalized].sort((a, b) => b.quantity - a.quantity).slice(0, 10),
+    highMarginTop10: canViewProfit
+      ? normalized.filter(row => row.salesAmount > 0 && row.deviceCategory).sort((a, b) => b.grossMargin - a.grossMargin).slice(0, 10)
+      : [],
+    focusProducts: normalized.filter(row => row.isFocusProduct).sort((a, b) => b.salesAmount - a.salesAmount).slice(0, 20)
+  };
+}
+
+function buildProductCategoryTree(rows) {
+  const roots = [];
+  const nodes = new Map();
+
+  (rows || []).forEach(row => {
+    const rawPath = String(row.categoryPath || row.category_path || row.category || '').trim();
+    const parts = (rawPath || '未分类').split('/').map(part => part.trim()).filter(Boolean).slice(0, 4);
+    if (!parts.length) parts.push('未分类');
+    const salesAmount = roundMoney(row.salesAmount);
+    const quantity = Number(row.quantity || 0);
+    let parent = null;
+
+    parts.forEach((name, index) => {
+      const path = parts.slice(0, index + 1).join('/');
+      let node = nodes.get(path);
+      if (!node) {
+        node = { categoryId: path, name, path, level: index + 1, salesAmount: 0, quantity: 0, orderCount: 0, grossProfit: 0, children: [] };
+        nodes.set(path, node);
+        if (parent) parent.children.push(node);
+        else roots.push(node);
+      }
+      node.salesAmount = roundMoney(node.salesAmount + salesAmount);
+      node.quantity += quantity;
+      node.orderCount += Number(row.orderCount || 0);
+      node.grossProfit = roundMoney(node.grossProfit + Number(row.grossProfit || 0));
+      parent = node;
+    });
+  });
+
+  const sortNodes = list => list
+    .sort((left, right) => right.salesAmount - left.salesAmount || right.quantity - left.quantity || left.name.localeCompare(right.name, 'zh-CN'))
+    .map(node => ({
+      ...node,
+      quantity: Number(node.quantity.toFixed(2)),
+      orderCount: Number(node.orderCount || 0),
+      grossProfit: roundMoney(node.grossProfit),
+      grossMargin: node.salesAmount ? Number((node.grossProfit / node.salesAmount * 100).toFixed(2)) : null,
+      children: sortNodes(node.children)
+    }));
+  return sortNodes(roots);
+}
+
+function getRoles(user) {
+  if (Array.isArray(user?.roles) && user.roles.length) return user.roles;
+  return String(user?.roleCode || '').split(',').map(role => role.trim()).filter(Boolean);
+}
+
+function canViewProfit(user) {
+  // 所有已登录账号均可查看自己数据权限范围内的毛利；门店范围仍由 accessibleStoreIds 控制。
+  return Boolean(user && user.staffId);
+}
+
+function normalizeStoreIds(userStoreIds, allStoreIds = []) {
+  if ((userStoreIds || []).includes('*')) return allStoreIds;
+  return [...new Set((userStoreIds || []).map(String).filter(Boolean))];
+}
+
+class DashboardService {
+  constructor(dataSource = new RealtimeSqlDashboardDataSource()) {
+    this.dataSource = dataSource;
+  }
+
+  async buildFilters(user, query = {}) {
+    const selfOnly = isSelfOnlyReportUser(user);
+    let storeIds = await resolveReportStoreIds(user);
+    if (storeIds.includes('*')) {
+      const rows = await this.dataSource.query(
+        'SELECT STORE_ID AS storeId FROM T_STORE WHERE IS_DELETED = 0 AND STATUS = 1'
+      );
+      storeIds = rows.map(row => String(row.storeId));
+    }
+    if (!storeIds.length) return { stores: [], employees: [], productLines: [], regions: [] };
+    const filters = await this.dataSource.getFilters({ storeIds });
+    if (selfOnly) {
+      filters.employees = (filters.employees || []).filter(row => String(row.staffId) === String(user.staffId));
+    }
+    filters.selfOnly = selfOnly;
+    filters.regions = await this.dataSource.query(
+      `SELECT DISTINCT r.REGION_ID AS regionId, r.REGION_CODE AS regionCode, r.NAME AS name,
+              r.SORT_ORDER AS sortOrder
+         FROM T_STORE s
+         INNER JOIN T_REGION r ON r.REGION_ID = s.REGION_ID
+        WHERE s.IS_DELETED = 0 AND s.STATUS = 1 AND s.STORE_ID IN (:storeIds)
+        ORDER BY sortOrder ASC, regionId ASC`,
+      { storeIds }
+    );
+    const categories=await this.dataSource.query('SELECT CATEGORY_ID AS categoryId, PARENT_ID AS parentId, NAME AS name, LEVEL AS level, SORT_ORDER AS sortOrder FROM T_PRODUCT_CATEGORY WHERE STATUS=1');
+    filters.focusCategoryOptions=require('./dashboardDataSource').buildFinanceCategoryIndex(categories).nodes
+      .filter(node=>node.path&&(!query.focusCategoryKeyword||node.path.toLowerCase().includes(String(query.focusCategoryKeyword).trim().toLowerCase()))).sort((a,b)=>a.path.localeCompare(b.path,'zh-CN')).map(node=>({path:node.path,name:node.name,level:node.level}));
+    return filters;
+  }
+
+  async buildCompanyGrossProfitRanking(range, archiveScope) {
+    const companyStores = await this.dataSource.query(
+      'SELECT STORE_ID AS storeId FROM T_STORE WHERE IS_DELETED = 0 AND STATUS = 1'
+    );
+    const companyStoreIds = companyStores.map(row => String(row.storeId));
+    if (!companyStoreIds.length) return [];
+    const companyFilters = {
+      storeIds: companyStoreIds,
+      archiveScope
+    };
+    const [companyOrderRows, companyAdjustmentRows] = await Promise.all([
+      recordDatabaseStage('companyGrossProfitOrders', () => this.dataSource.getEmployeeOrderRows(companyFilters, range)),
+      recordDatabaseStage('companyGrossProfitAdjustments', () => this.dataSource.getApprovedAdjustments(companyFilters, range))
+    ]);
+    const companyRanking = buildEmployeePerformance(companyOrderRows, companyAdjustmentRows, '', true).ranking;
+    const companyRoster = await this.dataSource.query(`
+      SELECT DISTINCT s.STAFF_ID AS staffId, s.NAME AS employeeName
+        FROM T_STAFF s
+        LEFT JOIN T_STAFF_ROLE sr ON sr.STAFF_ID = s.STAFF_ID
+        LEFT JOIN T_ROLE r ON r.ROLE_ID = sr.ROLE_ID AND r.STATUS = 1
+       WHERE s.STATUS = 1 AND s.IS_DELETED = 0
+         AND (
+           LOWER(COALESCE(r.ROLE_CODE, '')) IN ('staff', 'clerk', 'manager', 'store_manager', 'store_admin')
+           OR LOWER(COALESCE(s.ROLE_CODE, '')) IN ('staff', 'clerk', 'manager', 'store_manager', 'store_admin')
+         )
+         AND COALESCE(s.DISTRIBUTOR_ID, '') <> 'DIST003'
+         AND NOT EXISTS (
+           SELECT 1
+             FROM T_STAFF_DISTRIBUTOR_PERMISSION sdp
+            WHERE sdp.STAFF_ID = s.STAFF_ID
+              AND sdp.DISTRIBUTOR_ID = 'DIST003'
+         )
+    `);
+    const rankingByStaffId = new Map(companyRanking.map(row => [String(row.staffId || ''), row]));
+    companyRoster.forEach(staff => {
+      const staffId = String(staff.staffId || '');
+      if (staffId && !rankingByStaffId.has(staffId)) {
+        rankingByStaffId.set(staffId, {
+          staffId,
+          employeeName: staff.employeeName || staffId,
+          salesAmount: 0,
+          baseGrossProfit: 0,
+          approvedAdjustment: 0,
+          grossProfit: 0,
+          participatedOrderCount: 0
+        });
+      }
+    });
+    const rankedCompanyEmployees = [...rankingByStaffId.values()]
+      .filter(row => companyRoster.some(staff => String(staff.staffId) === String(row.staffId || '')))
+      .sort((a, b) => Number(b.grossProfit || 0) - Number(a.grossProfit || 0)
+        || Number(b.salesAmount || 0) - Number(a.salesAmount || 0)
+        || String(a.employeeName || '').localeCompare(String(b.employeeName || ''), 'zh-CN'));
+    return rankedCompanyEmployees;
+  }
+
+  async resolveOperatingFilters(user, query) {
+    const selfOnly = isSelfOnlyReportUser(user);
+    let storeIds = await resolveReportStoreIds(user);
+    if (storeIds.includes('*')) {
+      const rows = await this.dataSource.query(
+        'SELECT STORE_ID AS storeId FROM T_STORE WHERE IS_DELETED = 0 AND STATUS = 1'
+      );
+      storeIds = rows.map(row => String(row.storeId));
+    }
+    if (!storeIds.length) {
+      const error = new Error('当前账号尚未分配门店');
+      error.status = 403;
+      throw error;
+    }
+    if (query.storeId && !storeIds.includes(String(query.storeId))) {
+      const error = new Error('无权访问该门店');
+      error.status = 403;
+      throw error;
+    }
+    if (query.regionId) {
+      const regionStores = await this.dataSource.query(
+        `SELECT STORE_ID AS storeId
+           FROM T_STORE
+          WHERE IS_DELETED = 0 AND STATUS = 1 AND REGION_ID = :regionId
+            AND STORE_ID IN (:storeIds)`,
+        { regionId: String(query.regionId), storeIds }
+      );
+      storeIds = regionStores.map(row => String(row.storeId));
+    }
+
+    return {
+      storeIds,
+      storeId: query.storeId || '',
+      regionId: query.regionId || '',
+      employeeId: selfOnly ? String(user.staffId || '') : (query.employeeId || ''),
+      productLine: query.productLine || '',
+      archiveScope: query.archiveScope === 'all' ? 'all' : 'archived'
+    };
+  }
+
+  async buildOverview(user, query = {}) {
+    const selfOnly = isSelfOnlyReportUser(user);
+    const leaderboardOnly = String(query.companyWideGrossProfitLeaderboard || '') === '1';
+    if (leaderboardOnly) {
+      const endDate = new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10);
+      query = { startDate: `${endDate.slice(0, 7)}-01`, endDate };
+    }
+    const ranges = buildRanges(query);
+    const granularity = ['day', 'week', 'month'].includes(query.granularity)
+      ? query.granularity
+      : 'day';
+    const filters = await this.resolveOperatingFilters(user, query);
+    const { storeIds } = filters;
+    const profitVisible = canViewProfit(user);
+    if (leaderboardOnly && (!profitVisible || !user.staffId)) {
+      const error = new Error('当前账号无权查看毛利榜单');
+      error.status = 403;
+      throw error;
+    }
+    if (leaderboardOnly) {
+      const ranking = await this.buildCompanyGrossProfitRanking(ranges.current, filters.archiveScope);
+      return { leaderboard: ranking.map((row, index) => ({
+        rank: index + 1,
+        name: row.employeeName,
+        isSelf: String(row.staffId) === String(user.staffId)
+      })) };
+    }
+    if (query.homeSummary === '1') {
+      const [trend, quantities] = await Promise.all([
+        recordDatabaseStage('currentTrend', () => this.dataSource.getTrend(filters, ranges.current, granularity)),
+        recordDatabaseStage('productQuantities', () => this.dataSource.getStoreProductTypeQuantities(filters, ranges.current))
+      ]);
+      const current = summarizeTrend(trend);
+      const metrics = buildKpis(current, {}, {}, {}, profitVisible);
+      const { salesAmount, grossProfit, grossMargin, orderCount, averageOrderValue } = metrics;
+      return {
+        meta: { canViewProfit: profitVisible },
+        kpis: { salesAmount, grossProfit, grossMargin, orderCount, averageOrderValue },
+        productQuantities: summarizeProductQuantities(quantities)
+      };
+    }
+    const [
+      currentTrend,
+      yoyTrend,
+      previousTrend,
+      storeRanking,
+      previousStoreRanking,
+      storeProductTypeQuantities,
+      productRows,
+      productLineRows,
+      productCategoryRows,
+      employeeOrderRows,
+      approvedAdjustments,
+      inventory
+    ] = await Promise.all([
+      recordDatabaseStage('currentTrend', () => this.dataSource.getTrend(filters, ranges.current, granularity)),
+      recordDatabaseStage('yearOverYearTrend', () => this.dataSource.getTrend(filters, ranges.yoy, granularity)),
+      recordDatabaseStage('previousTrend', () => this.dataSource.getTrend(filters, ranges.previous, granularity)),
+      this.dataSource.getStoreRanking(filters, ranges.current),
+      this.dataSource.getStoreRanking(filters, ranges.previous),
+      recordDatabaseStage('productQuantities', () => this.dataSource.getStoreProductTypeQuantities(filters, ranges.current)),
+      this.dataSource.getProductRows(filters, ranges.current),
+      this.dataSource.getProductLineRows(filters, ranges.current),
+      this.dataSource.getProductCategoryRows(filters, ranges.current),
+      this.dataSource.getEmployeeOrderRows(filters, ranges.current),
+      this.dataSource.getApprovedAdjustments(filters, ranges.current),
+      recordDatabaseStage('inventory', () => this.dataSource.getInventory({ ...filters, includeStoreAmounts: query.overallMetrics === '1' }))
+    ]);
+
+    const current = summarizeTrend(currentTrend);
+    const yoy = summarizeTrend(yoyTrend);
+    const previous = summarizeTrend(previousTrend);
+    const monthlyDeductions=profitVisible && typeof this.dataSource.getExpenseDeductions==='function'
+      ? await this.dataSource.getExpenseDeductions(filters,ranges.current,user) : null;
+    const employeePerformance = buildEmployeePerformance(
+      employeeOrderRows,
+      approvedAdjustments,
+      query.employeeId,
+      profitVisible
+    );
+    let companyWideGrossProfitRank = null;
+    let companyWideGrossProfitTotal = null;
+    if (String(query.companyWideRank || query.company_wide_rank || '') === '1' && profitVisible && user.staffId) {
+      const ranking = await this.buildCompanyGrossProfitRanking(ranges.current, filters.archiveScope);
+      companyWideGrossProfitRank = ranking.findIndex(row => String(row.staffId) === String(user.staffId)) + 1;
+      companyWideGrossProfitTotal = ranking.length;
+    }
+    const productAnalysis = mapProductRows(productRows, profitVisible);
+    const focusCategoryRows = await this.dataSource.query(`SELECT CATEGORY_ID AS categoryId,
+      PARENT_ID AS parentId, NAME AS name, LEVEL AS level, SORT_ORDER AS sortOrder,
+      IS_FOCUS_CATEGORY AS isFocusCategory FROM T_PRODUCT_CATEGORY WHERE STATUS=1`);
+    const categoryIndex = require('./dashboardDataSource').buildFinanceCategoryIndex(focusCategoryRows);
+    const focusPaths = require('./focusCategorySales').configuredFocusCategories(focusCategoryRows).map(node => node.path);
+    const focusSourceRows = productRows.map(row => ({ ...row,
+      categoryPath: categoryIndex.byId.get(String(row.categoryId || ''))?.path || row.categoryPath
+    }));
+    productAnalysis.focusCategories=require('./focusCategorySales').aggregateFocusCategories(focusSourceRows,focusPaths,profitVisible)
+      .sort((a,b)=>b.salesAmount-a.salesAmount || a.categoryPath.localeCompare(b.categoryPath,'zh-CN'));
+    const maxFocusSales = Math.max(0, ...productAnalysis.focusCategories.map(row => row.salesAmount));
+    productAnalysis.focusCategories.forEach(row => { row.barWidth = maxFocusSales > 0 ? `${Math.max(0, row.salesAmount / maxFocusSales * 100).toFixed(2)}%` : '0%'; });
+    productAnalysis.focusCategoryMode='category';
+    const previousStoreMap = new Map((previousStoreRanking || []).map(row => [String(row.storeId), row]));
+    let overallRows = null, taskProgress = null;
+    if (query.overallMetrics === '1') {
+      const scopedStores = filters.storeId ? [String(filters.storeId)] : storeIds;
+      const sevenRange = buildRanges({ startDate: shiftDateKey(ranges.current.endDate, -6), endDate: ranges.current.endDate }).current;
+      const [targets, yoyStores, sevenOrders, roster] = await Promise.all([
+        profitVisible ? require('./dashboardTargets').load(scopedStores, ranges.current) : Promise.resolve(new Map()),
+        this.dataSource.getStoreRanking(filters, ranges.yoy),
+        this.dataSource.getEmployeeOrderRows(filters, sevenRange),
+        this.dataSource.query('SELECT STORE_ID AS storeId, NAME AS storeName FROM T_STORE WHERE IS_DELETED=0 AND STATUS=1 AND STORE_ID IN (:storeIds)', { storeIds: scopedStores })
+      ]);
+      const yoyMap = new Map(yoyStores.map(r => [String(r.storeId), r]));
+      const days = Array.from({length:7}, (_, i) => shiftDateKey(sevenRange.startDate, i));
+      overallRows = roster.map(store => {
+        const row = storeRanking.find(r => String(r.storeId) === String(store.storeId)) || { ...store, salesAmount:0, grossProfit:0, orderCount:0 };
+        const target = !filters.employeeId && !filters.productLine ? targets.get(String(store.storeId)) ?? null : null;
+        return { storeId:row.storeId,storeName:row.storeName,salesAmount:roundMoney(row.salesAmount),orderCount:Number(row.orderCount||0), grossProfit:profitVisible ? roundMoney(row.grossProfit) : null,
+          grossMargin:profitVisible && Number(row.salesAmount) !== 0 ? roundMoney(Number(row.grossProfit)/Number(row.salesAmount)*100) : null,
+          yoy:comparisonRate(row.salesAmount, yoyMap.get(String(store.storeId))?.salesAmount),
+          periodCompare:comparisonRate(row.salesAmount,previousStoreMap.get(String(store.storeId))?.salesAmount),
+          taskTarget:target, taskCompletionRate:profitVisible && target > 0 ? roundMoney(Number(row.grossProfit)/target*100) : null,
+          inventoryAmount:profitVisible ? (inventory.byStore || []).find(r=>String(r.storeId)===String(store.storeId))?.inventoryAmount ?? 0 : null,
+          salesTrend:days.map(bucket => {
+            const orders = sevenOrders.filter(r => String(r.store_id) === String(store.storeId) && (typeof r.create_time === 'string' && !/[zZ]|[+]\d\d:\d\d$/.test(r.create_time) ? r.create_time.slice(0,10) : new Date(new Date(r.create_time).getTime()+28800000).toISOString().slice(0,10)) === bucket);
+            return {bucket, salesAmount:require('./operatingProfit').aggregateOperatingProfit(orders,[],filters).summary.salesAmount};
+          }) };
+      });
+      const complete = profitVisible && overallRows.length > 0 && overallRows.every(r => r.taskTarget > 0);
+      const target = complete ? roundMoney(overallRows.reduce((s,r)=>s+r.taskTarget,0)) : null;
+      const actual = profitVisible ? roundMoney(overallRows.reduce((s,r)=>s+Number(r.grossProfit),0)) : null;
+      taskProgress = {metric:'grossProfit',target,actual,remaining:complete?roundMoney(Math.max(0,target-actual)):null,
+        completionRate:complete?roundMoney(actual/target*100):null,
+        reason:!profitVisible?'无毛利查看权限':filters.employeeId||filters.productLine?'员工或产品线筛选下暂无对应目标':!complete?'部分门店或月份未配置毛利目标':''};
+      const requestedSort = ['salesAmount','grossProfit','grossMargin','taskCompletionRate','inventoryAmount'].includes(query.storeSort) ? query.storeSort : 'salesAmount';
+      const sort = !profitVisible && requestedSort !== 'salesAmount' ? 'salesAmount' : requestedSort;
+      overallRows.sort((a,b)=>(a[sort]==null)-(b[sort]==null) || Number(b[sort])-Number(a[sort]) || String(a.storeName).localeCompare(String(b.storeName),'zh-CN'));
+    }
+    const storeProductTypeMap = new Map((storeProductTypeQuantities || []).map(row => [String(row.storeId), row]));
+    const attachStoreCategoryOrders = (row) => {
+      const category = storeProductTypeMap.get(String(row.storeId)) || {};
+      return {
+        ...row,
+        laptopOrderCount: Number(category.laptopOrderCount || 0),
+        tabletOrderCount: Number(category.tabletOrderCount || 0),
+        phoneOrderCount: Number(category.phoneOrderCount || 0),
+        desktopOrderCount: Number(category.desktopOrderCount || 0),
+        serviceOrderCount: Number(category.serviceOrderCount || 0)
+      };
+    };
+    const productQuantities = summarizeProductQuantities(storeProductTypeQuantities);
+    const inventoryView = {
+      ...inventory,
+      byStore: inventory.byStore?.map(row=>({...row,inventoryAmount:profitVisible?row.inventoryAmount:null})),
+      inventoryAmount: profitVisible ? inventory.inventoryAmount : null,
+      ageStructure: inventory.ageStructure
+        .sort((a, b) => AGE_BUCKET_ORDER.indexOf(a.ageBucket) - AGE_BUCKET_ORDER.indexOf(b.ageBucket))
+        .map(row => ({
+          ...row,
+          inventoryAmount: profitVisible ? row.inventoryAmount : null
+        })),
+      staleProducts: inventory.staleProducts.map(row => ({
+        ...row,
+        inventoryAmount: profitVisible ? row.inventoryAmount : null
+      }))
+    };
+
+    return {
+      meta: {
+        source: 'realtime_sql',
+        startDate: ranges.current.startDate,
+        endDate: ranges.current.endDate,
+        granularity,
+        timezone: 'Asia/Shanghai',
+        canViewProfit: profitVisible,
+        selfOnly,
+        archiveScope: filters.archiveScope,
+        companyWideGrossProfitRank,
+        companyWideGrossProfitTotal,
+        expenseDeductionNote:'费用绩效扣减按所选日期覆盖的自然月统计；不改变销售毛利，按产品线筛选时不计算扣减后毛利',
+        allocationRule: '销售额平均拆分；毛利按辅助销售固定金额或比例分配，未设置时平均拆分',
+        generatedAt: new Date().toISOString()
+      },
+      kpis: buildKpis(current, yoy, previous, inventory, profitVisible),
+      trend: alignTrend(currentTrend, yoyTrend, previousTrend, profitVisible),
+      taskProgress,
+      storeRanking: (overallRows || storeRanking).map(row => ({
+        ...row,
+        salesAmount: roundMoney(row.salesAmount),
+        grossProfit: profitVisible ? roundMoney(row.grossProfit) : null,
+        orderCount: Number(row.orderCount || 0),
+        ...attachStoreCategoryOrders(row),
+        categoryBreakdown: storeProductTypeMap.get(String(row.storeId))?.categoryBreakdown || {},
+        periodCompare: comparisonRate(row.salesAmount, previousStoreMap.get(String(row.storeId))?.salesAmount)
+      })),
+      employeeRanking: require('../finance/expenseProfitDeduction').attachMonthly(employeePerformance.ranking,monthlyDeductions,!filters.productLine),
+      employeePerformanceDetails: employeePerformance.details,
+      productLineAnalysis: productLineRows.map(row => ({
+        productLine: row.productLine,
+        salesAmount: roundMoney(row.salesAmount),
+        quantity: Number(row.quantity || 0),
+        grossProfit: profitVisible ? roundMoney(row.grossProfit) : null
+      })),
+      productCategoryAnalysis: buildProductCategoryTree(productCategoryRows),
+      productAnalysis,
+      productQuantities,
+      inventory: inventoryView
+    };
+  }
+}
+
+module.exports = {
+  DashboardService,
+  buildRanges,
+  comparisonRate,
+  summarizeTrend,
+  buildEmployeePerformance,
+  canViewProfit,
+  _test: {
+    defaultWeekRange,
+    shiftDateKey,
+    shiftYearKey,
+    normalizeStoreIds
+  }
+};

@@ -1,10 +1,246 @@
 /**
  * 门店管理控制器
  */
-const { Store, Region } = require('../../models');
+const { Store, Region, Location, Staff, Distributor } = require('../../models');
 const { Op } = require('sequelize');
 const { paginate, formatPaginatedResult } = require('../../utils');
 const { generateId } = require('../../utils');
+const { ensureStandardLocationsForStores } = require('../../utils/standardLocations');
+const { isBoss, isDealerTraceAccount } = require('../../utils/snTracePermission');
+const { resolveAllReadableStoreIds, resolveReportStoreIds } = require('../../utils/storePermissions');
+const {
+  accessibleDistributorIds: getAccessibleDistributorIds,
+  resolveOrderStoreIds
+} = require('../../utils/distributorScope');
+
+function canManageStoreManager(user) {
+  return (user?.roles || []).some(role => ['admin', 'boss'].includes(role));
+}
+
+async function resolveManagerStaff(ctx, managerStaffId, distributorId) {
+  if (!canManageStoreManager(ctx.state.user)) {
+    ctx.throw(403, '无权设置门店店长');
+  }
+
+  if (!managerStaffId) return null;
+
+  const staff = await Staff.findOne({
+    where: { staff_id: managerStaffId, status: 1, is_deleted: 0 }
+  });
+  if (!staff) ctx.throw(400, '店长不存在或已停用');
+  if (String(staff.distributor_id) !== String(distributorId)) {
+    ctx.throw(403, '店长必须属于该门店所属经销商');
+  }
+
+  return staff.staff_id;
+}
+
+/**
+ * 获取区域列表
+ */
+async function getRegionList(ctx) {
+  let regions = await Region.findAll({
+    where: { status: 1 },
+    order: [['sort_order', 'ASC']],
+    attributes: ['region_id', 'region_code', 'name']
+  });
+  
+  // 如果没有区域数据，自动初始化默认区域
+  if (regions.length === 0) {
+    const defaultRegions = [
+      { region_id: 'R001', region_code: 'CD', name: '成都区域', sort_order: 1, status: 1 },
+      { region_id: 'R002', region_code: 'CQ', name: '重庆区域', sort_order: 2, status: 1 },
+      { region_id: 'R003', region_code: 'DS', name: '地市区域', sort_order: 3, status: 1 }
+    ];
+    
+    await Region.bulkCreate(defaultRegions);
+    
+    regions = await Region.findAll({
+      where: { status: 1 },
+      order: [['sort_order', 'ASC']],
+      attributes: ['region_id', 'region_code', 'name']
+    });
+  }
+  
+  ctx.body = { code: 0, data: regions };
+}
+
+/**
+ * 获取所有门店（用于下拉选择，不分页）
+ */
+async function getAllStores(ctx) {
+  const user = ctx.state.user;
+
+  const where = { is_deleted: 0, status: 1 };
+
+  if (!isBoss(user) && isDealerTraceAccount(user)) {
+    const distributorIds = getAccessibleDistributorIds(user);
+    if (distributorIds.includes('*')) {
+      delete where.distributor_id;
+    } else {
+      where.distributor_id = distributorIds.length === 1
+        ? distributorIds[0]
+        : (distributorIds.length > 1 ? { [Op.in]: distributorIds } : '__NO_DISTRIBUTOR__');
+    }
+    const storeIds = Array.isArray(user.accessibleStoreIds)
+      ? user.accessibleStoreIds.filter(id => id && id !== '*')
+      : [];
+    where.store_id = storeIds.length > 0 ? storeIds : '__NO_STORE__';
+  } else if (!isBoss(user) && !user.accessibleStoreIds.includes('*')) {
+    where.store_id = user.accessibleStoreIds;
+  }
+
+  const rows = await Store.findAll({
+    where,
+    attributes: ['store_id', 'name', 'manager_staff_id'],
+    order: [['name', 'ASC']]
+  });
+
+  ctx.body = { code: 0, data: rows };
+}
+
+/**
+ * 新建销售订单门店选项：返回账号已配置经销商权限下的全部有效门店。
+ * 不接受前端传入的单一经销商作为范围来源，避免多经销商权限账号被旧缓存截断。
+ */
+async function getOrderStoreOptions(ctx) {
+  const user = ctx.state.user || {};
+  const storeIds = await resolveOrderStoreIds(user);
+  const where = { is_deleted: 0, status: 1 };
+  if (!storeIds.includes('*')) {
+    where.store_id = storeIds.length ? { [Op.in]: storeIds } : '__NO_STORE__';
+  }
+
+  const rows = await Store.findAll({
+    where,
+    attributes: ['store_id', 'distributor_id', 'region_id', 'name', 'manager_staff_id'],
+    include: [{ model: Region, attributes: ['region_code', 'name'], required: false }],
+    order: [['name', 'ASC']]
+  });
+
+  ctx.body = {
+    code: 0,
+    data: rows.map(row => ({
+      ...row.toJSON(),
+      region_code: row.Region?.region_code || '',
+      region_name: row.Region?.name || ''
+    }))
+  };
+}
+
+/**
+ * 经营报表使用的只读门店选项。
+ * 店长/店员返回账号已配置的有效门店；BOSS返回系统全部有效门店。
+ */
+async function getReadableStoreList(ctx) {
+  const storeIds = await resolveReportStoreIds(ctx.state.user || {});
+  const where = { is_deleted: 0, status: 1 };
+  if (!storeIds.includes('*')) where.store_id = storeIds.length ? storeIds : '__NO_STORE__';
+
+  const rows = await Store.findAll({
+    where,
+    attributes: ['store_id', 'name', 'distributor_id', 'region_id'],
+    order: [['name', 'ASC']]
+  });
+  ctx.body = { code: 0, data: rows };
+}
+
+/**
+ * 库存查询使用的只读门店选项。
+ * 普通账号返回其可访问经销商下全部有效门店；BOSS返回系统全部有效门店。
+ */
+async function getInventoryReadableStoreList(ctx) {
+  const storeIds = await resolveAllReadableStoreIds(ctx.state.user || {});
+  const where = { is_deleted: 0, status: 1 };
+  if (!storeIds.includes('*')) where.store_id = storeIds.length ? storeIds : '__NO_STORE__';
+
+  const rows = await Store.findAll({
+    where,
+    attributes: ['store_id', 'name', 'distributor_id', 'region_id'],
+    order: [['name', 'ASC']]
+  });
+  ctx.body = { code: 0, data: rows };
+}
+
+/**
+ * 库存汇总专用门店选项：只提供数量汇总筛选，不代表 SN 明细或库存操作权限。
+ */
+async function getInventorySummaryStoreList(ctx) {
+  const rows = await Store.findAll({
+    where: { is_deleted: 0, status: 1 },
+    attributes: ['store_id', 'name', 'distributor_id', 'region_id'],
+    include: [{ model: Distributor, attributes: ['distributor_id', 'name'], required: false }],
+    order: [['name', 'ASC']]
+  });
+  ctx.body = {
+    code: 0,
+    data: rows.map(row => ({
+      ...row.toJSON(),
+      distributor_name: row.Distributor?.name || ''
+    }))
+  };
+}
+
+/**
+ * 调拨门店选项：向登录用户开放同一经销商内的全部有效门店。
+ * 普通库存下拉仍保持原有的门店权限范围。
+ */
+async function getTransferStores(ctx) {
+  const user = ctx.state.user || {};
+  const where = { is_deleted: 0, status: 1 };
+  let currentRegionKeys = [];
+  if (!user.roles?.includes('boss')) {
+    const distributorIds = getAccessibleDistributorIds(user);
+    const accessibleStoreIds = Array.isArray(user.accessibleStoreIds)
+      ? user.accessibleStoreIds.filter(id => id && id !== '*')
+      : [];
+    if (distributorIds.length) {
+      where.distributor_id = distributorIds.length === 1
+        ? distributorIds[0]
+        : { [Op.in]: distributorIds };
+    } else if (accessibleStoreIds.length) {
+      const assignedStore = await Store.findOne({
+        where: { store_id: { [Op.in]: accessibleStoreIds }, is_deleted: 0, status: 1 },
+        attributes: ['distributor_id', 'region_id'],
+        include: [{ model: Region, attributes: ['region_id', 'region_code', 'name'] }]
+      });
+      distributorId = String(assignedStore?.distributor_id || '');
+      currentRegionKeys = [
+        assignedStore?.region_id,
+        assignedStore?.Region?.region_id,
+        assignedStore?.Region?.region_code,
+        assignedStore?.Region?.name
+      ].filter(Boolean).map(String);
+      if (assignedStore?.distributor_id) where.distributor_id = assignedStore.distributor_id;
+    } else {
+      where.distributor_id = '__NO_DISTRIBUTOR__';
+    }
+  }
+
+  // 调拨候选可以展示同经销商的全部有效门店；提交时仍由库存控制器校验经销商和区域。
+
+  const rows = await Store.findAll({
+    where,
+    attributes: ['store_id', 'distributor_id', 'region_id', 'name'],
+    include: [{ model: Region, attributes: ['region_code', 'name'] }],
+    order: [['name', 'ASC']]
+  });
+
+  ctx.body = {
+    code: 0,
+    data: rows.map(row => ({
+      ...row.toJSON(),
+      region_code: row.Region?.region_code || '',
+      region_name: row.Region?.name || '',
+      same_region: !currentRegionKeys.length || [
+        row.region_id,
+        row.Region?.region_id,
+        row.Region?.region_code,
+        row.Region?.name
+      ].filter(Boolean).map(String).some(key => currentRegionKeys.includes(key))
+    }))
+  };
+}
 
 /**
  * 门店列表
@@ -16,8 +252,8 @@ async function getStoreList(ctx) {
   const where = { is_deleted: 0 };
 
   // 区域权限过滤
-  if (!user.regionCodes.includes('*')) {
-    where.region_id = user.regionCodes;
+  if (!user.accessibleStoreIds.includes('*')) {
+    where.store_id = user.accessibleStoreIds;
   }
 
   // 按区域名称过滤
@@ -37,8 +273,10 @@ async function getStoreList(ctx) {
 
   const { count, rows } = await Store.findAndCountAll({
     where,
+    attributes: ['store_id', 'name', 'phone', 'address', 'status', 'manager_staff_id'],
     include: [
-      { model: Region, attributes: ['region_code', 'name'] }
+      { model: Region, attributes: ['region_code', 'name'] },
+      { model: Staff, as: 'Manager', attributes: ['staff_id', 'name'], required: false }
     ],
     order: [['create_time', 'DESC']],
     ...paginate({}, { page, pageSize })
@@ -47,7 +285,8 @@ async function getStoreList(ctx) {
   // 格式化返回数据，添加 region_name
   const formattedRows = rows.map(row => ({
     ...row.toJSON(),
-    region_name: row.Region ? row.Region.name : null
+    region_name: row.Region ? row.Region.name : null,
+    manager_name: row.Manager?.name || ''
   }));
 
   ctx.body = formatPaginatedResult(formattedRows, { page, pageSize, count });
@@ -57,23 +296,36 @@ async function getStoreList(ctx) {
  * 创建门店
  */
 async function createStore(ctx) {
-  const { name, regionName, phone, address, status = 1 } = ctx.request.body;
+  const { storeId: userStoreId, name, regionName, regionCode, phone, address, status = 1, managerStaffId } = ctx.request.body;
   const user = ctx.state.user;
 
   if (!name) {
     ctx.throw(400, '门店名称不能为空');
   }
 
-  // 根据区域名称查找 region_id
+  const storeId = String(userStoreId || '').trim();
+  if (!storeId) {
+    ctx.throw(400, '门店ID不能为空');
+  }
+
+  const existingStore = await Store.findOne({ where: { store_id: storeId, is_deleted: 0 } });
+  if (existingStore) {
+    ctx.throw(400, '门店ID已存在');
+  }
+
+  // 根据区域查找 region_id（优先 regionCode，其次 regionName）
   let regionId = null;
-  if (regionName) {
+  if (regionCode) {
+    const region = await Region.findOne({ where: { region_code: regionCode } });
+    if (region) {
+      regionId = region.region_id;
+    }
+  } else if (regionName) {
     const region = await Region.findOne({ where: { name: regionName } });
     if (region) {
       regionId = region.region_id;
     }
   }
-
-  const storeId = generateId('S');
 
   // 如果用户有区域限制，只能创建该区域的门店
   let distributorId = user.distributorId;
@@ -83,17 +335,26 @@ async function createStore(ctx) {
     }
   }
 
-  await Store.create({
+  const hasManagerField = managerStaffId !== undefined || ctx.request.body.manager_staff_id !== undefined;
+  const rawManagerStaffId = managerStaffId ?? ctx.request.body.manager_staff_id;
+  const normalizedManagerStaffId = rawManagerStaffId ? String(rawManagerStaffId).trim() : '';
+  const resolvedManagerStaffId = hasManagerField
+    ? await resolveManagerStaff(ctx, normalizedManagerStaffId, distributorId)
+    : undefined;
+
+  const store = await require('../report/storeManagerHistory').createStore({
     store_id: storeId,
     distributor_id: distributorId,
     region_id: regionId,
     name,
     phone: phone || '',
     address: address || '',
-    status
+    status,
+    ...(hasManagerField ? { manager_staff_id: resolvedManagerStaffId } : {})
   });
+  await ensureStandardLocationsForStores(Location, [store]);
 
-  ctx.body = { code: 0, message: '创建成功' };
+  ctx.body = { code: 0, message: '创建成功', data: { storeId: store.store_id } };
 }
 
 /**
@@ -101,7 +362,7 @@ async function createStore(ctx) {
  */
 async function updateStore(ctx) {
   const { id } = ctx.params;
-  const { name, regionName, phone, address, status } = ctx.request.body;
+  const { name, regionName, regionCode, phone, address, status, managerStaffId } = ctx.request.body;
   const user = ctx.state.user;
 
   const store = await Store.findOne({
@@ -113,28 +374,65 @@ async function updateStore(ctx) {
   }
 
   // 区域权限检查
-  if (!user.regionCodes.includes('*') && !user.regionCodes.includes(store.region_id)) {
+  if (!user.accessibleStoreIds.includes('*') && !user.accessibleStoreIds.includes(String(store.store_id))) {
     ctx.throw(403, '无权操作该门店');
   }
 
-  // 根据区域名称查找 region_id
+  // 根据区域查找 region_id（优先 regionCode，其次 regionName）
   let regionId = store.region_id;
-  if (regionName) {
+  if (regionCode) {
+    const region = await Region.findOne({ where: { region_code: regionCode } });
+    if (region) {
+      regionId = region.region_id;
+    }
+  } else if (regionName) {
     const region = await Region.findOne({ where: { name: regionName } });
     if (region) {
       regionId = region.region_id;
     }
   }
 
-  await store.update({
+  const hasManagerField = managerStaffId !== undefined || ctx.request.body.manager_staff_id !== undefined;
+  const rawManagerStaffId = managerStaffId ?? ctx.request.body.manager_staff_id;
+  const normalizedManagerStaffId = rawManagerStaffId ? String(rawManagerStaffId).trim() : '';
+  const resolvedManagerStaffId = hasManagerField
+    ? await resolveManagerStaff(ctx, normalizedManagerStaffId, store.distributor_id)
+    : undefined;
+
+  await require('../report/storeManagerHistory').updateStore(store,{
     name: name || store.name,
     region_id: regionId,
     phone: phone !== undefined ? phone : store.phone,
     address: address !== undefined ? address : store.address,
-    status: status !== undefined ? status : store.status
-  });
+    status: status !== undefined ? status : store.status,
+    ...(hasManagerField ? { manager_staff_id: resolvedManagerStaffId } : {})
+  },user);
 
   ctx.body = { code: 0, message: '更新成功' };
 }
 
-module.exports = { getStoreList, createStore, updateStore };
+/**
+ * 删除门店
+ */
+async function deleteStore(ctx) {
+  const { id } = ctx.params;
+  const user = ctx.state.user;
+
+  const store = await Store.findOne({
+    where: { store_id: id, is_deleted: 0 }
+  });
+
+  if (!store) {
+    ctx.throw(404, '门店不存在');
+  }
+
+  // 区域权限检查
+  if (!user.accessibleStoreIds.includes('*') && !user.accessibleStoreIds.includes(String(store.store_id))) {
+    ctx.throw(403, '无权操作该门店');
+  }
+
+  await store.update({ is_deleted: 1 });
+  ctx.body = { code: 0, message: '删除成功' };
+}
+
+module.exports = { getStoreList, getAllStores, getOrderStoreOptions, getReadableStoreList, getInventoryReadableStoreList, getInventorySummaryStoreList, getTransferStores, createStore, updateStore, deleteStore, getRegionList };
