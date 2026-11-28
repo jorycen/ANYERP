@@ -4100,6 +4100,11 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
         zeroCostConfirmed: await require('../purchase/zeroCost').hasReceiptEvidence(inbound, dbItem, t),
         costMode: requestedCostMode
       } : null;
+      const recoveryFoundationReceipt = inbound.source_type === 'SALES_COMPONENT_RECOVERY' ? {
+        productId: item.productId, receiptItemId: dbItem.item_id, source: 'sales_component_recovery',
+        invoiceType: '收据', unitCost: dbItem.unit_price, zeroCostConfirmed: true, costMode: 'COMPANY_PRICE'
+      } : null;
+      const intakeFoundationReceipt = purchaseFoundationReceipt || recoveryFoundationReceipt;
       if (isPurchaseInbound && receiptPurchaseItem && !requestedCostMode) {
         fail(409, `采购明细 ${receiptPurchaseItem.item_id} 缺少有效计价方式，请先修正采购申请`);
       }
@@ -4320,9 +4325,9 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
           : await ProductSn.create({
               sn_id: generateUUID(),
               ...snData
-            }, { transaction: t, foundationReceipt: purchaseFoundationReceipt });
+            }, { transaction: t, foundationReceipt: intakeFoundationReceipt });
 
-        await recordSnReentry(snRecord,previousSnStatus,{transaction:t,actor:inboundInitiator,document:inbound.inbound_no,foundationReceipt:purchaseFoundationReceipt});
+        await recordSnReentry(snRecord,previousSnStatus,{transaction:t,actor:inboundInitiator,document:inbound.inbound_no,foundationReceipt:intakeFoundationReceipt});
 
         await initializeSnResourceRightsFromInbound({
           sn: snRecord,
@@ -4380,7 +4385,7 @@ async function executeInboundInTransaction({ inboundId, items = [], user, fail, 
         await ensureProductPnMaster({ productId: item.productId, pnCode: savedPnCode, transaction: t });
       }
 
-      const foundationReceipt = purchaseFoundationReceipt || (isSalesReturnInbound ? await require('./foundationMovement').returnReceipt(inbound, dbItem, t)
+      const foundationReceipt = intakeFoundationReceipt || (isSalesReturnInbound ? await require('./foundationMovement').returnReceipt(inbound, dbItem, t)
         : isTransferInbound ? await require('./foundationMovement').transferReceipt(inbound, dbItem, t) : null);
       if (dbItem.sn_id && foundationReceipt) {
         const receivedSn = await ProductSn.findByPk(dbItem.sn_id, { transaction: t });

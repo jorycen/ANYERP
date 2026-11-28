@@ -117,7 +117,7 @@ async function create(ctx) {
       store_id: store.store_id, distributor_id: store.distributor_id, applicant_staff_id: user.staffId, applicant_name: user.name,
       reason: String(body.reason).trim().slice(0, 1000), payload_json: JSON.stringify({ items }), status: 'pending' }, { transaction });
   });
-  ctx.body = { code: 0, message: '已提交审批，审批通过后请验收入库', data: receipt.toJSON() };
+  ctx.body = { code: 0, message: receipt.source_type === RECOVERY ? '已提交审批，最终审批通过后自动入库' : '已提交审批，审批通过后请验收入库', data: receipt.toJSON() };
 }
 async function review(ctx) {
   const body = ctx.request.body || {};
@@ -158,7 +158,12 @@ async function review(ctx) {
     }
     await row.update({ status: 'approved', inbound_id: inboundId, payload_json: JSON.stringify(data), total_amount: total,
       reviewer_name: ctx.state.user.name, review_time: new Date() }, { transaction });
-    ctx.body = { code: 0, message: '审批通过，请到回收/获赠记录验收入库' };
+    if (row.source_type === RECOVERY) {
+      await receiveApproved(row, ctx.state.user, transaction);
+      ctx.body = { code: 0, message: '审批通过，拆机回收已自动入库' };
+    } else {
+      ctx.body = { code: 0, message: '审批通过，请到获赠记录验收入库' };
+    }
   });
 }
 async function list(ctx) {
@@ -181,12 +186,16 @@ async function receive(ctx) {
     visible(ctx.state.user, row.store_id, row.distributor_id);
     if (row.status !== 'approved') fail(409, '只有审批通过且未入库的申请可以验收入库');
     if (row.source_type === RECOVERY) await sourceOrder(row.order_id, ctx.state.user, transaction);
-    const locationId = await resolveInventoryWriteLocation(M.Location, { storeId: row.store_id, field: 'normal_qty', locationId: ctx.request.body?.locationId, transaction });
-    const inventory = require('./controller');
-    ctx.body = await inventory.executeInboundInTransaction({ inboundId: row.inbound_id, user: ctx.state.user, fail,
-      items: parse(row).items.map(item => ({ inboundItemId: item.inboundItemId, productId: item.productId, quantity: item.quantity,
-        snCode: item.snCode, pnCode: item.pnCode, locationId })) }, transaction);
+    ctx.body = await receiveApproved(row, ctx.state.user, transaction, ctx.request.body?.locationId);
   });
+}
+async function receiveApproved(row, user, transaction, requestedLocationId) {
+  const locationId = await resolveInventoryWriteLocation(M.Location, {
+    storeId: row.store_id, field: 'normal_qty', locationId: requestedLocationId, transaction
+  });
+  return require('./controller').executeInboundInTransaction({ inboundId: row.inbound_id, user, fail,
+    items: parse(row).items.map(item => ({ inboundItemId: item.inboundItemId, productId: item.productId, quantity: item.quantity,
+      snCode: item.snCode, pnCode: item.pnCode, locationId })) }, transaction);
 }
 async function validateInboundRequest(inbound, items, user, transaction) {
   if (![RECOVERY, 'GIFT'].includes(inbound.source_type)) return;

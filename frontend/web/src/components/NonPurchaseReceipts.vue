@@ -1,5 +1,5 @@
 <template>
-  <el-alert title="获赠不生成采购或付款单。拆机回收从小程序订单可用资源发起，审批确认成本后验收入库。无SN商品须设为按公司定价核算。" :closable="false" />
+  <el-alert title="获赠不生成采购或付款单。拆机回收从小程序订单可用资源发起，最终审批确认单价后自动入销售仓。无SN商品须设为按公司定价核算。" :closable="false" />
   <p><el-button type="primary" @click="openGift">新增获赠入库</el-button><el-button @click="load">刷新</el-button></p>
   <el-table :data="rows" v-loading="loading" border>
     <el-table-column prop="receipt_no" label="申请单号" min-width="210" />
